@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from 'react';
+import type { CSSProperties } from 'react';
 import * as Haptics from 'expo-haptics';
 import * as Location from 'expo-location';
 import {
@@ -33,6 +34,20 @@ import PaymentSheet from '@/components/PaymentSheet';
 import { paymentService } from '@/services/paymentService';
 import { bookingService } from '@/services/bookingService';
 import { useAuth } from '@/contexts/AuthContext';
+
+// Estilo del <input type="date"/"time"> nativo del navegador para que se
+// vea como el resto de inputContainer (sin borde/fondo propio, mismo color
+// y tamano de texto que Colors.textPrimary).
+const webDateTimeInputStyle: CSSProperties = {
+  flex: 1,
+  fontSize: 14,
+  color: Colors.textPrimary,
+  backgroundColor: 'transparent',
+  border: 'none',
+  outline: 'none',
+  fontFamily: 'inherit',
+  colorScheme: 'dark',
+};
 
 export default function CreateBookingScreen() {
   const { guardId } = useLocalSearchParams<{ guardId: string }>();
@@ -108,6 +123,32 @@ export default function CreateBookingScreen() {
     }
   }, []);
 
+  // @react-native-community/datetimepicker no tiene implementacion en web
+  // ("DateTimePicker is not supported on: web" en consola) — los
+  // TouchableOpacity de Schedule no hacian nada, no habia forma de cambiar
+  // fecha u hora en el navegador. En web se usa <input type="date"/"time">
+  // nativo del navegador en su lugar; en iOS/Android sigue el picker nativo
+  // de siempre, sin cambios.
+  const handleWebDateChange = useCallback((e: any) => {
+    const value = e.target.value as string;
+    const [year, month, day] = value.split('-').map(Number);
+    if (year && month && day) {
+      const next = new Date(scheduledDate);
+      next.setFullYear(year, month - 1, day);
+      setScheduledDate(next);
+    }
+  }, [scheduledDate]);
+
+  const handleWebTimeChange = useCallback((e: any) => {
+    const value = e.target.value as string;
+    const [hours, minutes] = value.split(':').map(Number);
+    if (!Number.isNaN(hours) && !Number.isNaN(minutes)) {
+      const next = new Date(scheduledTime);
+      next.setHours(hours, minutes, 0, 0);
+      setScheduledTime(next);
+    }
+  }, [scheduledTime]);
+
   const [guard, setGuard] = useState<Guard | null>(null);
   const [isLoadingGuard, setIsLoadingGuard] = useState(true);
 
@@ -157,6 +198,12 @@ export default function CreateBookingScreen() {
   const formatTime = (date: Date): string => {
     return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
   };
+
+  const pad2 = (n: number): string => String(n).padStart(2, '0');
+  const toDateInputValue = (date: Date): string =>
+    `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+  const toTimeInputValue = (date: Date): string =>
+    `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
 
   const handleBooking = async () => {
     console.log('[Booking] Proceed to Payment button pressed!');
@@ -389,38 +436,64 @@ export default function CreateBookingScreen() {
 
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Schedule</Text>
-            <View style={styles.inputRow}>
-              <TouchableOpacity 
-                style={styles.inputContainer}
-                onPress={() => setShowDatePicker(true)}
-              >
-                <Calendar size={16} color={Colors.textSecondary} />
-                <Text style={styles.inputText}>{formatDate(scheduledDate)}</Text>
-              </TouchableOpacity>
-              <TouchableOpacity 
-                style={styles.inputContainer}
-                onPress={() => setShowTimePicker(true)}
-              >
-                <Clock size={16} color={Colors.textSecondary} />
-                <Text style={styles.inputText}>{formatTime(scheduledTime)}</Text>
-              </TouchableOpacity>
-            </View>
-            {showDatePicker && (
-              <DateTimePicker
-                value={scheduledDate}
-                mode="date"
-                display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                onChange={handleDateChange}
-                minimumDate={new Date()}
-              />
-            )}
-            {showTimePicker && (
-              <DateTimePicker
-                value={scheduledTime}
-                mode="time"
-                display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                onChange={handleTimeChange}
-              />
+            {Platform.OS === 'web' ? (
+              <View style={styles.inputRow}>
+                <View style={styles.inputContainer}>
+                  <Calendar size={16} color={Colors.textSecondary} />
+                  <input
+                    type="date"
+                    value={toDateInputValue(scheduledDate)}
+                    min={toDateInputValue(new Date())}
+                    onChange={handleWebDateChange}
+                    style={webDateTimeInputStyle}
+                  />
+                </View>
+                <View style={styles.inputContainer}>
+                  <Clock size={16} color={Colors.textSecondary} />
+                  <input
+                    type="time"
+                    value={toTimeInputValue(scheduledTime)}
+                    onChange={handleWebTimeChange}
+                    style={webDateTimeInputStyle}
+                  />
+                </View>
+              </View>
+            ) : (
+              <>
+                <View style={styles.inputRow}>
+                  <TouchableOpacity
+                    style={styles.inputContainer}
+                    onPress={() => setShowDatePicker(true)}
+                  >
+                    <Calendar size={16} color={Colors.textSecondary} />
+                    <Text style={styles.inputText}>{formatDate(scheduledDate)}</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.inputContainer}
+                    onPress={() => setShowTimePicker(true)}
+                  >
+                    <Clock size={16} color={Colors.textSecondary} />
+                    <Text style={styles.inputText}>{formatTime(scheduledTime)}</Text>
+                  </TouchableOpacity>
+                </View>
+                {showDatePicker && (
+                  <DateTimePicker
+                    value={scheduledDate}
+                    mode="date"
+                    display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                    onChange={handleDateChange}
+                    minimumDate={new Date()}
+                  />
+                )}
+                {showTimePicker && (
+                  <DateTimePicker
+                    value={scheduledTime}
+                    mode="time"
+                    display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                    onChange={handleTimeChange}
+                  />
+                )}
+              </>
             )}
           </View>
 
