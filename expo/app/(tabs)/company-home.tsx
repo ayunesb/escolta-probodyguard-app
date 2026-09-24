@@ -1,434 +1,292 @@
-import { useState, useCallback } from 'react';
+import { useCallback, useMemo, useState } from 'react';
+import { RefreshControl, StyleSheet, View } from 'react-native';
+import { Stack, useFocusEffect, useRouter } from 'expo-router';
+import { Briefcase, CalendarCheck, Shield, Star, UserPlus, Users, Wallet } from 'lucide-react-native';
+import Colors from '@/constants/colors';
+import { Space } from '@/constants/design';
 import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  TouchableOpacity,
-  ActivityIndicator,
-} from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Stack, useFocusEffect } from 'expo-router';
-import { Shield, Users, Calendar, DollarSign, TrendingUp, Award } from 'lucide-react-native';
+  AppText,
+  Avatar,
+  Badge,
+  Card,
+  EmptyState,
+  Screen,
+  ScreenHeader,
+  SectionTitle,
+  SkeletonCard,
+  StatTile,
+  StatusBadge,
+} from '@/components/ui';
+import { ACTIVE_STATUSES, Notice, RoleGate, formatDate, fullName, money, plural, shortId, todayEyebrow } from '@/components/backoffice';
 import { useAuth } from '@/contexts/AuthContext';
 import { bookingService } from '@/services/bookingService';
-import { guardService } from '@/services/guardService';
-import Colors from '@/constants/colors';
-import type { Booking, Guard } from '@/types';
+import { UserRecord, userService } from '@/services/userService';
+import type { Booking } from '@/types';
+import { formatMXN } from '@/utils/pricing';
+import { logger } from '@/utils/logger';
 
-export default function CompanyHomeScreen() {
+export default function CompanyHomeRoute() {
+  return (
+    <>
+      <Stack.Screen options={{ headerShown: false }} />
+      <RoleGate roles={['company']}>
+        <CompanyHomeScreen />
+      </RoleGate>
+    </>
+  );
+}
+
+function CompanyHomeScreen() {
+  const router = useRouter();
   const { user } = useAuth();
-  const insets = useSafeAreaInsets();
-  const [bookings, setBookings] = useState<Booking[]>([]);
-  const [companyGuards, setCompanyGuards] = useState<Guard[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const company = user as UserRecord | null;
+  const [bookings, setBookings] = useState<Booking[] | null>(null);
+  const [guards, setGuards] = useState<UserRecord[] | null>(null);
+  const [guardsError, setGuardsError] = useState(false);
+  const [bookingsError, setBookingsError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
+
+  const loadGuards = useCallback(async () => {
+    if (!company) return;
+    setGuardsError(false);
+    try {
+      const list = await userService.fetchGuardsForCompany(company.id);
+      list.sort((a, b) => fullName(a).localeCompare(fullName(b)));
+      setGuards(list);
+    } catch (error) {
+      logger.error('[CompanyHome] Failed to load guards', error);
+      setGuardsError(true);
+      setGuards([]);
+    }
+  }, [company]);
 
   useFocusEffect(
     useCallback(() => {
-      if (!user) return;
-
-      console.log('[CompanyHome] Setting up real-time listener for company:', user.id);
-      setIsLoading(true);
-
-      guardService.listGuardsForCompany(user.id).then((guards) => {
-        setCompanyGuards(guards);
-      });
-
-      // Las reglas de RTDB solo dejan leer /bookings completo a admin — una
-      // empresa que usara subscribeToBookings aqui se quedaba con la lista
-      // vacia (permission-denied cae al cache local, vacio en un dispositivo
-      // nuevo), por eso el dashboard siempre mostraba 0 en todo.
-      // subscribeToCompanyBookings ya compone el guardBookingIndex de cada
-      // escolta de la empresa, igual que arregla bookings.tsx.
-      const unsubscribe = bookingService.subscribeToCompanyBookings(user.id, (companyBookings) => {
-        console.log('[CompanyHome] Real-time update - bookings:', companyBookings.length);
-        setBookings(companyBookings);
-        setIsLoading(false);
-      });
-
-      return () => {
-        console.log('[CompanyHome] Cleaning up real-time listener');
-        unsubscribe();
-      };
-    }, [user])
+      if (!company) return;
+      loadGuards();
+      // Reservas de la empresa: se componen desde el guardBookingIndex de
+      // cada escolta (las reglas no dejan a una empresa leer /bookings
+      // completo).
+      setBookingsError(null);
+      const unsubscribe = bookingService.subscribeToCompanyBookings(
+        company.id,
+        (list) => {
+          setBookingsError(null);
+          setBookings(list);
+        },
+        (error) => {
+          setBookingsError(error.message);
+          setBookings((prev) => prev ?? []);
+        }
+      );
+      return () => unsubscribe();
+      // reloadKey fuerza a reabrir la suscripcion al tirar hacia abajo
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [company, loadGuards, reloadKey])
   );
 
-  const activeBookings = bookings.filter(b => b.status === 'active' || b.status === 'accepted');
-  const completedBookings = bookings.filter(b => b.status === 'completed');
-  const totalRevenue = completedBookings.reduce((sum, b) => sum + b.guardPayout, 0);
-  const avgRating = completedBookings.length > 0
-    ? completedBookings.reduce((sum, b) => sum + (b.rating || 0), 0) / completedBookings.filter(b => b.rating).length
-    : 0;
+  const onRefresh = async () => {
+    setRefreshing(true);
+    setReloadKey((k) => k + 1);
+    await loadGuards();
+    setRefreshing(false);
+  };
+
+  const stats = useMemo(() => {
+    const list = bookings ?? [];
+    const completed = list.filter((b) => b.status === 'completed');
+    const rated = completed.filter((b) => typeof b.rating === 'number' && b.rating > 0);
+    return {
+      activeJobs: list.filter((b) => ACTIVE_STATUSES.includes(b.status)).length,
+      upcoming: list.filter((b) => b.status === 'confirmed').length,
+      completed: completed.length,
+      // Lo que ganan los escoltas en trabajos completados (no es ingreso de
+      // la empresa ni de la plataforma).
+      guardEarnings: completed.reduce((s, b) => s + money(b.guardPayout), 0),
+      avgRating: rated.length > 0 ? rated.reduce((s, b) => s + (b.rating ?? 0), 0) / rated.length : null,
+      ratedCount: rated.length,
+    };
+  }, [bookings]);
+
+  const available = (guards ?? []).filter((g) => g.availability === true).length;
+  const guardsById = useMemo(() => Object.fromEntries((guards ?? []).map((g) => [g.id, g])), [guards]);
+  const loading = guards === null || bookings === null;
 
   return (
-    <View style={styles.container}>
-      <Stack.Screen options={{ headerShown: false }} />
-      
-      <View style={[styles.header, { paddingTop: insets.top + 24 }]}>
-        <View>
-          <Text style={styles.title}>Company Dashboard</Text>
-          <Text style={styles.subtitle}>Manage your security team</Text>
-        </View>
-      </View>
+    <Screen glow refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.gold} />}>
+      <ScreenHeader
+        eyebrow={todayEyebrow()}
+        title={company?.companyName || 'Your company'}
+        subtitle="Your team, their jobs and their earnings."
+      />
 
-      <ScrollView style={styles.content} contentContainerStyle={styles.scrollContent}>
-        {isLoading ? (
-          <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color={Colors.gold} />
-            <Text style={styles.loadingText}>Loading dashboard...</Text>
+      {guardsError ? (
+        <Notice tone="error" message="We could not load your guards." actionLabel="Try again" onAction={loadGuards} style={styles.block} />
+      ) : null}
+
+      {loading ? (
+        <View style={styles.gridWrap}>
+          <View style={styles.grid}>
+            <SkeletonCard lines={1} />
+            <SkeletonCard lines={1} />
           </View>
-        ) : (
-          <>
-            <View style={styles.statsGrid}>
-              <View style={styles.statCard}>
-                <View style={styles.statIcon}>
-                  <Users size={24} color={Colors.gold} />
+        </View>
+      ) : (
+        <View style={styles.gridWrap}>
+          <View style={styles.grid}>
+            <StatTile label="Guards" value={guards?.length ?? 0} hint={`${available} available now`} icon={Users} />
+            <StatTile label="Active jobs" value={stats.activeJobs} hint={`${stats.upcoming} confirmed, not started`} icon={Briefcase} />
+          </View>
+          <View style={styles.grid}>
+            <StatTile
+              label="Guard earnings"
+              value={formatMXN(stats.guardEarnings)}
+              hint={`${plural(stats.completed, 'completed job')}`}
+              icon={Wallet}
+              accent
+            />
+            <StatTile
+              label="Avg rating"
+              value={stats.avgRating !== null ? stats.avgRating.toFixed(1) : '—'}
+              hint={stats.ratedCount > 0 ? `${plural(stats.ratedCount, 'review')}` : 'No reviews yet'}
+              icon={Star}
+            />
+          </View>
+        </View>
+      )}
+
+      <SectionTitle title="Your guards" />
+      {guards === null ? (
+        <>
+          <SkeletonCard media />
+          <SkeletonCard media />
+        </>
+      ) : guards.length === 0 ? (
+        <EmptyState
+          icon={Shield}
+          title="No guards yet"
+          message="Add your security professionals to start receiving bookings."
+          actionLabel="Add guards"
+          onAction={() => router.push('/(tabs)/company-guards')}
+        />
+      ) : (
+        <View style={styles.list}>
+          {guards.slice(0, 6).map((g) => {
+            const name = fullName(g);
+            const mine = (bookings ?? []).filter((b) => b.guardId === g.id);
+            const active = mine.filter((b) => ACTIVE_STATUSES.includes(b.status)).length;
+            const done = mine.filter((b) => b.status === 'completed').length;
+            return (
+              <Card
+                key={g.id}
+                onPress={() => router.push(`/company-guard-documents/${g.id}`)}
+                accessibilityLabel={`${name}, open documents`}
+                style={styles.row}
+              >
+                <Avatar name={name} uri={g.photos?.[0]} size={44} verified={g.kycStatus === 'approved'} />
+                <View style={styles.flex}>
+                  <AppText variant="headline" numberOfLines={1}>
+                    {name}
+                  </AppText>
+                  <AppText variant="caption" color={Colors.textTertiary}>
+                    {active > 0 ? `${active} active · ` : ''}
+                    {plural(done, 'completed job')}
+                  </AppText>
                 </View>
-                <Text style={styles.statValue}>{companyGuards.length}</Text>
-                <Text style={styles.statLabel}>Active Guards</Text>
-              </View>
+                <Badge label={g.availability === true ? 'Available' : 'Offline'} tone={g.availability === true ? 'success' : 'neutral'} />
+              </Card>
+            );
+          })}
+          {guards.length > 6 ? (
+            <Card onPress={() => router.push('/(tabs)/company-guards')} accessibilityLabel="See all guards" style={styles.row}>
+              <UserPlus size={18} color={Colors.gold} />
+              <AppText variant="bodyMedium" style={styles.flex}>
+                See all {guards.length} guards
+              </AppText>
+            </Card>
+          ) : null}
+        </View>
+      )}
 
-              <View style={styles.statCard}>
-                <View style={styles.statIcon}>
-                  <Calendar size={24} color={Colors.info} />
+      <SectionTitle title="Recent bookings" />
+      {bookingsError ? (
+        <Notice tone="error" message={bookingsError} actionLabel="Try again" onAction={onRefresh} style={styles.block} />
+      ) : null}
+      {bookings === null ? (
+        <>
+          <SkeletonCard />
+          <SkeletonCard />
+        </>
+      ) : bookings.length === 0 ? (
+        <EmptyState icon={CalendarCheck} title="No bookings yet" message="Jobs assigned to your guards will appear here." />
+      ) : (
+        <View style={styles.list}>
+          {bookings.slice(0, 6).map((b) => {
+            const guard = b.guardId ? guardsById[b.guardId] : undefined;
+            return (
+              <Card key={b.id} style={styles.bookingCard}>
+                <View style={styles.rowHead}>
+                  <AppText variant="headline" style={styles.flex} numberOfLines={1}>
+                    {guard ? fullName(guard) : 'Guard'}
+                  </AppText>
+                  <StatusBadge status={b.status} />
                 </View>
-                <Text style={styles.statValue}>{activeBookings.length}</Text>
-                <Text style={styles.statLabel}>Active Jobs</Text>
-              </View>
-
-              <View style={styles.statCard}>
-                <View style={styles.statIcon}>
-                  <DollarSign size={24} color={Colors.success} />
+                <View style={styles.rowHead}>
+                  <AppText variant="caption" color={Colors.textTertiary} style={styles.flex}>
+                    {shortId(b.id)} · {formatDate(b.scheduledDate)}
+                    {b.scheduledTime ? ` · ${b.scheduledTime}` : ''}
+                    {b.duration ? ` · ${b.duration} h` : ''}
+                  </AppText>
+                  <View style={styles.amount}>
+                    <AppText variant="numeric" color={Colors.goldLight}>
+                      {formatMXN(b.guardPayout)}
+                    </AppText>
+                    <AppText variant="caption" color={Colors.textTertiary}>
+                      guard earnings
+                    </AppText>
+                  </View>
                 </View>
-                <Text style={styles.statValue}>${totalRevenue.toFixed(0)}</Text>
-                <Text style={styles.statLabel}>Total Revenue</Text>
-              </View>
-
-              <View style={styles.statCard}>
-                <View style={styles.statIcon}>
-                  <Award size={24} color={Colors.warning} />
-                </View>
-                <Text style={styles.statValue}>{avgRating > 0 ? avgRating.toFixed(1) : 'N/A'}</Text>
-                <Text style={styles.statLabel}>Avg Rating</Text>
-              </View>
-            </View>
-
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>Your Guards</Text>
-              {companyGuards.length === 0 ? (
-                <View style={styles.emptyState}>
-                  <Shield size={48} color={Colors.textTertiary} />
-                  <Text style={styles.emptyText}>No guards assigned</Text>
-                  <Text style={styles.emptySubtext}>
-                    Add guards to your company to start managing bookings
-                  </Text>
-                </View>
-              ) : (
-                companyGuards.map((guard) => {
-                  const guardBookings = bookings.filter(b => b.guardId === guard.id);
-                  const guardActive = guardBookings.filter(b => b.status === 'active' || b.status === 'accepted').length;
-                  const guardCompleted = guardBookings.filter(b => b.status === 'completed').length;
-
-                  return (
-                    <View key={guard.id} style={styles.guardCard}>
-                      <View style={styles.guardHeader}>
-                        <View>
-                          <Text style={styles.guardName}>
-                            {guard.firstName} {guard.lastName}
-                          </Text>
-                          <Text style={styles.guardRole}>Security Professional</Text>
-                        </View>
-                        <View style={[styles.statusBadge, { backgroundColor: guard.availability ? Colors.success + '20' : Colors.textTertiary + '20' }]}>
-                          <Text style={[styles.statusText, { color: guard.availability ? Colors.success : Colors.textTertiary }]}>
-                            {guard.availability ? 'Available' : 'Offline'}
-                          </Text>
-                        </View>
-                      </View>
-
-                      <View style={styles.guardStats}>
-                        <View style={styles.guardStat}>
-                          <Text style={styles.guardStatValue}>{guardActive}</Text>
-                          <Text style={styles.guardStatLabel}>Active</Text>
-                        </View>
-                        <View style={styles.guardStatDivider} />
-                        <View style={styles.guardStat}>
-                          <Text style={styles.guardStatValue}>{guardCompleted}</Text>
-                          <Text style={styles.guardStatLabel}>Completed</Text>
-                        </View>
-                        <View style={styles.guardStatDivider} />
-                        <View style={styles.guardStat}>
-                          <Text style={styles.guardStatValue}>{guard.rating.toFixed(1)}</Text>
-                          <Text style={styles.guardStatLabel}>Rating</Text>
-                        </View>
-                      </View>
-                    </View>
-                  );
-                })
-              )}
-            </View>
-
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>Recent Bookings</Text>
-              {bookings.length === 0 ? (
-                <View style={styles.emptyState}>
-                  <Calendar size={48} color={Colors.textTertiary} />
-                  <Text style={styles.emptyText}>No bookings yet</Text>
-                  <Text style={styles.emptySubtext}>
-                    Bookings will appear here once your guards accept jobs
-                  </Text>
-                </View>
-              ) : (
-                bookings.slice(0, 5).map((booking) => {
-                  const guard = companyGuards.find(g => g.id === booking.guardId);
-                  const getStatusColor = (status: string) => {
-                    switch (status) {
-                      case 'completed': return Colors.success;
-                      case 'active': return Colors.info;
-                      case 'accepted': return Colors.warning;
-                      case 'cancelled': return Colors.error;
-                      default: return Colors.textSecondary;
-                    }
-                  };
-
-                  return (
-                    <View key={booking.id} style={styles.bookingCard}>
-                      <View style={styles.bookingHeader}>
-                        <View style={[styles.statusBadge, { backgroundColor: getStatusColor(booking.status) + '20' }]}>
-                          <Text style={[styles.statusText, { color: getStatusColor(booking.status) }]}>
-                            {booking.status.toUpperCase()}
-                          </Text>
-                        </View>
-                        <Text style={styles.bookingId}>#{booking.id.slice(0, 8)}</Text>
-                      </View>
-
-                      {guard && (
-                        <Text style={styles.bookingGuard}>
-                          Guard: {guard.firstName} {guard.lastName}
-                        </Text>
-                      )}
-
-                      <Text style={styles.bookingDate}>
-                        {booking.scheduledDate} at {booking.scheduledTime}
-                      </Text>
-
-                      <View style={styles.bookingFooter}>
-                        <Text style={styles.bookingAmount}>${booking.guardPayout}</Text>
-                        <Text style={styles.bookingDuration}>{booking.duration}h</Text>
-                      </View>
-                    </View>
-                  );
-                })
-              )}
-            </View>
-          </>
-        )}
-      </ScrollView>
-    </View>
+              </Card>
+            );
+          })}
+        </View>
+      )}
+    </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: Colors.background,
+  block: {
+    marginBottom: Space.lg,
   },
-  header: {
-    padding: 24,
-    paddingTop: 60,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
+  gridWrap: {
+    gap: Space.md,
   },
-  title: {
-    fontSize: 32,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-    marginBottom: 4,
-  },
-  subtitle: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-  },
-  content: {
-    flex: 1,
-  },
-  scrollContent: {
-    padding: 16,
-  },
-  loadingContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 80,
-  },
-  loadingText: {
-    fontSize: 16,
-    color: Colors.textSecondary,
-    marginTop: 16,
-  },
-  statsGrid: {
+  grid: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-    marginBottom: 24,
+    gap: Space.md,
   },
-  statCard: {
-    flex: 1,
-    minWidth: '47%',
-    backgroundColor: Colors.surface,
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    alignItems: 'center',
+  list: {
+    gap: Space.md,
   },
-  statIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: Colors.background,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 12,
-  },
-  statValue: {
-    fontSize: 24,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-    marginBottom: 4,
-  },
-  statLabel: {
-    fontSize: 12,
-    color: Colors.textSecondary,
-    textAlign: 'center' as const,
-  },
-  section: {
-    marginBottom: 24,
-  },
-  sectionTitle: {
-    fontSize: 20,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-    marginBottom: 16,
-  },
-  guardCard: {
-    backgroundColor: Colors.surface,
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  guardHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  guardName: {
-    fontSize: 18,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-    marginBottom: 4,
-  },
-  guardRole: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-  },
-  statusBadge: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 8,
-  },
-  statusText: {
-    fontSize: 12,
-    fontWeight: '700' as const,
-  },
-  guardStats: {
+  row: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: Space.md,
   },
-  guardStat: {
-    flex: 1,
+  rowHead: {
+    flexDirection: 'row',
     alignItems: 'center',
-  },
-  guardStatValue: {
-    fontSize: 20,
-    fontWeight: '700' as const,
-    color: Colors.gold,
-    marginBottom: 4,
-  },
-  guardStatLabel: {
-    fontSize: 12,
-    color: Colors.textSecondary,
-  },
-  guardStatDivider: {
-    width: 1,
-    height: 32,
-    backgroundColor: Colors.border,
+    gap: Space.md,
   },
   bookingCard: {
-    backgroundColor: Colors.surface,
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: Colors.border,
+    gap: Space.sm,
   },
-  bookingHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
+  amount: {
+    alignItems: 'flex-end',
   },
-  bookingId: {
-    fontSize: 12,
-    color: Colors.textTertiary,
-    fontWeight: '600' as const,
-  },
-  bookingGuard: {
-    fontSize: 16,
-    fontWeight: '600' as const,
-    color: Colors.textPrimary,
-    marginBottom: 8,
-  },
-  bookingDate: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-    marginBottom: 12,
-  },
-  bookingFooter: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: Colors.border,
-  },
-  bookingAmount: {
-    fontSize: 18,
-    fontWeight: '700' as const,
-    color: Colors.gold,
-  },
-  bookingDuration: {
-    fontSize: 14,
-    fontWeight: '600' as const,
-    color: Colors.textSecondary,
-  },
-  emptyState: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 40,
-  },
-  emptyText: {
-    fontSize: 18,
-    fontWeight: '600' as const,
-    color: Colors.textPrimary,
-    marginTop: 12,
-  },
-  emptySubtext: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-    marginTop: 8,
-    textAlign: 'center' as const,
-    paddingHorizontal: 32,
+  flex: {
+    flex: 1,
   },
 });

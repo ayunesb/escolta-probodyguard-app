@@ -1,358 +1,240 @@
+// Ubicacion en vivo, a nivel app.
+//
+// - El rol sale de useAuth(): ya no depende de que otra pantalla llame setRole.
+// - El permiso de ubicacion se pide SOLO cuando un escolta empieza a
+//   compartir su posicion para una reserva, nunca al abrir la app.
+// - Hay un unico publicador: si el detalle de la reserva y el mapa estan
+//   montados a la vez, piden lo mismo y se cuenta por referencias.
+// - La posicion (que cambia cada pocos segundos) NO vive en el valor del
+//   contexto: cada pantalla la escucha con useBookingLocation, asi el resto de
+//   la app no se vuelve a renderizar con cada actualizacion.
 import createContextHook from '@nkzw/create-context-hook';
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import * as Location from 'expo-location';
-import { Platform } from 'react-native';
-import { ref, onValue, set, off } from 'firebase/database';
-import { realtimeDb as getRealtimeDb } from '@/lib/firebase';
-import { UserRole } from '@/types';
-import { 
-  startBackgroundLocationUpdates,
-  stopBackgroundLocationUpdates 
-} from '@/services/backgroundLocationTask';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useAuth } from '@/contexts/AuthContext';
+import type { UserRole } from '@/types';
+import {
+  publishBookingLocation,
+  requestLocationPermissions,
+  subscribeToBookingLocation,
+  watchDevicePosition,
+  type BookingLocation,
+  type LocationPermission,
+} from '@/services/locationTrackingService';
+import { logger } from '@/utils/logger';
 
-interface LocationCoords {
-  latitude: number;
-  longitude: number;
+// Minimo entre escrituras: suficiente para seguir un coche en ciudad sin
+// gastar bateria ni cuota.
+const MIN_PUBLISH_INTERVAL_MS = 4000;
+
+interface ActivePublisher {
+  bookingId: string;
+  stop: () => void;
 }
-
-interface GuardLocation extends LocationCoords {
-  guardId: string;
-  heading?: number;
-  speed?: number;
-  timestamp: number;
-}
-
-const ROLES_REQUIRING_LOCATION: UserRole[] = ['client', 'guard', 'company'];
 
 export const [LocationTrackingProvider, useLocationTracking] = createContextHook(() => {
-  const [isTracking, setIsTracking] = useState<boolean>(false);
-  const [currentLocation, setCurrentLocation] = useState<LocationCoords | null>(null);
-  const [guardLocations, setGuardLocations] = useState<Map<string, GuardLocation>>(new Map());
-  const [hasPermission, setHasPermission] = useState<boolean>(false);
-  const [error, setError] = useState<string | null>(null);
-  const [userRole, setUserRole] = useState<UserRole | null>(null);
-  const permissionRequestedRef = useRef<boolean>(false);
-  const roleSetRef = useRef<boolean>(false);
-  
-  const requiresLocation = useMemo(() => {
-    return userRole ? ROLES_REQUIRING_LOCATION.includes(userRole) : false;
-  }, [userRole]);
-  
-  const setRole = useCallback((role: UserRole | null) => {
-    if (roleSetRef.current && userRole === role) return;
-    console.log('[Location] Setting user role:', role);
-    setUserRole(role);
-    roleSetRef.current = true;
-  }, [userRole]);
+  const { user } = useAuth();
+  const role: UserRole | null = user?.role ?? null;
+  const userId = user?.id ?? null;
 
-  const requestLocationPermission = useCallback(async () => {
-    if (!requiresLocation) {
-      console.log('[Location] Location not required for user role:', userRole);
-      setHasPermission(false);
-      setError(null);
-      return;
-    }
-    
-    if (Platform.OS === 'web') {
+  const [permission, setPermission] = useState<LocationPermission>('undetermined');
+  const [publishingBookingId, setPublishingBookingId] = useState<string | null>(null);
+  const [publishError, setPublishError] = useState<string | null>(null);
+
+  const holdsRef = useRef(new Map<string, number>());
+  const targetRef = useRef<string | null>(null);
+  const activeRef = useRef<ActivePublisher | null>(null);
+  const generationRef = useRef(0);
+  const lastWriteRef = useRef(0);
+  const errorRef = useRef<string | null>(null);
+
+  const setErrorOnce = useCallback((message: string | null) => {
+    if (errorRef.current === message) return;
+    errorRef.current = message;
+    setPublishError(message);
+  }, []);
+
+  const stopActive = useCallback(() => {
+    generationRef.current += 1; // cancela un arranque a medias
+    const active = activeRef.current;
+    activeRef.current = null;
+    if (active) {
       try {
-        if (!('geolocation' in navigator)) {
-          console.log('[Location] Geolocation not supported on web');
-          setError('Geolocation not supported');
-          setHasPermission(false);
-          return;
-        }
+        active.stop();
+      } catch (error) {
+        logger.error('[Location] Failed to stop watcher', { error });
+      }
+    }
+    setPublishingBookingId(null);
+  }, []);
 
-        navigator.geolocation.getCurrentPosition(
+  const startFor = useCallback(
+    async (bookingId: string) => {
+      stopActive();
+      const generation = ++generationRef.current;
+      setErrorOnce(null);
+
+      const perm = await requestLocationPermissions();
+      if (generation !== generationRef.current) return;
+      setPermission(perm);
+      if (perm === 'denied') {
+        setErrorOnce('Location permission is off. Turn it on so your client can see you arrive.');
+        return;
+      }
+      if (perm === 'unavailable') {
+        setErrorOnce("Location isn't available on this device.");
+        return;
+      }
+
+      try {
+        const stop = await watchDevicePosition(
           (position) => {
-            setHasPermission(true);
-            setError(null);
-            setCurrentLocation({
-              latitude: position.coords.latitude,
-              longitude: position.coords.longitude,
-            });
+            if (generation !== generationRef.current) return;
+            const now = Date.now();
+            if (now - lastWriteRef.current < MIN_PUBLISH_INTERVAL_MS) return;
+            lastWriteRef.current = now;
+            publishBookingLocation(bookingId, position)
+              .then(() => {
+                if (generation === generationRef.current) setErrorOnce(null);
+              })
+              .catch((error) => {
+                logger.error('[Location] Publishing failed', { bookingId, error });
+                if (generation === generationRef.current) {
+                  setErrorOnce("Your location couldn't be shared. Check your connection.");
+                }
+              });
           },
           (error) => {
-            let errorMessage = 'Location error';
-            if (error.code === 1) {
-              errorMessage = 'Location permission denied';
-            } else if (error.code === 2) {
-              errorMessage = 'Location unavailable';
-            } else if (error.code === 3) {
-              errorMessage = 'Location request timeout';
-            }
-            
-            if (error.message?.includes('permissions policy')) {
-              console.log('[Location] Web geolocation blocked by permissions policy - this is expected in preview mode');
-              errorMessage = 'Location not available in preview mode';
-            } else {
-              console.error('[Location] Web geolocation error:', errorMessage, error.message);
-            }
-            
-            setError(errorMessage);
-            setHasPermission(false);
-          },
-          {
-            enableHighAccuracy: false,
-            timeout: 10000,
-            maximumAge: 60000,
+            if (generation !== generationRef.current) return;
+            if (error.kind === 'denied') setPermission('denied');
+            setErrorOnce(
+              error.kind === 'denied'
+                ? 'Location permission is off. Turn it on so your client can see you arrive.'
+                : error.message
+            );
           }
         );
-      } catch (err) {
-        console.log('[Location] Web permission error (expected in preview):', err);
-        setError('Location not available');
-        setHasPermission(false);
+        if (generation !== generationRef.current) {
+          stop();
+          return;
+        }
+        if (perm === 'undetermined') setPermission('granted');
+        activeRef.current = { bookingId, stop };
+        lastWriteRef.current = 0;
+        setPublishingBookingId(bookingId);
+      } catch (error) {
+        logger.error('[Location] Could not start location updates', { error });
+        if (generation === generationRef.current) setErrorOnce("We couldn't start sharing your location.");
       }
-      return;
-    }
+    },
+    [setErrorOnce, stopActive]
+  );
 
-    try {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      setHasPermission(status === 'granted');
-      
-      if (status === 'granted') {
-        const location = await Location.getCurrentPositionAsync({});
-        setCurrentLocation({
-          latitude: location.coords.latitude,
-          longitude: location.coords.longitude,
-        });
-      } else {
-        setError('Location permission denied');
+  const releaseAll = useCallback(() => {
+    holdsRef.current.clear();
+    targetRef.current = null;
+    stopActive();
+    setErrorOnce(null);
+  }, [setErrorOnce, stopActive]);
+
+  // Pide compartir la ubicacion del escolta para una reserva. Devuelve la
+  // funcion para soltarla. Solo hace algo si el usuario es escolta.
+  const acquirePublisher = useCallback(
+    (bookingId: string): (() => void) => {
+      if (role !== 'guard' || !bookingId) return () => {};
+      const holds = holdsRef.current;
+      holds.set(bookingId, (holds.get(bookingId) ?? 0) + 1);
+      if (targetRef.current !== bookingId) {
+        targetRef.current = bookingId;
+        void startFor(bookingId);
       }
-    } catch (err) {
-      console.error('[Location] Permission error:', err);
-      setError('Failed to get location permission');
-      setHasPermission(false);
-    }
-  }, [requiresLocation, userRole]);
+
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        const remaining = (holds.get(bookingId) ?? 1) - 1;
+        if (remaining > 0) {
+          holds.set(bookingId, remaining);
+          return;
+        }
+        holds.delete(bookingId);
+        if (targetRef.current !== bookingId) return;
+        targetRef.current = null;
+        stopActive();
+        setErrorOnce(null);
+        const next = holds.keys().next();
+        if (!next.done) {
+          targetRef.current = next.value;
+          void startFor(next.value);
+        }
+      };
+    },
+    [role, setErrorOnce, startFor, stopActive]
+  );
+
+  // Reintento tras conceder el permiso en ajustes.
+  const retryPublishing = useCallback(() => {
+    if (targetRef.current) void startFor(targetRef.current);
+  }, [startFor]);
+
+  // Cambio de sesion: se deja de compartir todo.
+  useEffect(() => {
+    return () => releaseAll();
+  }, [userId, releaseAll]);
+
+  return useMemo(
+    () => ({
+      role,
+      permission,
+      publishingBookingId,
+      publishError,
+      acquirePublisher,
+      retryPublishing,
+    }),
+    [role, permission, publishingBookingId, publishError, acquirePublisher, retryPublishing]
+  );
+});
+
+// El escolta comparte su posicion para `bookingId` mientras `enabled` sea
+// cierto y la pantalla este montada.
+export function useGuardLocationPublisher(bookingId: string | null | undefined, enabled: boolean) {
+  const { acquirePublisher, publishingBookingId, publishError, permission, retryPublishing } = useLocationTracking();
 
   useEffect(() => {
-    if (requiresLocation && Platform.OS !== 'web' && !permissionRequestedRef.current) {
-      permissionRequestedRef.current = true;
-      requestLocationPermission();
-    } else if (!requiresLocation) {
-      permissionRequestedRef.current = false;
-    }
-  }, [requiresLocation, requestLocationPermission]);
+    if (!enabled || !bookingId) return;
+    return acquirePublisher(bookingId);
+  }, [enabled, bookingId, acquirePublisher]);
 
-  const startTracking = useCallback(async () => {
-    if (!requiresLocation) {
-      console.log('[Location] Tracking not available for user role:', userRole);
-      setError('Location tracking not available for your account type');
+  return {
+    isPublishing: enabled && !!bookingId && publishingBookingId === bookingId,
+    error: enabled ? publishError : null,
+    permission,
+    retry: retryPublishing,
+  };
+}
+
+export interface BookingLocationState {
+  location: BookingLocation | null;
+  error: string | null;
+  loaded: boolean;
+}
+
+// Posicion en vivo del escolta de una reserva (estado local de la pantalla).
+export function useBookingLocation(bookingId: string | null | undefined, enabled: boolean): BookingLocationState {
+  const [state, setState] = useState<BookingLocationState>({ location: null, error: null, loaded: false });
+
+  useEffect(() => {
+    if (!enabled || !bookingId) {
+      setState({ location: null, error: null, loaded: true });
       return;
     }
-    
-    if (!hasPermission) {
-      await requestLocationPermission();
-      return;
-    }
+    setState((s) => ({ ...s, error: null, loaded: false }));
+    return subscribeToBookingLocation(
+      bookingId,
+      (location) => setState({ location, error: null, loaded: true }),
+      () => setState({ location: null, error: "Live location isn't available right now.", loaded: true })
+    );
+  }, [bookingId, enabled]);
 
-    setIsTracking(true);
-    setError(null);
-
-    if (Platform.OS === 'web') {
-      try {
-        if (!('geolocation' in navigator)) {
-          console.log('[Location] Geolocation not supported on web');
-          setError('Geolocation not supported');
-          setIsTracking(false);
-          return;
-        }
-
-        const watchId = navigator.geolocation.watchPosition(
-          (position) => {
-            setCurrentLocation({
-              latitude: position.coords.latitude,
-              longitude: position.coords.longitude,
-            });
-            setError(null);
-          },
-          (error) => {
-            let errorMessage = 'Failed to track location';
-            if (error.code === 1) {
-              errorMessage = 'Location permission denied';
-            } else if (error.code === 2) {
-              errorMessage = 'Location unavailable';
-            } else if (error.code === 3) {
-              errorMessage = 'Location request timeout';
-            }
-            
-            if (error.message?.includes('permissions policy')) {
-              console.log('[Location] Web tracking blocked by permissions policy - this is expected in preview mode');
-              errorMessage = 'Location not available in preview mode';
-            } else {
-              console.error('[Location] Web tracking error:', errorMessage, error.message);
-            }
-            
-            setError(errorMessage);
-            setIsTracking(false);
-          },
-          {
-            enableHighAccuracy: true,
-            timeout: 10000,
-            maximumAge: 0,
-          }
-        );
-
-        return () => {
-          navigator.geolocation.clearWatch(watchId);
-        };
-      } catch (err) {
-        console.log('[Location] Web start tracking error (expected in preview):', err);
-        setError('Location not available');
-        setIsTracking(false);
-      }
-      return;
-    }
-
-    try {
-      // Start foreground location tracking
-      const subscription = await Location.watchPositionAsync(
-        {
-          accuracy: Location.Accuracy.High,
-          timeInterval: 5000,
-          distanceInterval: 10,
-        },
-        (location) => {
-          setCurrentLocation({
-            latitude: location.coords.latitude,
-            longitude: location.coords.longitude,
-          });
-        }
-      );
-
-      // Start background location tracking (for guards only)
-      if (userRole === 'guard') {
-        const backgroundStarted = await startBackgroundLocationUpdates();
-        if (backgroundStarted) {
-          console.log('[Location] Background tracking started');
-        } else {
-          console.warn('[Location] Background tracking failed to start');
-        }
-      }
-
-      return () => {
-        subscription.remove();
-        // Stop background tracking when component unmounts
-        if (userRole === 'guard') {
-          stopBackgroundLocationUpdates();
-        }
-      };
-    } catch (err) {
-      console.error('[Location] Start tracking error:', err);
-      setError('Failed to start location tracking');
-      setIsTracking(false);
-    }
-  }, [requiresLocation, userRole, hasPermission, requestLocationPermission]);
-
-  const stopTracking = useCallback(async () => {
-    setIsTracking(false);
-    
-    // Stop background location updates
-    if (Platform.OS !== 'web' && userRole === 'guard') {
-      await stopBackgroundLocationUpdates();
-      console.log('[Location] Background tracking stopped');
-    }
-  }, [userRole]);
-
-  const updateGuardLocation = useCallback(async (guardId: string, location: LocationCoords, heading?: number, speed?: number) => {
-    try {
-      const guardLocationData: GuardLocation = {
-        guardId,
-        ...location,
-        heading,
-        speed,
-        timestamp: Date.now(),
-      };
-
-      const locationRef = ref(getRealtimeDb(), `guardLocations/${guardId}`);
-      await set(locationRef, guardLocationData);
-
-      setGuardLocations((prev) => {
-        const newMap = new Map(prev);
-        newMap.set(guardId, guardLocationData);
-        return newMap;
-      });
-
-      console.log('[Location] Updated guard location:', guardId);
-    } catch (err) {
-      console.error('[Location] Error updating guard location:', err);
-    }
-  }, []);
-
-  const subscribeToGuardLocation = useCallback((guardId: string) => {
-    const locationRef = ref(getRealtimeDb(), `guardLocations/${guardId}`);
-    
-    onValue(locationRef, (snapshot) => {
-      const data = snapshot.val();
-      if (data) {
-        setGuardLocations((prev) => {
-          const newMap = new Map(prev);
-          newMap.set(guardId, data as GuardLocation);
-          return newMap;
-        });
-        console.log('[Location] Received guard location update:', guardId);
-      }
-    });
-
-    return () => {
-      off(locationRef);
-    };
-  }, []);
-
-  const getGuardLocation = useCallback((guardId: string): GuardLocation | null => {
-    return guardLocations.get(guardId) || null;
-  }, [guardLocations]);
-
-  const calculateDistance = useCallback((from: LocationCoords, to: LocationCoords): number => {
-    const R = 6371;
-    const dLat = ((to.latitude - from.latitude) * Math.PI) / 180;
-    const dLon = ((to.longitude - from.longitude) * Math.PI) / 180;
-    const a =
-      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos((from.latitude * Math.PI) / 180) *
-        Math.cos((to.latitude * Math.PI) / 180) *
-        Math.sin(dLon / 2) *
-        Math.sin(dLon / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c;
-  }, []);
-
-  const calculateETA = useCallback((from: LocationCoords, to: LocationCoords, speedKmh: number = 40): number => {
-    const distance = calculateDistance(from, to);
-    return (distance / speedKmh) * 60;
-  }, [calculateDistance]);
-
-  return useMemo(() => ({
-    isTracking,
-    currentLocation,
-    guardLocations,
-    hasPermission,
-    error,
-    userRole,
-    setRole,
-    startTracking,
-    stopTracking,
-    updateGuardLocation,
-    subscribeToGuardLocation,
-    getGuardLocation,
-    calculateDistance,
-    calculateETA,
-    requestLocationPermission,
-  }), [
-    isTracking,
-    currentLocation,
-    guardLocations,
-    hasPermission,
-    error,
-    userRole,
-    setRole,
-    startTracking,
-    stopTracking,
-    updateGuardLocation,
-    subscribeToGuardLocation,
-    getGuardLocation,
-    calculateDistance,
-    calculateETA,
-    requestLocationPermission,
-  ]);
-});
+  return state;
+}

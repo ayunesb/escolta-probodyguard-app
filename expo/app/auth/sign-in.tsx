@@ -1,427 +1,442 @@
-import { useState, useEffect } from 'react';
-import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  StyleSheet,
-  KeyboardAvoidingView,
-  Platform,
-  ScrollView,
-  ActivityIndicator,
-} from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useEffect, useState } from 'react';
+import { StyleSheet, View } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
-import { Shield, Fingerprint } from 'lucide-react-native';
+import {
+  Fingerprint,
+  Lock,
+  Mail,
+  Shield,
+  BriefcaseBusiness,
+  Building2,
+  ShieldCheck,
+  FlaskConical,
+  CircleAlert,
+  CircleCheck,
+} from 'lucide-react-native';
+import type { LucideIcon } from 'lucide-react-native';
 import { useAuth } from '@/contexts/AuthContext';
 import { biometricService } from '@/services/biometricService';
+import { USING_EMULATORS } from '@/lib/firebase';
+import { DEV_ACCOUNTS, DEV_PASSWORD, DevRole } from '@/constants/devAccounts';
 import Colors from '@/constants/colors';
+import { Fonts, ICON_STROKE, Radius, Space } from '@/constants/design';
+import { AppText, BrandMark, Button, Card, Input, PressableScale, Screen } from '@/components/ui';
+
+const ROLE_ICONS: Record<DevRole, LucideIcon> = {
+  client: Shield,
+  guard: BriefcaseBusiness,
+  company: Building2,
+  admin: ShieldCheck,
+};
+
+function Notice({ tone, message }: { tone: 'error' | 'success'; message: string }) {
+  const Icon = tone === 'error' ? CircleAlert : CircleCheck;
+  const color = tone === 'error' ? Colors.error : Colors.success;
+  return (
+    <View
+      style={[styles.notice, { backgroundColor: tone === 'error' ? Colors.errorSoft : Colors.successSoft }]}
+      accessibilityRole="alert"
+      accessibilityLiveRegion="polite"
+    >
+      <Icon size={17} color={color} strokeWidth={ICON_STROKE} />
+      <AppText variant="footnote" color={tone === 'error' ? Colors.textPrimary : Colors.textPrimary} style={styles.noticeText}>
+        {message}
+      </AppText>
+    </View>
+  );
+}
+
+// Acceso rapido por rol. Solo existe con el emulador local (ver
+// scripts/emulator/README.md); en produccion __DEV__ es falso y esto no se monta.
+function TestModePanel({ busyRole, onPick }: { busyRole: DevRole | null; onPick: (role: DevRole) => void }) {
+  return (
+    <Card style={styles.testPanel}>
+      <View style={styles.testHeader}>
+        <FlaskConical size={15} color={Colors.gold} strokeWidth={ICON_STROKE} />
+        <AppText variant="overline" color={Colors.gold}>
+          Test mode · local emulator
+        </AppText>
+      </View>
+      <AppText variant="footnote" style={styles.testIntro}>
+        Enter as any role with seeded data. These accounts only exist on this machine.
+      </AppText>
+      <View style={styles.testGrid}>
+        {(Object.keys(DEV_ACCOUNTS) as DevRole[]).map((role) => {
+          const acct = DEV_ACCOUNTS[role];
+          const Icon = ROLE_ICONS[role];
+          const busy = busyRole === role;
+          return (
+            <PressableScale
+              key={role}
+              onPress={() => onPick(role)}
+              disabled={!!busyRole}
+              scaleTo={0.96}
+              haptic="light"
+              accessibilityRole="button"
+              accessibilityLabel={`Sign in as test ${acct.label}`}
+              hoverStyle={{ borderColor: Colors.goldLine, backgroundColor: Colors.surfaceLight }}
+              style={[styles.roleTile, busy ? styles.roleTileBusy : null, busyRole && !busy ? styles.roleTileDim : null]}
+            >
+              <View style={styles.roleIcon}>
+                <Icon size={17} color={Colors.gold} strokeWidth={ICON_STROKE} />
+              </View>
+              <AppText variant="headline">{busy ? 'Signing in…' : acct.label}</AppText>
+              <AppText variant="caption" color={Colors.textTertiary} numberOfLines={2}>
+                {acct.description}
+              </AppText>
+            </PressableScale>
+          );
+        })}
+      </View>
+    </Card>
+  );
+}
 
 export default function SignInScreen() {
   const router = useRouter();
-  const { signIn, resendVerificationEmail, user } = useAuth();
-  const insets = useSafeAreaInsets();
+  const { signIn, resendVerificationEmail, resetPassword, user, authError, clearAuthError } = useAuth();
   // Precarga solo en desarrollo, y solo si tu .env local las define. Antes
   // estaban escritas aqui, y este repositorio es publico.
   const [email, setEmail] = useState(__DEV__ ? (process.env.EXPO_PUBLIC_DEMO_EMAIL ?? '') : '');
   const [password, setPassword] = useState(__DEV__ ? (process.env.EXPO_PUBLIC_DEMO_PASSWORD ?? '') : '');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [fieldErrors, setFieldErrors] = useState<{ email?: string; password?: string }>({});
   const [showResendVerification, setShowResendVerification] = useState(false);
-  const [biometricAvailable, setBiometricAvailable] = useState(false);
-  const [biometricEnabled, setBiometricEnabled] = useState(false);
-  // Quien enruta despues del acceso.
-  //
-  // Antes esta pantalla decia "index.tsx se encarga" y index.tsx decia "sign-in
-  // se encarga". Ninguno lo hacia, y como index.tsx solo se monta en la ruta "/",
-  // despues de un acceso correcto no pasaba nada: el boton se quedaba girando
-  // para siempre con la sesion ya iniciada.
-  //
-  // Ahora: en cuanto AuthContext tiene usuario, esta pantalla manda a "/" y
-  // index.tsx hace el reparto por rol. No hay ciclo, porque solo se va a "/"
-  // cuando el usuario ya existe, que es justo lo que index.tsx necesita.
+  const [biometricReady, setBiometricReady] = useState(false);
+  const [busyRole, setBusyRole] = useState<DevRole | null>(null);
+
+  // Quien enruta despues del acceso: en cuanto AuthContext tiene usuario,
+  // esta pantalla manda a "/" e index.tsx hace el reparto por rol.
   useEffect(() => {
-    if (user) {
-      console.log('[SignIn] Usuario listo, paso el control al enrutador');
-      router.replace('/');
-    }
+    if (user) router.replace('/');
   }, [user, router]);
 
+  // Si el perfil no se pudo cargar (o la cuenta esta suspendida), AuthContext
+  // lo reporta aqui y el boton deja de girar.
   useEffect(() => {
-    checkBiometric();
+    if (authError) {
+      setIsLoading(false);
+      setBusyRole(null);
+    }
+  }, [authError]);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([biometricService.isAvailable(), biometricService.isBiometricEnabled()])
+      .then(([available, enabled]) => {
+        if (!cancelled) setBiometricReady(available && enabled);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  const checkBiometric = async () => {
-    const available = await biometricService.isAvailable();
-    const enabled = await biometricService.isBiometricEnabled();
-    setBiometricAvailable(available);
-    setBiometricEnabled(enabled);
-    console.log('[SignIn] Biometric available:', available, 'enabled:', enabled);
+  const resetMessages = () => {
+    setError('');
+    setSuccess('');
+    clearAuthError();
   };
 
   const handleSignIn = async () => {
     const trimmedEmail = email.trim();
-    const trimmedPassword = password.trim();
-    
-    if (!trimmedEmail || !trimmedPassword) {
-      setError('Please fill in all fields');
-      return;
-    }
+    const nextErrors: typeof fieldErrors = {};
+    if (!trimmedEmail) nextErrors.email = 'Enter your email address.';
+    else if (!/^\S+@\S+\.\S+$/.test(trimmedEmail)) nextErrors.email = "That email address isn't valid.";
+    if (!password) nextErrors.password = 'Enter your password.';
+    setFieldErrors(nextErrors);
+    if (nextErrors.email || nextErrors.password) return;
 
-    setIsLoading(true);
-    setError('');
+    resetMessages();
     setShowResendVerification(false);
-
-    try {
-      const result = await signIn(trimmedEmail, trimmedPassword);
-
-      if (result.success) {
-        // No se apaga el spinner aqui a proposito: sigue girando hasta que
-        // AuthContext entregue el usuario y el efecto de arriba navegue.
-        console.log('[SignIn] Acceso correcto, esperando el usuario');
-      } else if (result.emailNotVerified) {
-        // Show resend verification option
-        setError(result.error || 'Email not verified');
-        setShowResendVerification(true);
-        setIsLoading(false);
-      } else {
-        setError(result.error || 'Failed to sign in');
-        setIsLoading(false);
-      }
-    } catch (error) {
-      console.error('[SignIn] Unexpected error:', error);
-      setError('An unexpected error occurred');
-      setIsLoading(false);
-    }
+    setIsLoading(true);
+    const result = await signIn(trimmedEmail, password);
+    if (result.success) return; // sigue girando hasta que llegue el usuario
+    setError(result.error || "We couldn't sign you in.");
+    setShowResendVerification(!!result.emailNotVerified);
+    setIsLoading(false);
   };
 
   const handleResendVerification = async () => {
+    resetMessages();
     setIsLoading(true);
-    setError('');
+    const result = await resendVerificationEmail(email.trim(), password);
+    setIsLoading(false);
+    if (result.success) {
+      setShowResendVerification(false);
+      setSuccess(`Verification email sent to ${email.trim()}. Check your inbox, then sign in.`);
+    } else {
+      setError(result.error || "We couldn't resend the verification email.");
+    }
+  };
 
-    try {
-      const result = await resendVerificationEmail();
-      
-      if (result.success) {
-        setError('');
-        setShowResendVerification(false);
-        alert('Verification email sent! Please check your inbox.');
-      } else {
-        setError(result.error || 'Failed to resend verification email');
-      }
-    } catch (error) {
-      console.error('[SignIn] Resend verification error:', error);
-      setError('Failed to resend verification email');
-    } finally {
-      setIsLoading(false);
+  const handleForgotPassword = async () => {
+    resetMessages();
+    if (!email.trim()) {
+      setFieldErrors({ email: 'Enter your email, then tap "Forgot password" again.' });
+      return;
+    }
+    setFieldErrors({});
+    const result = await resetPassword(email);
+    if (result.success) {
+      setSuccess(`If an account exists for ${email.trim()}, a reset link is on its way.`);
+    } else {
+      setError(result.error || "We couldn't send the reset email.");
     }
   };
 
   const handleBiometricSignIn = async () => {
+    resetMessages();
     setIsLoading(true);
-    setError('');
-
     try {
-      const authenticated = await biometricService.authenticate('Sign in with biometrics');
-      
-      if (!authenticated) {
-        setError('Biometric authentication failed');
-        setIsLoading(false);
-        return;
-      }
-
-      const credentials = await biometricService.getStoredCredentials();
-      
+      const authenticated = await biometricService.authenticate('Sign in to Escolta Pro');
+      const credentials = authenticated ? await biometricService.getStoredCredentials() : null;
       if (!credentials) {
-        setError('No stored credentials found');
+        setError(authenticated ? 'No saved sign-in found on this device.' : 'Biometric check failed.');
         setIsLoading(false);
         return;
       }
-
       const result = await signIn(credentials.email, credentials.encryptedPassword);
-
-      if (result.success) {
-        console.log('[SignIn] Biometric login successful, waiting for user data to load');
-        // Don't navigate here - let the useEffect handle it when user is loaded
-      } else {
-        setError(result.error || 'Failed to sign in');
+      if (!result.success) {
+        setError(result.error || "We couldn't sign you in.");
         setIsLoading(false);
       }
-    } catch (error) {
-      console.error('[SignIn] Biometric sign in error:', error);
-      setError('Biometric sign in failed');
+    } catch {
+      setError('Biometric sign-in failed.');
       setIsLoading(false);
     }
   };
 
+  const handleQuickLogin = async (role: DevRole) => {
+    resetMessages();
+    setBusyRole(role);
+    const result = await signIn(DEV_ACCOUNTS[role].email, DEV_PASSWORD);
+    if (!result.success) {
+      setError(`${result.error ?? 'Sign-in failed.'} Is the emulator running and seeded? (npm run dev:emulated)`);
+      setBusyRole(null);
+    }
+  };
+
+  const message = error || authError;
+
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-    >
+    <Screen glow keyboard padBottom contentStyle={styles.content}>
       <Stack.Screen options={{ headerShown: false }} />
-      <ScrollView
-        contentContainerStyle={[styles.scrollContent, { paddingTop: insets.top + 24, paddingBottom: insets.bottom + 24 }]}
-        keyboardShouldPersistTaps="handled"
-      >
-        <View style={styles.header}>
-          <View style={styles.iconContainer}>
-            <Shield size={48} color={Colors.gold} strokeWidth={2} />
-          </View>
-          <Text style={styles.title}>Escolta Pro</Text>
-          <Text style={styles.subtitle}>Executive Protection On-Demand</Text>
+
+      <View style={styles.brandRow}>
+        <BrandMark size={40} />
+        <View>
+          <AppText style={styles.brandName}>ESCOLTA PRO</AppText>
+          <AppText variant="overline" color={Colors.gold} style={styles.brandTag}>
+            Executive protection
+          </AppText>
+        </View>
+      </View>
+
+      <View style={styles.hero}>
+        <AppText variant="display" accessibilityRole="header">
+          Discreet protection,{'\n'}
+          <AppText variant="display" style={styles.heroItalic}>
+            on your schedule.
+          </AppText>
+        </AppText>
+        <AppText variant="callout" style={styles.heroSub}>
+          Vetted close-protection professionals, booked in minutes and tracked in real time.
+        </AppText>
+      </View>
+
+      {USING_EMULATORS ? <TestModePanel busyRole={busyRole} onPick={handleQuickLogin} /> : null}
+
+      <View style={styles.form}>
+        <Input
+          label="Email"
+          icon={Mail}
+          value={email}
+          onChangeText={(text) => {
+            setEmail(text.trim());
+            if (fieldErrors.email) setFieldErrors((f) => ({ ...f, email: undefined }));
+          }}
+          placeholder="you@company.com"
+          keyboardType="email-address"
+          autoCapitalize="none"
+          autoCorrect={false}
+          autoComplete="email"
+          textContentType="username"
+          returnKeyType="next"
+          error={fieldErrors.email}
+        />
+        <View>
+          <Input
+            label="Password"
+            icon={Lock}
+            value={password}
+            onChangeText={(text) => {
+              setPassword(text);
+              if (fieldErrors.password) setFieldErrors((f) => ({ ...f, password: undefined }));
+            }}
+            placeholder="Your password"
+            secureTextEntry
+            autoCapitalize="none"
+            autoComplete="current-password"
+            textContentType="password"
+            returnKeyType="go"
+            onSubmitEditing={handleSignIn}
+            error={fieldErrors.password}
+          />
+          <PressableScale onPress={handleForgotPassword} scaleTo={0.97} style={styles.forgot} accessibilityRole="button" accessibilityLabel="Forgot password">
+            <AppText variant="footnote" color={Colors.gold}>
+              Forgot password?
+            </AppText>
+          </PressableScale>
         </View>
 
-        <View style={styles.form}>
-          <View style={styles.inputContainer}>
-            <Text style={styles.label}>Email</Text>
-            <TextInput
-              style={styles.input}
-              value={email}
-              onChangeText={(text) => setEmail(text.trim())}
-              placeholder="your@email.com"
-              placeholderTextColor={Colors.textTertiary}
-              keyboardType="email-address"
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-          </View>
+        {message ? <Notice tone="error" message={message} /> : null}
+        {success ? <Notice tone="success" message={success} /> : null}
 
-          <View style={styles.inputContainer}>
-            <Text style={styles.label}>Password</Text>
-            <TextInput
-              style={styles.input}
-              value={password}
-              onChangeText={setPassword}
-              placeholder="••••••••"
-              placeholderTextColor={Colors.textTertiary}
-              secureTextEntry
-              autoCapitalize="none"
-            />
-          </View>
+        {showResendVerification ? (
+          <Button title="Resend verification email" variant="outline" icon={Mail} onPress={handleResendVerification} disabled={isLoading} />
+        ) : null}
 
-          {error ? <Text style={styles.error}>{error}</Text> : null}
+        <Button title="Sign in" size="lg" onPress={handleSignIn} loading={isLoading} disabled={!!busyRole} />
 
-          {showResendVerification && (
-            <TouchableOpacity
-              style={[styles.resendButton, isLoading && styles.buttonDisabled]}
-              onPress={handleResendVerification}
-              disabled={isLoading}
-            >
-              <Text style={styles.resendButtonText}>Resend Verification Email</Text>
-            </TouchableOpacity>
-          )}
+        {biometricReady ? (
+          <Button title="Sign in with biometrics" variant="secondary" icon={Fingerprint} onPress={handleBiometricSignIn} disabled={isLoading} />
+        ) : null}
+      </View>
 
-          <TouchableOpacity
-            style={[styles.button, isLoading && styles.buttonDisabled]}
-            onPress={handleSignIn}
-            disabled={isLoading}
-          >
-            {isLoading ? (
-              <ActivityIndicator color={Colors.background} />
-            ) : (
-              <Text style={styles.buttonText}>Sign In</Text>
-            )}
-          </TouchableOpacity>
-
-          {biometricAvailable && biometricEnabled && (
-            <TouchableOpacity
-              style={[styles.biometricButton, isLoading && styles.buttonDisabled]}
-              onPress={handleBiometricSignIn}
-              disabled={isLoading}
-            >
-              <Fingerprint size={24} color={Colors.gold} />
-              <Text style={styles.biometricButtonText}>Sign in with Biometrics</Text>
-            </TouchableOpacity>
-          )}
-
-          <TouchableOpacity style={styles.linkButton}>
-            <Text style={styles.linkText}>Forgot Password?</Text>
-          </TouchableOpacity>
-
-          <View style={styles.divider}>
-            <View style={styles.dividerLine} />
-            <Text style={styles.dividerText}>OR</Text>
-            <View style={styles.dividerLine} />
-          </View>
-
-          <TouchableOpacity
-            style={styles.secondaryButton}
-            onPress={() => router.push('/auth/sign-up' as any)}
-          >
-            <Text style={styles.secondaryButtonText}>Create Account</Text>
-          </TouchableOpacity>
+      <View style={styles.footer}>
+        <View style={styles.dividerRow}>
+          <View style={styles.dividerLine} />
+          <AppText variant="caption" color={Colors.textTertiary}>
+            New to Escolta Pro?
+          </AppText>
+          <View style={styles.dividerLine} />
         </View>
+        <Button title="Create an account" variant="secondary" onPress={() => router.push('/auth/sign-up')} />
+      </View>
 
-        {/* Las credenciales demo ya no viven en el codigo. Este repositorio es
-            publico: cualquiera que lo leyera tenia las cuatro cuentas, incluida
-            la de administrador. Ahora salen de tu .env local, que no se sube. */}
-        {__DEV__ && !!process.env.EXPO_PUBLIC_DEMO_EMAIL && (
-          <View style={styles.footer}>
-            <Text style={styles.footerText}>
-              Modo desarrollo: cuenta precargada desde .env
-            </Text>
-            <Text style={styles.footerText}>
-              {process.env.EXPO_PUBLIC_DEMO_EMAIL}
-            </Text>
-          </View>
-        )}
-      </ScrollView>
-    </KeyboardAvoidingView>
+      {__DEV__ && !!process.env.EXPO_PUBLIC_DEMO_EMAIL && !USING_EMULATORS ? (
+        <AppText variant="caption" color={Colors.textTertiary} align="center" style={styles.devNote}>
+          Dev build: account prefilled from .env ({process.env.EXPO_PUBLIC_DEMO_EMAIL})
+        </AppText>
+      ) : null}
+    </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: Colors.background,
-  },
-  scrollContent: {
-    flexGrow: 1,
+  content: {
     justifyContent: 'center',
-    padding: 24,
+    paddingTop: Space.xxxl,
   },
-  header: {
-    alignItems: 'center',
-    marginBottom: 48,
-  },
-  iconContainer: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: Colors.surface,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 16,
-  },
-  title: {
-    fontSize: 32,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-    marginBottom: 8,
-  },
-  subtitle: {
-    fontSize: 16,
-    color: Colors.textSecondary,
-  },
-  form: {
-    width: '100%',
-  },
-  inputContainer: {
-    marginBottom: 20,
-  },
-  label: {
-    fontSize: 14,
-    fontWeight: '600' as const,
-    color: Colors.textPrimary,
-    marginBottom: 8,
-  },
-  input: {
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: 12,
-    padding: 16,
-    fontSize: 16,
-    color: Colors.textPrimary,
-  },
-  error: {
-    color: Colors.error,
-    fontSize: 14,
-    marginBottom: 16,
-    textAlign: 'center' as const,
-  },
-  button: {
-    backgroundColor: Colors.gold,
-    borderRadius: 12,
-    padding: 16,
-    alignItems: 'center',
-    marginTop: 8,
-  },
-  buttonDisabled: {
-    opacity: 0.6,
-  },
-  buttonText: {
-    color: Colors.background,
-    fontSize: 16,
-    fontWeight: '700' as const,
-  },
-  linkButton: {
-    alignItems: 'center',
-    marginTop: 16,
-  },
-  linkText: {
-    color: Colors.gold,
-    fontSize: 14,
-    fontWeight: '600' as const,
-  },
-  divider: {
+  brandRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginVertical: 32,
+    gap: Space.md,
+    marginBottom: Space.huge,
+  },
+  brandName: {
+    fontFamily: Fonts.displayHeavy,
+    fontSize: 17,
+    lineHeight: 20,
+    letterSpacing: 3.2,
+    color: Colors.textPrimary,
+  },
+  brandTag: {
+    fontSize: 8.5,
+    letterSpacing: 2.6,
+    marginTop: 3,
+  },
+  hero: {
+    marginBottom: Space.xxxl,
+  },
+  heroItalic: {
+    fontFamily: Fonts.displayLight,
+    color: Colors.goldLight,
+  },
+  heroSub: {
+    marginTop: Space.lg,
+    maxWidth: 340,
+  },
+  form: {
+    gap: Space.lg,
+  },
+  forgot: {
+    alignSelf: 'flex-end',
+    marginTop: Space.sm,
+    paddingVertical: Space.xs,
+  },
+  notice: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: Space.sm,
+    padding: Space.md,
+    borderRadius: Radius.sm,
+  },
+  noticeText: {
+    flex: 1,
+  },
+  footer: {
+    marginTop: Space.xxxl,
+    gap: Space.lg,
+  },
+  dividerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Space.md,
   },
   dividerLine: {
     flex: 1,
-    height: 1,
-    backgroundColor: Colors.border,
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: Colors.borderStrong,
   },
-  dividerText: {
-    color: Colors.textSecondary,
-    fontSize: 14,
-    marginHorizontal: 16,
+  devNote: {
+    marginTop: Space.xl,
   },
-  secondaryButton: {
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: 12,
-    padding: 16,
-    alignItems: 'center',
+  testPanel: {
+    marginBottom: Space.xxxl,
+    borderColor: Colors.goldLine,
+    borderStyle: 'dashed',
   },
-  secondaryButtonText: {
-    color: Colors.textPrimary,
-    fontSize: 16,
-    fontWeight: '600' as const,
-  },
-  footer: {
-    marginTop: 32,
-    alignItems: 'center',
-  },
-  footerText: {
-    color: Colors.textTertiary,
-    fontSize: 12,
-    textAlign: 'center' as const,
-  },
-  biometricButton: {
+  testHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.gold,
-    borderRadius: 12,
-    padding: 16,
-    marginTop: 16,
-    gap: 8,
+    gap: Space.sm,
   },
-  biometricButtonText: {
-    color: Colors.gold,
-    fontSize: 16,
-    fontWeight: '600' as const,
+  testIntro: {
+    marginTop: Space.xs,
+    marginBottom: Space.md,
   },
-  resendButton: {
-    backgroundColor: Colors.surface,
+  testGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Space.sm,
+  },
+  roleTile: {
+    flexGrow: 1,
+    flexBasis: '46%',
+    gap: 3,
+    padding: Space.md,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.background,
     borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  roleTileBusy: {
     borderColor: Colors.gold,
-    borderRadius: 12,
-    padding: 12,
+  },
+  roleTileDim: {
+    opacity: 0.45,
+  },
+  roleIcon: {
+    width: 30,
+    height: 30,
+    borderRadius: Radius.sm,
+    backgroundColor: Colors.goldSoft,
     alignItems: 'center',
-    marginTop: 12,
-    marginBottom: 8,
-  },
-  resendButtonText: {
-    color: Colors.gold,
-    fontSize: 14,
-    fontWeight: '600' as const,
+    justifyContent: 'center',
+    marginBottom: Space.xs,
   },
 });

@@ -1,411 +1,394 @@
-import { useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useEffect, useState } from 'react';
+import { ActivityIndicator, StyleSheet, Switch, View } from 'react-native';
+import Constants from 'expo-constants';
 import { Stack, useRouter } from 'expo-router';
-import { User, Mail, Phone, Globe, Shield, LogOut, CheckCircle, AlertCircle, Trash2, Download } from 'lucide-react-native';
-import { useAuth } from '@/contexts/AuthContext';
-import { gdprService } from '@/services/gdprService';
-import { confirm } from '@/utils/confirm';
+import {
+  Building2,
+  CircleDot,
+  Download,
+  FileText,
+  Globe,
+  KeyRound,
+  LogOut,
+  Mail,
+  Phone,
+  ShieldCheck,
+  SlidersHorizontal,
+  Trash2,
+} from 'lucide-react-native';
 import Colors from '@/constants/colors';
+import { Space } from '@/constants/design';
+import { AppText, Avatar, Badge, Button, Card, Chip, Input, ListGroup, ListRow, Screen, ScreenHeader, SectionTitle } from '@/components/ui';
+import { Notice, exportMyData, fullName, kycMeta, roleLabel } from '@/components/backoffice';
+import { useAuth } from '@/contexts/AuthContext';
+import type { UserRecord } from '@/services/userService';
+import type { Language, User } from '@/types';
+import { formatMXN } from '@/utils/pricing';
+import { confirm } from '@/utils/confirm';
+import { logger } from '@/utils/logger';
+
+const LANGUAGE_LABEL: Record<string, string> = {
+  es: 'Español',
+  en: 'English',
+  fr: 'Français',
+  de: 'Deutsch',
+};
+
+type NoticeState = { tone: 'success' | 'error' | 'info'; message: string } | null;
 
 export default function ProfileScreen() {
-  const { user, signOut } = useAuth();
+  const { user, signOut, resetPassword } = useAuth();
   const router = useRouter();
-  const insets = useSafeAreaInsets();
-  const [isDeleting, setIsDeleting] = useState(false);
-  const [isExporting, setIsExporting] = useState(false);
+  const [notice, setNotice] = useState<NoticeState>(null);
+  const [exporting, setExporting] = useState(false);
+  const [sendingReset, setSendingReset] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
 
-  const handleDeleteAccount = () => {
-    Alert.alert(
-      'Delete Account',
-      'This will permanently delete all your data. This action cannot be undone. Are you sure?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            if (!user) return;
-            setIsDeleting(true);
-            try {
-              await gdprService.requestDataDeletion(user.id, 'User requested account deletion');
-              Alert.alert(
-                'Request Submitted',
-                'Your account deletion request has been submitted. You will be signed out and your data will be deleted within 30 days.',
-                [
-                  {
-                    text: 'OK',
-                    onPress: async () => {
-                      await signOut();
-                      router.replace('/auth/sign-in' as any);
-                    },
-                  },
-                ]
-              );
-            } catch (error) {
-              Alert.alert('Error', 'Failed to submit deletion request. Please try again.');
-            } finally {
-              setIsDeleting(false);
-            }
-          },
-        },
-      ]
-    );
+  const profile = user as UserRecord | null;
+  const name = fullName(profile);
+  const role = profile?.role;
+  const isGuard = role === 'guard';
+  const kyc = kycMeta(profile?.kycStatus);
+  const version = Constants.expoConfig?.version;
+
+  const handleExport = async () => {
+    if (!profile || exporting) return;
+    setExporting(true);
+    setNotice(null);
+    try {
+      const { message, partial } = await exportMyData(profile.id);
+      if (message) setNotice({ tone: partial ? 'info' : 'success', message });
+    } catch (error) {
+      logger.error('[Profile] Data export failed', error);
+      setNotice({ tone: 'error', message: 'Your data could not be exported. Please try again.' });
+    } finally {
+      setExporting(false);
+    }
   };
 
-  const handleExportData = async () => {
-    if (!user) return;
-    setIsExporting(true);
+  const handleResetPassword = async () => {
+    if (!profile?.email || sendingReset) return;
+    setSendingReset(true);
+    setNotice(null);
     try {
-      const data = await gdprService.exportUserData(user.id);
-      Alert.alert(
-        'Data Export',
-        `Your data has been exported. Total records: ${Object.keys(data).length}. In a production app, this would be downloaded as a JSON file.`,
-        [{ text: 'OK' }]
+      const result = await resetPassword(profile.email);
+      setNotice(
+        result.success
+          ? { tone: 'success', message: `We sent a password reset link to ${profile.email}.` }
+          : { tone: 'error', message: result.error ?? 'We could not send the reset email.' }
       );
-      console.log('[Profile] Exported data:', data);
-    } catch (error) {
-      Alert.alert('Error', 'Failed to export data. Please try again.');
     } finally {
-      setIsExporting(false);
+      setSendingReset(false);
     }
   };
 
   const handleSignOut = async () => {
-    const ok = await confirm(
-      'Cerrar sesion',
-      'Seguro que quieres cerrar sesion?',
-      'Cerrar sesion',
-      'Cancelar',
-      true
-    );
+    const ok = await confirm('Sign out?', 'You will need your email and password to sign back in.', 'Sign out', 'Cancel', true);
     if (!ok) return;
+    setSigningOut(true);
     await signOut();
-    router.replace('/auth/sign-in' as any);
-  };
-
-  const getKYCStatusColor = () => {
-    switch (user?.kycStatus) {
-      case 'approved': return Colors.success;
-      case 'rejected': return Colors.error;
-      default: return Colors.warning;
-    }
-  };
-
-  const getKYCStatusIcon = () => {
-    switch (user?.kycStatus) {
-      case 'approved': return <CheckCircle size={20} color={Colors.success} />;
-      case 'rejected': return <AlertCircle size={20} color={Colors.error} />;
-      default: return <AlertCircle size={20} color={Colors.warning} />;
-    }
+    router.replace('/auth/sign-in');
   };
 
   return (
-    <View style={styles.container}>
+    <Screen glow keyboard>
       <Stack.Screen options={{ headerShown: false }} />
-      
-      <View style={[styles.header, { paddingTop: insets.top + 24 }]}>
-        <Text style={styles.title}>Profile</Text>
-      </View>
+      <ScreenHeader eyebrow={roleLabel(role)} title="Profile" />
 
-      <ScrollView style={styles.content} contentContainerStyle={styles.scrollContent}>
-        <View style={styles.profileCard}>
-          <View style={styles.avatarContainer}>
-            <User size={48} color={Colors.gold} />
-          </View>
-          <Text style={styles.name}>
-            {user?.firstName} {user?.lastName}
-          </Text>
-          <View style={styles.roleBadge}>
-            <Shield size={16} color={Colors.gold} />
-            <Text style={styles.roleText}>{user?.role.toUpperCase()}</Text>
-          </View>
-        </View>
-
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Account Information</Text>
-          
-          <View style={styles.infoCard}>
-            <View style={styles.infoRow}>
-              <Mail size={20} color={Colors.textSecondary} />
-              <View style={styles.infoContent}>
-                <Text style={styles.infoLabel}>Email</Text>
-                <Text style={styles.infoValue}>{user?.email}</Text>
-              </View>
-            </View>
-
-            <View style={styles.divider} />
-
-            <View style={styles.infoRow}>
-              <Phone size={20} color={Colors.textSecondary} />
-              <View style={styles.infoContent}>
-                <Text style={styles.infoLabel}>Phone</Text>
-                <Text style={styles.infoValue}>{user?.phone}</Text>
-              </View>
-            </View>
-
-            <View style={styles.divider} />
-
-            <View style={styles.infoRow}>
-              <Globe size={20} color={Colors.textSecondary} />
-              <View style={styles.infoContent}>
-                <Text style={styles.infoLabel}>Language</Text>
-                <Text style={styles.infoValue}>{user?.language.toUpperCase()}</Text>
-              </View>
-            </View>
+      <Card style={styles.identity}>
+        <Avatar name={name} uri={profile?.photos?.[0]} size={64} verified={isGuard && profile?.kycStatus === 'approved'} />
+        <View style={styles.identityText}>
+          <AppText variant="title2" numberOfLines={2}>
+            {role === 'company' && profile?.companyName ? profile.companyName : name}
+          </AppText>
+          {role === 'company' && profile?.companyName ? (
+            <AppText variant="footnote" numberOfLines={1}>
+              {name}
+            </AppText>
+          ) : null}
+          <View style={styles.badges}>
+            <Badge label={roleLabel(role)} tone="gold" />
+            {isGuard ? <Badge label={kyc.label} tone={kyc.tone} icon={ShieldCheck} /> : null}
           </View>
         </View>
+      </Card>
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Verification Status</Text>
-          
-          <View style={styles.kycCard}>
-            <View style={styles.kycHeader}>
-              {getKYCStatusIcon()}
-              <Text style={[styles.kycStatus, { color: getKYCStatusColor() }]}>
-                {user?.kycStatus.toUpperCase()}
-              </Text>
-            </View>
-            <Text style={styles.kycDescription}>
-              {user?.kycStatus === 'approved' 
-                ? 'Your account is fully verified' 
-                : user?.kycStatus === 'rejected'
-                ? 'Verification failed. Please contact support.'
-                : 'Your documents are under review'}
-            </Text>
-            {user?.role === 'guard' && (
-              <TouchableOpacity
-                style={styles.uploadButton}
-                onPress={() => router.push('/kyc-documents' as any)}
-              >
-                <Text style={styles.uploadButtonText}>
-                  {user?.kycStatus === 'approved' ? 'View My Documents' : 'Upload Documents'}
-                </Text>
-              </TouchableOpacity>
-            )}
-          </View>
-        </View>
+      {notice ? <Notice tone={notice.tone} message={notice.message} onDismiss={() => setNotice(null)} style={styles.notice} /> : null}
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Data & Privacy</Text>
-          
-          <TouchableOpacity 
-            style={styles.actionButton} 
-            onPress={handleExportData}
-            disabled={isExporting}
-          >
-            {isExporting ? (
+      <SectionTitle title="Account" />
+      <ListGroup>
+        <ListRow icon={Mail} title="Email" value={profile?.email || '—'} />
+        <ListRow icon={Phone} title="Phone" value={profile?.phone || '—'} />
+        <ListRow
+          icon={Globe}
+          title="Language"
+          value={profile?.language ? LANGUAGE_LABEL[profile.language] ?? String(profile.language).toUpperCase() : '—'}
+        />
+        {role === 'company' ? <ListRow icon={Building2} title="Company" value={profile?.companyName || '—'} /> : null}
+      </ListGroup>
+
+      {isGuard && profile ? <ProtectorProfileSection guard={profile} /> : null}
+
+      {isGuard ? (
+        <>
+          <SectionTitle title="Verification" />
+          <ListGroup>
+            <ListRow
+              icon={ShieldCheck}
+              title="My documents"
+              subtitle={
+                profile?.kycStatus === 'approved'
+                  ? 'Verified — view or update your files'
+                  : profile?.kycStatus === 'rejected'
+                  ? 'Not approved — upload updated files'
+                  : 'Upload your ID and license for review'
+              }
+              onPress={() => router.push('/kyc-documents')}
+            />
+          </ListGroup>
+        </>
+      ) : null}
+
+      <SectionTitle title="Security" />
+      <ListGroup>
+        <ListRow
+          icon={KeyRound}
+          title="Reset password"
+          subtitle={profile?.email ? `Email a reset link to ${profile.email}` : undefined}
+          onPress={handleResetPassword}
+          trailing={sendingReset ? <ActivityIndicator size="small" color={Colors.gold} /> : undefined}
+          showChevron={!sendingReset}
+        />
+      </ListGroup>
+
+      <SectionTitle title="Privacy" />
+      <ListGroup>
+        <ListRow
+          icon={SlidersHorizontal}
+          title="Privacy & data"
+          subtitle="Consent preferences and account deletion"
+          onPress={() => router.push('/privacy-settings')}
+        />
+        <ListRow icon={FileText} title="Privacy policy" onPress={() => router.push('/privacy-policy')} />
+        <ListRow
+          icon={Download}
+          title="Export my data"
+          subtitle="A copy of your profile, bookings and messages (JSON)"
+          onPress={handleExport}
+          trailing={exporting ? <ActivityIndicator size="small" color={Colors.gold} /> : undefined}
+          showChevron={!exporting}
+        />
+      </ListGroup>
+
+      <SectionTitle title="Session" />
+      <ListGroup>
+        <ListRow
+          icon={LogOut}
+          title={signingOut ? 'Signing out…' : 'Sign out'}
+          destructive
+          onPress={handleSignOut}
+          showChevron={false}
+        />
+        <ListRow
+          icon={Trash2}
+          title="Delete account"
+          subtitle="Request deletion of your account and data"
+          destructive
+          onPress={() => router.push('/privacy-settings')}
+        />
+      </ListGroup>
+
+      <AppText variant="caption" color={Colors.textTertiary} align="center" style={styles.version}>
+        Escolta Pro{version ? ` · Version ${version}` : ''}
+      </AppText>
+    </Screen>
+  );
+}
+
+const LANGUAGE_OPTIONS: Language[] = ['es', 'en', 'fr', 'de'];
+
+type GuardProfile = UserRecord & { bio?: string; languages?: Language[] };
+
+// Lo que un escolta controla de su ficha publica. El listado de clientes solo
+// muestra escoltas verificados, con availability === true (booleano) y una
+// tarifa positiva; antes no habia pantalla para fijar nada de eso.
+function ProtectorProfileSection({ guard }: { guard: GuardProfile }) {
+  const { updateUser } = useAuth();
+  const available = guard.availability === true;
+  const [savingAvailability, setSavingAvailability] = useState(false);
+  const [availabilityError, setAvailabilityError] = useState<string | null>(null);
+
+  const [rate, setRate] = useState('');
+  const [bio, setBio] = useState('');
+  const [languages, setLanguages] = useState<Language[]>([]);
+  const [rateError, setRateError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveResult, setSaveResult] = useState<{ tone: 'success' | 'error'; message: string } | null>(null);
+
+  const savedRate = typeof guard.hourlyRate === 'number' && guard.hourlyRate > 0 ? guard.hourlyRate : null;
+  const savedLanguages = Array.isArray(guard.languages) ? guard.languages : guard.language ? [guard.language] : [];
+  const savedLangKey = savedLanguages.join(',');
+
+  useEffect(() => {
+    setRate(savedRate !== null ? String(savedRate) : '');
+    setBio(typeof guard.bio === 'string' ? guard.bio : '');
+    setLanguages(savedLangKey ? (savedLangKey.split(',') as Language[]) : []);
+  }, [savedRate, guard.bio, savedLangKey]);
+
+  const toggleAvailability = async (value: boolean) => {
+    setSavingAvailability(true);
+    setAvailabilityError(null);
+    try {
+      await updateUser({ availability: value } as unknown as Partial<User>);
+    } catch (error) {
+      logger.error('[Profile] Failed to update availability', error);
+      setAvailabilityError('Your availability could not be changed. Please try again.');
+    } finally {
+      setSavingAvailability(false);
+    }
+  };
+
+  const toggleLanguage = (lang: Language) => {
+    setSaveResult(null);
+    setLanguages((prev) => (prev.includes(lang) ? prev.filter((l) => l !== lang) : [...prev, lang]));
+  };
+
+  const save = async () => {
+    const parsed = Number(rate.replace(',', '.'));
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      setRateError('Enter your rate in MXN, greater than 0');
+      return;
+    }
+    setRateError(null);
+    setSaving(true);
+    setSaveResult(null);
+    try {
+      await updateUser({
+        hourlyRate: Math.round(parsed * 100) / 100,
+        bio: bio.trim(),
+        languages: languages.length ? languages : savedLanguages,
+      } as unknown as Partial<User>);
+      setSaveResult({ tone: 'success', message: 'Your protector profile was saved.' });
+    } catch (error) {
+      logger.error('[Profile] Failed to save protector profile', error);
+      setSaveResult({ tone: 'error', message: 'Your changes could not be saved. Please try again.' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const listedHint =
+    guard.kycStatus !== 'approved'
+      ? 'You appear to clients once your documents are verified.'
+      : savedRate === null
+      ? 'Set your hourly rate to appear to clients.'
+      : available
+      ? 'Clients can find and book you.'
+      : 'You are hidden from new bookings.';
+
+  return (
+    <>
+      <SectionTitle title="Protector profile" />
+      <ListGroup>
+        <ListRow
+          icon={CircleDot}
+          title="Available for new jobs"
+          subtitle={listedHint}
+          showChevron={false}
+          trailing={
+            savingAvailability ? (
               <ActivityIndicator size="small" color={Colors.gold} />
             ) : (
-              <Download size={20} color={Colors.gold} />
-            )}
-            <Text style={styles.actionButtonText}>Export My Data</Text>
-          </TouchableOpacity>
+              <Switch
+                value={available}
+                onValueChange={toggleAvailability}
+                trackColor={{ false: Colors.borderStrong, true: Colors.goldDark }}
+                thumbColor={available ? Colors.goldLight : Colors.textSecondary}
+                ios_backgroundColor={Colors.borderStrong}
+                accessibilityLabel="Available for new jobs"
+              />
+            )
+          }
+        />
+      </ListGroup>
+      {availabilityError ? <Notice tone="error" message={availabilityError} style={styles.notice} /> : null}
 
-          <TouchableOpacity 
-            style={[styles.actionButton, styles.deleteButton]} 
-            onPress={handleDeleteAccount}
-            disabled={isDeleting}
-          >
-            {isDeleting ? (
-              <ActivityIndicator size="small" color={Colors.error} />
-            ) : (
-              <Trash2 size={20} color={Colors.error} />
-            )}
-            <Text style={[styles.actionButtonText, styles.deleteButtonText]}>Delete Account</Text>
-          </TouchableOpacity>
+      <Card style={styles.protectorCard}>
+        <Input
+          label="Hourly rate (MXN)"
+          placeholder="e.g. 250"
+          value={rate}
+          onChangeText={(t) => {
+            setRate(t);
+            setSaveResult(null);
+            if (rateError) setRateError(null);
+          }}
+          error={rateError}
+          hint={savedRate !== null ? `Currently ${formatMXN(savedRate)} per hour, before fees.` : 'What clients pay per hour, before fees.'}
+          keyboardType="decimal-pad"
+          accessibilityLabel="Hourly rate in pesos"
+        />
+        <Input
+          label="About you"
+          placeholder="Experience, specialties, certifications…"
+          value={bio}
+          onChangeText={(t) => {
+            setBio(t);
+            setSaveResult(null);
+          }}
+          multiline
+          maxLength={400}
+          accessibilityLabel="Short bio shown to clients"
+        />
+        <View style={styles.langs}>
+          <AppText variant="caption" color={Colors.textSecondary}>
+            Languages you speak
+          </AppText>
+          <View style={styles.langChips}>
+            {LANGUAGE_OPTIONS.map((lang) => (
+              <Chip key={lang} label={LANGUAGE_LABEL[lang]} selected={languages.includes(lang)} onPress={() => toggleLanguage(lang)} />
+            ))}
+          </View>
         </View>
-
-        <TouchableOpacity style={styles.signOutButton} onPress={handleSignOut}>
-          <LogOut size={20} color={Colors.error} />
-          <Text style={styles.signOutText}>Sign Out</Text>
-        </TouchableOpacity>
-
-        <Text style={styles.version}>Version 1.0.0 (Phase 1 MVP)</Text>
-      </ScrollView>
-    </View>
+        {saveResult ? <Notice tone={saveResult.tone} message={saveResult.message} /> : null}
+        <Button title="Save protector profile" variant="secondary" onPress={save} loading={saving} />
+      </Card>
+    </>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  protectorCard: {
+    gap: Space.lg,
+    marginTop: Space.md,
+  },
+  langs: {
+    gap: Space.sm,
+  },
+  langChips: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Space.sm,
+  },
+  identity: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Space.lg,
+  },
+  identityText: {
     flex: 1,
-    backgroundColor: Colors.background,
+    gap: Space.xs,
   },
-  header: {
-    padding: 24,
-    paddingTop: 60,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-  },
-  title: {
-    fontSize: 32,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-  },
-  content: {
-    flex: 1,
-  },
-  scrollContent: {
-    padding: 16,
-  },
-  profileCard: {
-    backgroundColor: Colors.surface,
-    borderRadius: 16,
-    padding: 24,
-    alignItems: 'center',
-    marginBottom: 24,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  avatarContainer: {
-    width: 96,
-    height: 96,
-    borderRadius: 48,
-    backgroundColor: Colors.background,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 16,
-    borderWidth: 2,
-    borderColor: Colors.gold,
-  },
-  name: {
-    fontSize: 24,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-    marginBottom: 8,
-  },
-  roleBadge: {
+  badges: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: Colors.gold + '20',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
+    flexWrap: 'wrap',
+    gap: Space.sm,
+    marginTop: Space.xs,
   },
-  roleText: {
-    fontSize: 14,
-    fontWeight: '700' as const,
-    color: Colors.gold,
-  },
-  section: {
-    marginBottom: 24,
-  },
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-    marginBottom: 12,
-  },
-  infoCard: {
-    backgroundColor: Colors.surface,
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  infoRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  infoContent: {
-    flex: 1,
-  },
-  infoLabel: {
-    fontSize: 12,
-    color: Colors.textTertiary,
-    marginBottom: 4,
-  },
-  infoValue: {
-    fontSize: 16,
-    color: Colors.textPrimary,
-    fontWeight: '600' as const,
-  },
-  divider: {
-    height: 1,
-    backgroundColor: Colors.border,
-    marginVertical: 16,
-  },
-  kycCard: {
-    backgroundColor: Colors.surface,
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  kycHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 8,
-  },
-  kycStatus: {
-    fontSize: 16,
-    fontWeight: '700' as const,
-  },
-  kycDescription: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-    marginBottom: 12,
-  },
-  uploadButton: {
-    backgroundColor: Colors.gold,
-    borderRadius: 12,
-    padding: 12,
-    alignItems: 'center',
-  },
-  uploadButtonText: {
-    color: Colors.background,
-    fontSize: 14,
-    fontWeight: '700' as const,
-  },
-  signOutButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: Colors.surface,
-    borderRadius: 12,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: Colors.error,
-    marginTop: 8,
-  },
-  signOutText: {
-    color: Colors.error,
-    fontSize: 16,
-    fontWeight: '700' as const,
+  notice: {
+    marginTop: Space.lg,
   },
   version: {
-    fontSize: 12,
-    color: Colors.textTertiary,
-    textAlign: 'center' as const,
-    marginTop: 24,
-    marginBottom: 8,
-  },
-  actionButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: Colors.surface,
-    borderRadius: 12,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: Colors.gold,
-    marginBottom: 12,
-  },
-  actionButtonText: {
-    color: Colors.gold,
-    fontSize: 16,
-    fontWeight: '700' as const,
-  },
-  deleteButton: {
-    borderColor: Colors.error,
-  },
-  deleteButtonText: {
-    color: Colors.error,
+    marginTop: Space.xxxl,
   },
 });

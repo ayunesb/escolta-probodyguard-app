@@ -52,7 +52,7 @@ BRAINTREE_PUBLIC_KEY
 ```
 BRAINTREE_PRIVATE_KEY
 ```
-**Value (Sandbox):** `93d6e4e2976c96f93d2d472395ed6633`
+**Value (Sandbox):** `REDACTED`
 **Value (Production):** _[Your production private key]_
 **Description:** Braintree private key for server-side operations
 

@@ -1,812 +1,580 @@
-import { useState, useEffect } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  TouchableOpacity,
-  Dimensions,
-  ActivityIndicator,
-} from 'react-native';
-import { SafeImage } from '@/components/SafeImage';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { FlatList, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
-import { Shield, Star, MapPin, Languages, Award, ChevronRight, Map as MapIcon, List, Calendar, Clock, DollarSign } from 'lucide-react-native';
+import {
+  AlertTriangle,
+  ChevronRight,
+  Clock,
+  List,
+  Map as MapIcon,
+  MapPin,
+  SearchX,
+  ShieldCheck,
+  Star,
+  Wallet,
+} from 'lucide-react-native';
 import { useAuth } from '@/contexts/AuthContext';
-import { guardService } from '@/services/guardService';
+import { guardService, hasCompleteProfile, hasCoordinates } from '@/services/guardService';
 import { bookingService } from '@/services/bookingService';
-import { Booking, Guard } from '@/types';
+import type { Booking, Guard } from '@/types';
 import Colors from '@/constants/colors';
+import { ICON_STROKE, Radius, Shadow, Space } from '@/constants/design';
+import {
+  AppText,
+  Avatar,
+  Badge,
+  Card,
+  Chip,
+  Divider,
+  EmptyState,
+  Screen,
+  ScreenHeader,
+  SectionTitle,
+  SegmentedControl,
+  SkeletonCard,
+} from '@/components/ui';
 import MapView, { Marker, PROVIDER_DEFAULT } from '@/components/MapView';
-
-const { width } = Dimensions.get('window');
+import { GuardCard } from '@/components/funnel/GuardCard';
+import {
+  bookingStart,
+  describeBookingOptions,
+  distanceKm,
+  formatScheduled,
+  guardDisplayName,
+  hasRating,
+  isVerified,
+  languageName,
+  todayEyebrow,
+} from '@/components/funnel/format';
+import { useSilentDeviceLocation } from '@/components/funnel/deviceLocation';
+import { formatMXN } from '@/utils/pricing';
 
 export default function HomeScreen() {
   const { user } = useAuth();
+  return (
+    <>
+      <Stack.Screen options={{ headerShown: false }} />
+      {user?.role === 'guard' ? <GuardJobsHome guardId={user.id} /> : <ClientRosterHome />}
+    </>
+  );
+}
+
+// =====================================================================
+// Client: a curated roster of protectors
+// =====================================================================
+
+type Focus = 'all' | 'top' | 'nearby' | 'value';
+type LoadState = 'loading' | 'ready' | 'error';
+
+const TOP_RATED_MIN = 4.5;
+
+// Recommended order: proven track record first, then experience, then name.
+const byRecommendation = (a: Guard, b: Guard) =>
+  Number(hasRating(b)) - Number(hasRating(a)) ||
+  b.rating - a.rating ||
+  b.completedJobs - a.completedJobs ||
+  guardDisplayName(a).localeCompare(guardDisplayName(b));
+
+function ClientRosterHome() {
   const router = useRouter();
-  const insets = useSafeAreaInsets();
-  const [selectedFilter, setSelectedFilter] = useState<'all' | 'armed' | 'unarmed'>('all');
-  const [viewMode, setViewMode] = useState<'map' | 'list'>('map');
-  const [pendingBookings, setPendingBookings] = useState<Booking[]>([]);
-  const [isLoadingJobs, setIsLoadingJobs] = useState(true);
-  const [availableGuards, setAvailableGuards] = useState<Guard[]>([]);
-  const [isLoadingGuards, setIsLoadingGuards] = useState(true);
+  // Never prompts here: distances appear only if location was already allowed.
+  const currentLocation = useSilentDeviceLocation();
+  const [guards, setGuards] = useState<Guard[]>([]);
+  const [state, setState] = useState<LoadState>('loading');
+  const [refreshing, setRefreshing] = useState(false);
+  const [viewMode, setViewMode] = useState<'list' | 'map'>('list');
+  const [focus, setFocus] = useState<Focus>('all');
+  const [language, setLanguage] = useState<string | null>(null);
+
+  const load = useCallback(async (isRefresh = false) => {
+    if (isRefresh) setRefreshing(true);
+    else setState('loading');
+    try {
+      const list = await guardService.listAvailableGuards();
+      // A profile without an hourly rate can't be priced or booked: hide it.
+      setGuards(list.filter(hasCompleteProfile));
+      setState('ready');
+    } catch {
+      setState('error');
+    } finally {
+      setRefreshing(false);
+    }
+  }, []);
 
   useEffect(() => {
-    if (user?.role === 'guard') return;
-    setIsLoadingGuards(true);
-    guardService.listAvailableGuards().then((guards) => {
-      setAvailableGuards(guards.filter(g => g.availability));
-      setIsLoadingGuards(false);
-    });
-  }, [user]);
+    load();
+  }, [load]);
 
-  useEffect(() => {
-    if (!user || user.role !== 'guard') return;
+  // Real distance only when BOTH the client and the guard have real coordinates.
+  const distances = useMemo(() => {
+    const map = new Map<string, number>();
+    if (!currentLocation) return map;
+    for (const g of guards) {
+      if (hasCoordinates(g)) map.set(g.id, distanceKm(currentLocation, g));
+    }
+    return map;
+  }, [guards, currentLocation]);
 
-    console.log('[Home] Setting up Firebase listener for guard:', user.id);
-    setIsLoadingJobs(true);
+  const languages = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const g of guards) for (const l of g.languages) counts.set(l, (counts.get(l) ?? 0) + 1);
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  }, [guards]);
 
-    const unsubscribe = bookingService.subscribeToGuardBookings(user.id, (bookings) => {
-      // 'confirmed' = pagado, esperando que el escolta acepte. El pago pasa
-      // el estado de 'pending' a 'confirmed' directamente, nunca a
-      // 'accepted' — sin esto, ninguna reserva ya pagada aparecia aqui.
-      const pending = bookings.filter(b => b.status === 'pending' || b.status === 'confirmed');
-      console.log('[Home] Firebase update - pending jobs:', pending.length);
-      setPendingBookings(pending);
-      setIsLoadingJobs(false);
-    });
+  const visible = useMemo(() => {
+    let list = language ? guards.filter((g) => g.languages.includes(language as Guard['languages'][number])) : guards;
+    switch (focus) {
+      case 'top':
+        list = list.filter((g) => hasRating(g) && g.rating >= TOP_RATED_MIN).sort((a, b) => b.rating - a.rating || b.completedJobs - a.completedJobs);
+        break;
+      case 'nearby':
+        list = list.filter((g) => distances.has(g.id)).sort((a, b) => distances.get(a.id)! - distances.get(b.id)!);
+        break;
+      case 'value':
+        list = [...list].sort((a, b) => a.hourlyRate - b.hourlyRate);
+        break;
+      default:
+        list = [...list].sort(byRecommendation);
+    }
+    return list;
+  }, [guards, language, focus, distances]);
 
-    return () => {
-      console.log('[Home] Cleaning up Firebase listener');
-      unsubscribe();
-    };
-  }, [user]);
-  
-  // Centro del mapa: Playa del Carmen. Antes era 40.7580 / -73.9855, o sea
-  // Manhattan, que es donde aterrizaba el mapa de todos los usuarios.
-  const centerLocation = {
-    latitude: 20.6296,
-    longitude: -87.0739,
+  const openGuard = (id: string) => router.push(`/guard/${id}`);
+  const clearFilters = () => {
+    setFocus('all');
+    setLanguage(null);
   };
 
-  if (user?.role === 'guard') {
-    return (
-      <View style={styles.container}>
-        <Stack.Screen options={{ headerShown: false }} />
-        
-        <View style={[styles.header, { paddingTop: insets.top + 24 }]}>
-          <Text style={styles.title}>Available Jobs</Text>
-          <Text style={styles.subtitle}>
-            {isLoadingJobs ? 'Loading...' : `${pendingBookings.length} job${pendingBookings.length !== 1 ? 's' : ''} available`}
-          </Text>
-        </View>
-
-        <ScrollView style={styles.content} contentContainerStyle={styles.scrollContent}>
-          {isLoadingJobs ? (
-            <View style={styles.loadingContainer}>
-              <ActivityIndicator size="large" color={Colors.gold} />
-              <Text style={styles.loadingText}>Loading available jobs...</Text>
-            </View>
-          ) : pendingBookings.length === 0 ? (
-            <View style={styles.emptyState}>
-              <Shield size={64} color={Colors.textTertiary} />
-              <Text style={styles.emptyText}>No jobs available</Text>
-              <Text style={styles.emptySubtext}>
-                Check back soon for new protection assignments
-              </Text>
-            </View>
-          ) : (
-            pendingBookings.map((booking) => (
-              <TouchableOpacity
-                key={booking.id}
-                style={styles.jobCard}
-                onPress={() => router.push(`/booking/${booking.id}` as any)}
-                accessible={true}
-                accessibilityLabel={`New job ${booking.id.slice(0, 8)}, ${booking.duration} hours, payout ${booking.guardPayout}`}
-                accessibilityHint="Double tap to view job details and accept or reject"
-                accessibilityRole="button"
-              >
-                <View style={styles.jobHeader}>
-                  <View style={styles.jobBadge}>
-                    <Text style={styles.jobBadgeText}>NEW JOB</Text>
-                  </View>
-                  <Text style={styles.jobId}>#{booking.id.slice(0, 8)}</Text>
-                </View>
-
-                <View style={styles.jobDetail}>
-                  <Calendar size={16} color={Colors.textSecondary} />
-                  <Text style={styles.jobDetailText}>
-                    {booking.scheduledDate} at {booking.scheduledTime}
-                  </Text>
-                </View>
-
-                <View style={styles.jobDetail}>
-                  <MapPin size={16} color={Colors.textSecondary} />
-                  <Text style={styles.jobDetailText} numberOfLines={1}>
-                    {booking.pickupAddress}
-                  </Text>
-                </View>
-
-                <View style={styles.jobDetail}>
-                  <Clock size={16} color={Colors.textSecondary} />
-                  <Text style={styles.jobDetailText}>
-                    {booking.duration} hours • {booking.protectionType} • {booking.vehicleType}
-                  </Text>
-                </View>
-
-                <View style={styles.jobFooter}>
-                  <View style={styles.jobDetail}>
-                    <DollarSign size={16} color={Colors.gold} />
-                    <Text style={styles.jobPayout}>${booking.guardPayout}</Text>
-                  </View>
-                  <View style={styles.jobActions}>
-                    <TouchableOpacity
-                      style={styles.viewButton}
-                      onPress={() => router.push(`/booking/${booking.id}` as any)}
-                    >
-                      <Text style={styles.viewButtonText}>View Details</Text>
-                      <ChevronRight size={16} color={Colors.gold} />
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              </TouchableOpacity>
-            ))
-          )}
+  const header = (
+    <View>
+      <ScreenHeader
+        eyebrow={todayEyebrow()}
+        title="Book protection"
+        subtitle="Vetted close-protection professionals, ready when you are."
+        right={
+          <SegmentedControl
+            value={viewMode}
+            onChange={setViewMode}
+            options={[
+              { value: 'list', icon: List, accessibilityLabel: 'List view' },
+              { value: 'map', icon: MapIcon, accessibilityLabel: 'Map view' },
+            ]}
+          />
+        }
+      />
+      {state === 'ready' && guards.length > 0 ? (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips} style={styles.chipsScroll}>
+          <Chip label="All" count={guards.length} selected={focus === 'all' && !language} onPress={clearFilters} />
+          <Chip label="Top rated" icon={Star} selected={focus === 'top'} onPress={() => setFocus(focus === 'top' ? 'all' : 'top')} />
+          {distances.size > 0 ? (
+            <Chip label="Nearby" icon={MapPin} selected={focus === 'nearby'} onPress={() => setFocus(focus === 'nearby' ? 'all' : 'nearby')} />
+          ) : null}
+          <Chip label="Best value" icon={Wallet} selected={focus === 'value'} onPress={() => setFocus(focus === 'value' ? 'all' : 'value')} />
+          {languages.length > 1
+            ? languages.map(([code, count]) => (
+                <Chip
+                  key={code}
+                  label={languageName(code)}
+                  count={count}
+                  selected={language === code}
+                  onPress={() => setLanguage(language === code ? null : code)}
+                />
+              ))
+            : null}
         </ScrollView>
+      ) : null}
+      {state === 'ready' && guards.length > 0 && viewMode === 'list' ? (
+        <SectionTitle title={`${visible.length} ${visible.length === 1 ? 'protector' : 'protectors'} available`} />
+      ) : null}
+    </View>
+  );
+
+  const statusView =
+    state === 'loading' ? (
+      <View style={styles.skeletons}>
+        <SkeletonCard media />
+        <SkeletonCard media />
+        <SkeletonCard media />
       </View>
+    ) : state === 'error' ? (
+      <EmptyState
+        icon={AlertTriangle}
+        title="Couldn't load protectors"
+        message="Check your connection and try again."
+        actionLabel="Try again"
+        onAction={() => load()}
+      />
+    ) : guards.length === 0 ? (
+      <EmptyState
+        icon={ShieldCheck}
+        title="No protectors available right now"
+        message="Every protector is identity-verified before they appear here. Pull down to refresh."
+        actionLabel="Refresh"
+        onAction={() => load()}
+      />
+    ) : (
+      <EmptyState
+        icon={SearchX}
+        title="No protectors match"
+        message={focus === 'top' ? 'No one has a rating of 4.5 or higher yet.' : 'Try a different filter.'}
+        actionLabel="Show everyone"
+        onAction={clearFilters}
+      />
+    );
+
+  if (viewMode === 'map' && state === 'ready' && guards.length > 0) {
+    return (
+      <Screen scroll={false} glow>
+        <View style={styles.gutter}>{header}</View>
+        <RosterMap guards={visible} clientLocation={currentLocation} distances={distances} onOpen={openGuard} />
+      </Screen>
     );
   }
 
   return (
-    <View style={styles.container}>
-      <Stack.Screen options={{ headerShown: false }} />
-      
-      <View style={[styles.header, { paddingTop: insets.top + 24 }]}>
-        <View style={styles.headerTop}>
-          <View>
-            <Text style={styles.title}>Book Protection</Text>
-            <Text style={styles.subtitle}>Elite security professionals at your service</Text>
-          </View>
-          <View style={styles.viewToggle}>
-            <TouchableOpacity
-              style={[styles.viewToggleButton, viewMode === 'map' && styles.viewToggleButtonActive]}
-              onPress={() => setViewMode('map')}
-              accessible={true}
-              accessibilityLabel="Map view"
-              accessibilityHint="Switch to map view to see guard locations"
-              accessibilityRole="button"
-              accessibilityState={{ selected: viewMode === 'map' }}
-            >
-              <MapIcon size={18} color={viewMode === 'map' ? Colors.background : Colors.textSecondary} />
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.viewToggleButton, viewMode === 'list' && styles.viewToggleButtonActive]}
-              onPress={() => setViewMode('list')}
-              accessible={true}
-              accessibilityLabel="List view"
-              accessibilityHint="Switch to list view to see guard details"
-              accessibilityRole="button"
-              accessibilityState={{ selected: viewMode === 'list' }}
-            >
-              <List size={18} color={viewMode === 'list' ? Colors.background : Colors.textSecondary} />
-            </TouchableOpacity>
-          </View>
-        </View>
-      </View>
+    <Screen scroll={false} glow>
+      <FlatList
+        data={state === 'ready' ? visible : []}
+        keyExtractor={(g) => g.id}
+        renderItem={({ item }) => (
+          <GuardCard guard={item} distanceKm={distances.get(item.id)} onPress={() => openGuard(item.id)} />
+        )}
+        ListHeaderComponent={header}
+        ListEmptyComponent={statusView}
+        contentContainerStyle={styles.listContent}
+        showsVerticalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => load(true)} tintColor={Colors.gold} colors={[Colors.gold]} />}
+      />
+    </Screen>
+  );
+}
 
-      <View style={styles.filterContainer}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filters}>
-          <TouchableOpacity
-            style={[styles.filterButton, selectedFilter === 'all' && styles.filterButtonActive]}
-            onPress={() => setSelectedFilter('all')}
+// Map view. Only guards with REAL coordinates get a marker; the viewport is
+// centred on the client, else on the guards, else on a default city.
+function RosterMap({
+  guards,
+  clientLocation,
+  distances,
+  onOpen,
+}: {
+  guards: Guard[];
+  clientLocation: { latitude: number; longitude: number } | null;
+  distances: Map<string, number>;
+  onOpen: (id: string) => void;
+}) {
+  const mapped = guards.filter(hasCoordinates);
+  const center = clientLocation
+    ? clientLocation
+    : mapped.length > 0
+      ? {
+          latitude: mapped.reduce((s, g) => s + g.latitude, 0) / mapped.length,
+          longitude: mapped.reduce((s, g) => s + g.longitude, 0) / mapped.length,
+        }
+      : { latitude: 20.6296, longitude: -87.0739 }; // Playa del Carmen: viewport only, not data
+
+  return (
+    <View style={styles.mapWrap}>
+      <MapView
+        provider={PROVIDER_DEFAULT}
+        style={StyleSheet.absoluteFill}
+        initialRegion={{ ...center, latitudeDelta: 0.08, longitudeDelta: 0.08 }}
+        showsUserLocation={!!clientLocation}
+      >
+        {mapped.map((g) => (
+          <Marker
+            key={g.id}
+            coordinate={{ latitude: g.latitude, longitude: g.longitude }}
+            onPress={() => onOpen(g.id)}
+            accessibilityLabel={guardDisplayName(g)}
           >
-            <Text style={[styles.filterText, selectedFilter === 'all' && styles.filterTextActive]}>
-              All Protectors
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.filterButton, selectedFilter === 'armed' && styles.filterButtonActive]}
-            onPress={() => setSelectedFilter('armed')}
-          >
-            <Shield size={16} color={selectedFilter === 'armed' ? Colors.background : Colors.textSecondary} />
-            <Text style={[styles.filterText, selectedFilter === 'armed' && styles.filterTextActive]}>
-              Armed
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.filterButton, selectedFilter === 'unarmed' && styles.filterButtonActive]}
-            onPress={() => setSelectedFilter('unarmed')}
-          >
-            <Text style={[styles.filterText, selectedFilter === 'unarmed' && styles.filterTextActive]}>
-              Unarmed
-            </Text>
-          </TouchableOpacity>
-        </ScrollView>
-      </View>
-
-      {viewMode === 'map' ? (
-        <View style={styles.mapContainer}>
-          <MapView
-            provider={PROVIDER_DEFAULT}
-            style={styles.map}
-            initialRegion={{
-              latitude: centerLocation.latitude,
-              longitude: centerLocation.longitude,
-              latitudeDelta: 0.05,
-              longitudeDelta: 0.05,
-            }}
-            showsUserLocation={true}
-          >
-            {availableGuards.map((guard) => (
-              <Marker
-                key={guard.id}
-                coordinate={{
-                  latitude: guard.latitude || centerLocation.latitude,
-                  longitude: guard.longitude || centerLocation.longitude,
-                }}
-                onPress={() => router.push(`/guard/${guard.id}`)}
-              >
-                <View style={styles.guardMarker}>
-                  <Shield size={20} color={Colors.gold} />
-                </View>
-              </Marker>
-            ))}
-          </MapView>
-          
-          <View style={styles.mapOverlay}>
-            <ScrollView 
-              horizontal 
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.guardCardsHorizontal}
-            >
-              {availableGuards.map((guard) => (
-                <TouchableOpacity
-                  key={guard.id}
-                  style={styles.guardCardCompact}
-                  onPress={() => router.push(`/guard/${guard.id}`)}
-                >
-                  <SafeImage source={{ uri: guard.photos?.[0] }} style={styles.guardImageCompact} fallbackSource={require('@/assets/icon.png')} />
-                  <View style={styles.guardInfoCompact}>
-                    <Text style={styles.guardNameCompact}>
-                      {guard.firstName} {guard.lastName.charAt(0)}.
-                    </Text>
-                    <View style={styles.ratingRowCompact}>
-                      <Star size={12} color={Colors.gold} fill={Colors.gold} />
-                      <Text style={styles.ratingTextCompact}>{guard.rating.toFixed(1)}</Text>
-                    </View>
-                    <Text style={styles.rateValueCompact}>${guard.hourlyRate}/hr</Text>
-                  </View>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-          </View>
-        </View>
-      ) : (
-        <ScrollView style={styles.content} contentContainerStyle={styles.scrollContent}>
-        <View style={styles.statsBar}>
-          <View style={styles.statItem}>
-            <Text style={styles.statValue}>{availableGuards.length}</Text>
-            <Text style={styles.statLabel}>Available Now</Text>
-          </View>
-          <View style={styles.statDivider} />
-          <View style={styles.statItem}>
-            <Text style={styles.statValue}>4.9</Text>
-            <Text style={styles.statLabel}>Avg Rating</Text>
-          </View>
-          <View style={styles.statDivider} />
-          <View style={styles.statItem}>
-            <Text style={styles.statValue}>726</Text>
-            <Text style={styles.statLabel}>Jobs Completed</Text>
-          </View>
-        </View>
-
-        {isLoadingGuards ? (
-          <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color={Colors.gold} />
-          </View>
-        ) : availableGuards.length === 0 ? (
-          <View style={styles.loadingContainer}>
-            <Text style={styles.rateLabel}>No guards available right now.</Text>
-          </View>
-        ) : null}
-        {availableGuards.map((guard) => (
-          <TouchableOpacity
-            key={guard.id}
-            style={styles.guardCard}
-            onPress={() => router.push(`/guard/${guard.id}`)}
-            accessible={true}
-            accessibilityLabel={`${guard.firstName} ${guard.lastName.charAt(0)}, rated ${guard.rating.toFixed(1)} stars, ${guard.hourlyRate} per hour`}
-            accessibilityHint="Double tap to view guard profile and book protection"
-            accessibilityRole="button"
-          >
-            <SafeImage source={{ uri: guard.photos?.[0] }} style={styles.guardImage} fallbackSource={require('@/assets/icon.png')} />
-            
-            <View style={styles.guardInfo}>
-              <View style={styles.guardHeader}>
-                <View>
-                  <Text style={styles.guardName}>{guard.firstName} {guard.lastName.charAt(0)}.</Text>
-                  <View style={styles.ratingRow}>
-                    <Star size={14} color={Colors.gold} fill={Colors.gold} />
-                    <Text style={styles.ratingText}>{guard.rating.toFixed(1)}</Text>
-                    <Text style={styles.jobsText}>({guard.completedJobs} jobs)</Text>
-                  </View>
-                </View>
-                <View style={styles.verifiedBadge}>
-                  <Shield size={16} color={Colors.gold} />
-                  <Text style={styles.verifiedText}>Verified</Text>
-                </View>
-              </View>
-
-              <Text style={styles.guardBio} numberOfLines={2}>{guard.bio}</Text>
-
-              <View style={styles.guardDetails}>
-                <View style={styles.detailItem}>
-                  <MapPin size={14} color={Colors.textSecondary} />
-                  <Text style={styles.detailText}>2.3 mi away</Text>
-                </View>
-                <View style={styles.detailItem}>
-                  <Languages size={14} color={Colors.textSecondary} />
-                  <Text style={styles.detailText}>
-                    {guard.languages.map(l => l.toUpperCase()).join(', ')}
-                  </Text>
-                </View>
-              </View>
-
-              <View style={styles.certifications}>
-                {guard.certifications.slice(0, 2).map((cert, idx) => (
-                  <View key={idx} style={styles.certBadge}>
-                    <Award size={12} color={Colors.gold} />
-                    <Text style={styles.certText}>{cert}</Text>
-                  </View>
-                ))}
-              </View>
-
-              <View style={styles.guardFooter}>
-                <View>
-                  <Text style={styles.rateLabel}>Starting at</Text>
-                  <Text style={styles.rateValue}>${guard.hourlyRate}/hr</Text>
-                </View>
-                <TouchableOpacity 
-                  style={styles.bookButton}
-                  onPress={() => router.push(`/guard/${guard.id}`)}
-                  accessible={true}
-                  accessibilityLabel="Book now"
-                  accessibilityHint="Double tap to start booking this guard"
-                  accessibilityRole="button"
-                >
-                  <Text style={styles.bookButtonText}>Book Now</Text>
-                  <ChevronRight size={16} color={Colors.background} />
-                </TouchableOpacity>
-              </View>
+            <View style={styles.marker}>
+              <Avatar name={`${g.firstName} ${g.lastName}`} uri={g.photos[0]} size={34} />
             </View>
-          </TouchableOpacity>
+          </Marker>
         ))}
-        </ScrollView>
-      )}
+      </MapView>
+
+      <View style={styles.mapOverlay} pointerEvents="box-none">
+        {mapped.length === 0 ? (
+          <Card tone="raised" style={styles.mapNote}>
+            <AppText variant="callout" color={Colors.textPrimary}>
+              No protector has shared a location yet.
+            </AppText>
+            <AppText variant="footnote">Switch to the list to see everyone available.</AppText>
+          </Card>
+        ) : (
+          <FlatList
+            horizontal
+            data={mapped}
+            keyExtractor={(g) => g.id}
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.mapCards}
+            renderItem={({ item }) => (
+              <Card
+                onPress={() => onOpen(item.id)}
+                tone="raised"
+                style={styles.miniCard}
+                accessibilityLabel={`${guardDisplayName(item)}, ${formatMXN(item.hourlyRate)} per hour`}
+                accessibilityHint="Opens the profile to book protection"
+              >
+                <View style={styles.miniRow}>
+                  <Avatar name={`${item.firstName} ${item.lastName}`} uri={item.photos[0]} size={44} verified={isVerified(item)} />
+                  <View style={styles.flex}>
+                    <AppText variant="title3" numberOfLines={1}>
+                      {guardDisplayName(item)}
+                    </AppText>
+                    <AppText variant="caption" color={Colors.textTertiary} numberOfLines={1}>
+                      {hasRating(item) ? `${item.rating.toFixed(1)} rating · ` : ''}
+                      {distances.has(item.id) ? `${distances.get(item.id)!.toFixed(1)} km` : item.languages.map(languageName).join(' · ')}
+                    </AppText>
+                  </View>
+                  <AppText variant="numeric" color={Colors.goldLight}>
+                    {formatMXN(item.hourlyRate)}
+                  </AppText>
+                </View>
+              </Card>
+            )}
+          />
+        )}
+      </View>
     </View>
   );
 }
 
+// =====================================================================
+// Guard: paid requests awaiting a response (live)
+// =====================================================================
+
+function GuardJobsHome({ guardId }: { guardId: string }) {
+  const router = useRouter();
+  const [jobs, setJobs] = useState<Booking[]>([]);
+  const [state, setState] = useState<LoadState>('loading');
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    setState('loading');
+    setErrorMessage(null);
+    const unsubscribe = bookingService.subscribeToGuardBookings(
+      guardId,
+      (bookings) => {
+        // 'confirmed' = paid and waiting for this guard to accept. Never 'pending' (unpaid).
+        const open = bookings
+          .filter((b) => b.status === 'confirmed')
+          .sort((a, b) => (bookingStart(a)?.getTime() ?? 0) - (bookingStart(b)?.getTime() ?? 0));
+        setJobs(open);
+        setState('ready');
+      },
+      (error) => {
+        setErrorMessage(error.message);
+        setState('error');
+      }
+    );
+    return unsubscribe;
+  }, [guardId, attempt]);
+
+  const header = (
+    <ScreenHeader
+      eyebrow={todayEyebrow()}
+      title="Available jobs"
+      subtitle={
+        state !== 'ready'
+          ? 'Paid requests assigned to you appear here the moment they arrive.'
+          : jobs.length === 0
+            ? 'No open requests right now.'
+            : `${jobs.length} paid ${jobs.length === 1 ? 'request is' : 'requests are'} waiting for your response.`
+      }
+    />
+  );
+
+  const statusView =
+    state === 'loading' ? (
+      <View style={styles.skeletons}>
+        <SkeletonCard lines={3} />
+        <SkeletonCard lines={3} />
+      </View>
+    ) : state === 'error' ? (
+      <EmptyState
+        icon={AlertTriangle}
+        title="Couldn't load your jobs"
+        message={errorMessage ?? 'Check your connection and try again.'}
+        actionLabel="Try again"
+        onAction={() => setAttempt((n) => n + 1)}
+      />
+    ) : (
+      <EmptyState
+        icon={ShieldCheck}
+        title="No jobs waiting"
+        message="When a client books and pays for you, the request appears here instantly."
+      />
+    );
+
+  return (
+    <Screen scroll={false} glow>
+      <FlatList
+        data={state === 'ready' ? jobs : []}
+        keyExtractor={(b) => b.id}
+        ListHeaderComponent={header}
+        ListEmptyComponent={statusView}
+        contentContainerStyle={styles.listContent}
+        showsVerticalScrollIndicator={false}
+        renderItem={({ item: booking }) => (
+          <Card
+            onPress={() => router.push(`/booking/${booking.id}`)}
+            style={styles.jobCard}
+            accessibilityLabel={`New job, ${formatScheduled(booking)}, ${booking.duration} hours, payout ${formatMXN(booking.guardPayout)}`}
+            accessibilityHint="Double tap to view job details and accept or reject"
+          >
+            <View style={styles.jobHead}>
+              <Badge label="Awaiting your response" tone="info" />
+              <AppText variant="caption" color={Colors.textTertiary} tabular>
+                #{booking.id.slice(-6).toUpperCase()}
+              </AppText>
+            </View>
+
+            <AppText variant="title3" style={styles.jobWhen}>
+              {formatScheduled(booking)}
+            </AppText>
+
+            <View style={styles.jobLine}>
+              <MapPin size={16} color={Colors.textTertiary} strokeWidth={ICON_STROKE} />
+              <AppText variant="callout" numberOfLines={2} style={styles.flex}>
+                {booking.pickupAddress || 'Pickup address on the booking'}
+              </AppText>
+            </View>
+            <View style={styles.jobLine}>
+              <Clock size={16} color={Colors.textTertiary} strokeWidth={ICON_STROKE} />
+              <AppText variant="callout" style={styles.flex}>
+                {describeBookingOptions(booking)}
+              </AppText>
+            </View>
+
+            <Divider style={styles.jobDivider} />
+
+            <View style={styles.jobFoot}>
+              <View>
+                <AppText variant="overline">Your payout</AppText>
+                <AppText variant="numeric" color={Colors.goldLight} style={styles.payout}>
+                  {formatMXN(booking.guardPayout)}
+                </AppText>
+              </View>
+              <View style={styles.viewDetails}>
+                <AppText variant="callout" color={Colors.textSecondary}>
+                  View details
+                </AppText>
+                <ChevronRight size={16} color={Colors.textTertiary} strokeWidth={ICON_STROKE} />
+              </View>
+            </View>
+          </Card>
+        )}
+      />
+    </Screen>
+  );
+}
+
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: Colors.background,
-  },
-  header: {
-    padding: 24,
-    paddingTop: 60,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-  },
-  headerTop: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-  },
-  title: {
-    fontSize: 32,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-    marginBottom: 4,
-  },
-  subtitle: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-  },
-  viewToggle: {
-    flexDirection: 'row',
-    backgroundColor: Colors.surface,
-    borderRadius: 12,
-    padding: 4,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  viewToggleButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 8,
-  },
-  viewToggleButtonActive: {
-    backgroundColor: Colors.gold,
-  },
-  filterContainer: {
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-  },
-  filters: {
-    flexDirection: 'row',
-    padding: 16,
-    gap: 12,
-  },
-  filterButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: Colors.surface,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  filterButtonActive: {
-    backgroundColor: Colors.gold,
-    borderColor: Colors.gold,
-  },
-  filterText: {
-    fontSize: 14,
-    fontWeight: '600' as const,
-    color: Colors.textSecondary,
-  },
-  filterTextActive: {
-    color: Colors.background,
-  },
-  content: {
+  flex: {
     flex: 1,
   },
-  scrollContent: {
-    padding: 16,
+  gutter: {
+    paddingHorizontal: Space.gutter,
   },
-  statsBar: {
-    flexDirection: 'row',
-    backgroundColor: Colors.surface,
-    borderRadius: 16,
-    padding: 20,
-    marginBottom: 20,
-    borderWidth: 1,
-    borderColor: Colors.border,
+  listContent: {
+    paddingHorizontal: Space.gutter,
+    paddingBottom: Space.huge,
+    flexGrow: 1,
   },
-  statItem: {
+  chipsScroll: {
+    marginHorizontal: -Space.gutter,
+    flexGrow: 0,
+  },
+  chips: {
+    gap: Space.sm,
+    paddingHorizontal: Space.gutter,
+  },
+  skeletons: {
+    marginTop: Space.lg,
+  },
+  // ---- map
+  mapWrap: {
     flex: 1,
-    alignItems: 'center',
-  },
-  statValue: {
-    fontSize: 24,
-    fontWeight: '700' as const,
-    color: Colors.gold,
-    marginBottom: 4,
-  },
-  statLabel: {
-    fontSize: 12,
-    color: Colors.textSecondary,
-  },
-  statDivider: {
-    width: 1,
-    backgroundColor: Colors.border,
-    marginHorizontal: 12,
-  },
-  guardCard: {
-    backgroundColor: Colors.surface,
-    borderRadius: 20,
-    marginBottom: 20,
+    marginTop: Space.lg,
     overflow: 'hidden',
+    borderTopLeftRadius: Radius.xl,
+    borderTopRightRadius: Radius.xl,
     borderWidth: 1,
+    borderBottomWidth: 0,
     borderColor: Colors.border,
-  },
-  guardImage: {
-    width: '100%',
-    height: 240,
-    backgroundColor: Colors.surfaceLight,
-  },
-  guardInfo: {
-    padding: 16,
-  },
-  guardHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 8,
-  },
-  guardName: {
-    fontSize: 20,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-    marginBottom: 4,
-  },
-  ratingRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  ratingText: {
-    fontSize: 14,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-  },
-  jobsText: {
-    fontSize: 12,
-    color: Colors.textSecondary,
-  },
-  verifiedBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: Colors.gold + '20',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 12,
-  },
-  verifiedText: {
-    fontSize: 12,
-    fontWeight: '700' as const,
-    color: Colors.gold,
-  },
-  guardBio: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-    lineHeight: 20,
-    marginBottom: 12,
-  },
-  guardDetails: {
-    flexDirection: 'row',
-    gap: 16,
-    marginBottom: 12,
-  },
-  detailItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  detailText: {
-    fontSize: 12,
-    color: Colors.textSecondary,
-  },
-  certifications: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 16,
-  },
-  certBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: Colors.background,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  certText: {
-    fontSize: 11,
-    color: Colors.textSecondary,
-    fontWeight: '600' as const,
-  },
-  guardFooter: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingTop: 16,
-    borderTopWidth: 1,
-    borderTopColor: Colors.border,
-  },
-  rateLabel: {
-    fontSize: 12,
-    color: Colors.textSecondary,
-    marginBottom: 2,
-  },
-  rateValue: {
-    fontSize: 20,
-    fontWeight: '700' as const,
-    color: Colors.gold,
-  },
-  bookButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: Colors.gold,
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderRadius: 12,
-  },
-  bookButtonText: {
-    fontSize: 14,
-    fontWeight: '700' as const,
-    color: Colors.background,
-  },
-  emptyState: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 80,
-  },
-  emptyText: {
-    fontSize: 20,
-    fontWeight: '600' as const,
-    color: Colors.textPrimary,
-    marginTop: 16,
-  },
-  emptySubtext: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-    marginTop: 8,
-    textAlign: 'center' as const,
-  },
-  loadingContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 80,
-  },
-  loadingText: {
-    fontSize: 16,
-    color: Colors.textSecondary,
-    marginTop: 16,
-  },
-  jobCard: {
     backgroundColor: Colors.surface,
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: Colors.gold,
   },
-  jobHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  jobBadge: {
-    backgroundColor: Colors.gold,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 8,
-  },
-  jobBadgeText: {
-    fontSize: 12,
-    fontWeight: '700' as const,
-    color: Colors.background,
-  },
-  jobId: {
-    fontSize: 12,
-    color: Colors.textTertiary,
-    fontWeight: '600' as const,
-  },
-  jobDetail: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 8,
-  },
-  jobDetailText: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-    flex: 1,
-  },
-  jobFooter: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginTop: 8,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: Colors.border,
-  },
-  jobPayout: {
-    fontSize: 20,
-    fontWeight: '700' as const,
-    color: Colors.gold,
-  },
-  jobActions: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  viewButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
+  marker: {
+    padding: 2,
+    borderRadius: Radius.sm,
     backgroundColor: Colors.background,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 12,
-    borderWidth: 1,
+    borderWidth: 1.5,
     borderColor: Colors.gold,
-  },
-  viewButtonText: {
-    fontSize: 14,
-    fontWeight: '700' as const,
-    color: Colors.gold,
-  },
-  mapContainer: {
-    flex: 1,
-    position: 'relative' as const,
-  },
-  map: {
-    width: '100%',
-    height: '100%',
-  },
-  guardMarker: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: Colors.background,
-    borderWidth: 3,
-    borderColor: Colors.gold,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 4,
-    elevation: 5,
+    ...Shadow.md,
   },
   mapOverlay: {
-    position: 'absolute' as const,
-    bottom: 0,
+    position: 'absolute',
     left: 0,
     right: 0,
-    backgroundColor: 'transparent',
+    bottom: 0,
+    paddingBottom: Space.lg,
   },
-  guardCardsHorizontal: {
-    paddingHorizontal: 16,
-    paddingVertical: 16,
-    gap: 12,
+  mapCards: {
+    gap: Space.md,
+    paddingHorizontal: Space.gutter,
   },
-  guardCardCompact: {
-    width: width * 0.7,
-    backgroundColor: Colors.surface,
-    borderRadius: 16,
-    flexDirection: 'row',
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: Colors.border,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 8,
-    elevation: 5,
+  miniCard: {
+    width: 280,
+    ...Shadow.lg,
   },
-  guardImageCompact: {
-    width: 100,
-    height: 120,
-    backgroundColor: Colors.surfaceLight,
-  },
-  guardInfoCompact: {
-    flex: 1,
-    padding: 12,
-    justifyContent: 'space-between',
-  },
-  guardNameCompact: {
-    fontSize: 16,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-    marginBottom: 4,
-  },
-  ratingRowCompact: {
+  miniRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    marginBottom: 8,
+    gap: Space.md,
   },
-  ratingTextCompact: {
-    fontSize: 13,
-    fontWeight: '600' as const,
-    color: Colors.textPrimary,
+  mapNote: {
+    marginHorizontal: Space.gutter,
+    gap: Space.xs,
+    ...Shadow.lg,
   },
-  rateValueCompact: {
-    fontSize: 18,
-    fontWeight: '700' as const,
-    color: Colors.gold,
+  // ---- guard jobs
+  jobCard: {
+    marginBottom: Space.md,
+  },
+  jobHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  jobWhen: {
+    marginTop: Space.md,
+    marginBottom: Space.sm,
+  },
+  jobLine: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: Space.sm,
+    marginTop: Space.xs + 2,
+  },
+  jobDivider: {
+    marginVertical: Space.lg,
+  },
+  jobFoot: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+  },
+  payout: {
+    fontSize: 20,
+    lineHeight: 26,
+    marginTop: Space.xs,
+  },
+  viewDetails: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Space.xs,
   },
 });

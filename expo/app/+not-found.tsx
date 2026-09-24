@@ -1,51 +1,67 @@
-import { StyleSheet, View } from "react-native";
-import { Link, Stack } from "expo-router";
-import { ShieldAlert } from "lucide-react-native";
-
-import { ThemedText } from "@/components/themed-text";
-import Colors from "@/constants/colors";
+import { StyleSheet, View } from 'react-native';
+import { Stack, useRouter } from 'expo-router';
+import { House } from 'lucide-react-native';
+import Colors from '@/constants/colors';
+import { Space } from '@/constants/design';
+import { AppText, BrandMark, Button, Screen } from '@/components/ui';
+import { useAuth } from '@/contexts/AuthContext';
 
 export default function NotFoundScreen() {
+  const router = useRouter();
+  const { user } = useAuth();
+
+  const goBack = () => {
+    if (router.canGoBack()) router.back();
+    else router.replace('/');
+  };
+
   return (
     <>
-      <Stack.Screen options={{ title: "Oops!" }} />
-      <View style={styles.container} testID="not-found-container">
-        <ShieldAlert size={64} color={Colors.gold} style={styles.icon} />
-        <ThemedText type="title" style={styles.title}>
-          This screen does not exist.
-        </ThemedText>
-        <Link href="/" style={styles.link}>
-          <ThemedText type="link" style={styles.linkText}>
-            Go to home screen!
-          </ThemedText>
-        </Link>
-      </View>
+      <Stack.Screen options={{ headerShown: false, title: 'Page not found' }} />
+      <Screen glow scroll={false}>
+        <View style={styles.content} testID="not-found-container">
+          <BrandMark size={64} />
+          <AppText variant="overline" color={Colors.gold} style={styles.code}>
+            Error 404
+          </AppText>
+          <AppText variant="title1" align="center" accessibilityRole="header">
+            This page doesn’t exist
+          </AppText>
+          <AppText variant="callout" align="center" style={styles.message}>
+            The link may be out of date, or the page has moved. Your account and bookings are safe.
+          </AppText>
+          <View style={styles.actions}>
+            <Button
+              title={user ? 'Go to my home' : 'Go to sign in'}
+              icon={House}
+              onPress={() => router.replace(user ? '/' : '/auth/sign-in')}
+            />
+            <Button title="Go back" variant="ghost" onPress={goBack} />
+          </View>
+        </View>
+      </Screen>
     </>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  content: {
     flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 20,
-    backgroundColor: Colors.background,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: Space.gutter,
+    gap: Space.md,
+    paddingBottom: Space.huge,
   },
-  icon: {
-    marginBottom: 16,
+  code: {
+    marginTop: Space.xl,
   },
-  title: {
-    fontSize: 20,
-    textAlign: "center",
-    marginBottom: 24,
+  message: {
+    maxWidth: 340,
   },
-  link: {
-    marginTop: 16,
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-  },
-  linkText: {
-    color: Colors.gold,
+  actions: {
+    alignSelf: 'stretch',
+    gap: Space.sm,
+    marginTop: Space.xl,
   },
 });

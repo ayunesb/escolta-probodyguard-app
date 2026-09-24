@@ -17,7 +17,7 @@ export default {
     orientation: 'portrait',
     scheme: 'escoltapro',
     icon: './assets/icon.png',
-    userInterfaceStyle: 'light',
+    userInterfaceStyle: 'dark',
     splash: {
       image: './assets/splash.png',
       resizeMode: 'contain',
@@ -65,6 +65,11 @@ export default {
       ]
     },
     web: {
+      name: 'Escolta Pro',
+      shortName: 'Escolta Pro',
+      description: 'Vetted close-protection professionals, booked in minutes and tracked in real time.',
+      themeColor: '#0A0A09',
+      backgroundColor: '#0A0A09',
       favicon: './assets/favicon.png',
       bundler: 'metro',
       config: {

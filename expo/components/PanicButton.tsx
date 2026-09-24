@@ -1,16 +1,14 @@
 import { useState } from 'react';
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  Modal,
-  ActivityIndicator,
-  Alert,
-} from 'react-native';
-import { AlertTriangle, X } from 'lucide-react-native';
-import { emergencyService } from '@/services/emergencyService';
+import { ActivityIndicator, Linking, StyleSheet, View } from 'react-native';
+import { CircleCheck, CircleAlert, HeartPulse, LifeBuoy, PhoneCall, ShieldAlert, Siren, TriangleAlert } from 'lucide-react-native';
+import type { LucideIcon } from 'lucide-react-native';
 import Colors from '@/constants/colors';
+import { Fonts, ICON_STROKE, Radius, Shadow, Space } from '@/constants/design';
+import { AppText, Button, PressableScale } from '@/components/ui';
+import { Notice } from '@/components/backoffice/Notice';
+import { Sheet } from '@/components/backoffice/Sheet';
+import { emergencyService, EmergencyType } from '@/services/emergencyService';
+import { logger } from '@/utils/logger';
 
 interface PanicButtonProps {
   userId: string;
@@ -19,281 +17,250 @@ interface PanicButtonProps {
   onAlertTriggered?: (alertId: string) => void;
 }
 
-export default function PanicButton({
-  userId,
-  bookingId,
-  size = 'medium',
-  onAlertTriggered,
-}: PanicButtonProps) {
-  const [showConfirm, setShowConfirm] = useState(false);
-  const [isTriggering, setIsTriggering] = useState(false);
+const OPTIONS: { type: EmergencyType; title: string; subtitle: string; icon: LucideIcon; a11y: string; hint: string }[] = [
+  {
+    type: 'panic',
+    title: 'Panic',
+    subtitle: 'Immediate danger',
+    icon: Siren,
+    a11y: 'Panic - Immediate danger',
+    hint: 'Alerts Escolta Pro operations that you are in immediate danger',
+  },
+  {
+    type: 'sos',
+    title: 'SOS',
+    subtitle: 'Need urgent help',
+    icon: LifeBuoy,
+    a11y: 'SOS - Need urgent help',
+    hint: 'Alerts Escolta Pro operations that you need urgent help',
+  },
+  {
+    type: 'medical',
+    title: 'Medical',
+    subtitle: 'Medical emergency',
+    icon: HeartPulse,
+    a11y: 'Medical emergency',
+    hint: 'Alerts Escolta Pro operations to a medical emergency. Call 911 for an ambulance.',
+  },
+  {
+    type: 'security',
+    title: 'Security',
+    subtitle: 'Security threat',
+    icon: ShieldAlert,
+    a11y: 'Security threat',
+    hint: 'Alerts Escolta Pro operations to a security threat',
+  },
+];
 
-  const handlePress = () => {
-    setShowConfirm(true);
+type Phase = 'choose' | 'sending' | 'sent' | 'failed';
+
+async function call911() {
+  try {
+    await Linking.openURL('tel:911');
+  } catch (error) {
+    logger.error('[PanicButton] Could not open the dialer', error);
+  }
+}
+
+export default function PanicButton({ userId, bookingId, size = 'medium', onAlertTriggered }: PanicButtonProps) {
+  const [visible, setVisible] = useState(false);
+  const [phase, setPhase] = useState<Phase>('choose');
+  const [lastType, setLastType] = useState<EmergencyType>('panic');
+  const [locationShared, setLocationShared] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const open = () => {
+    setPhase('choose');
+    setError(null);
+    setVisible(true);
   };
 
-  const handleConfirm = async (type: 'panic' | 'sos' | 'medical' | 'security') => {
-    setIsTriggering(true);
+  const close = () => {
+    if (phase === 'sending') return;
+    setVisible(false);
+  };
 
+  const send = async (type: EmergencyType) => {
+    setLastType(type);
+    setPhase('sending');
+    setError(null);
     const result = await emergencyService.triggerPanicButton(userId, bookingId, type);
-
-    setIsTriggering(false);
-    setShowConfirm(false);
-
     if (result.success && result.alertId) {
-      Alert.alert(
-        'Emergency Alert Sent',
-        'Emergency services and contacts have been notified of your location.',
-        [{ text: 'OK' }]
-      );
+      setLocationShared(result.locationShared);
+      setPhase('sent');
       onAlertTriggered?.(result.alertId);
     } else {
-      Alert.alert(
-        'Alert Failed',
-        result.error || 'Failed to send emergency alert. Please try again.',
-        [{ text: 'OK' }]
-      );
+      setError(result.error ?? 'The alert could not be sent.');
+      setPhase('failed');
     }
   };
 
   const buttonSize = size === 'small' ? 60 : size === 'large' ? 100 : 80;
-  const iconSize = size === 'small' ? 28 : size === 'large' ? 48 : 36;
+  const iconSize = size === 'small' ? 24 : size === 'large' ? 40 : 30;
 
   return (
     <>
-      <TouchableOpacity
-        style={[
-          styles.panicButton,
-          {
-            width: buttonSize,
-            height: buttonSize,
-            borderRadius: buttonSize / 2,
-          },
-        ]}
-        onPress={handlePress}
-        activeOpacity={0.8}
-        accessible={true}
-        accessibilityLabel="Emergency SOS button"
-        accessibilityHint="Double tap to trigger emergency alert and notify contacts"
+      <PressableScale
+        onPress={open}
+        scaleTo={0.92}
+        haptic="medium"
         accessibilityRole="button"
+        accessibilityLabel="Emergency SOS button"
+        accessibilityHint="Opens emergency options: alert Escolta Pro operations or call 911"
+        style={[styles.trigger, { width: buttonSize, height: buttonSize, borderRadius: buttonSize / 2 }]}
       >
-        <AlertTriangle size={iconSize} color="#fff" strokeWidth={2.5} />
-        <Text style={styles.panicText}>SOS</Text>
-      </TouchableOpacity>
+        <TriangleAlert size={iconSize} color={Colors.white} strokeWidth={2.25} />
+        <AppText style={styles.triggerText}>SOS</AppText>
+      </PressableScale>
 
-      <Modal
-        visible={showConfirm}
-        transparent
-        animationType="fade"
-        onRequestClose={() => !isTriggering && setShowConfirm(false)}
+      <Sheet
+        visible={visible}
+        onClose={close}
+        dismissable={phase !== 'sending'}
+        eyebrow="Emergency"
+        title={phase === 'sent' ? 'Operations alerted' : phase === 'failed' ? 'Alert not confirmed' : 'Get help now'}
+        testID="panic-sheet"
+        footer={
+          phase === 'sent' ? (
+            <Button title="Done" variant="secondary" onPress={close} />
+          ) : phase === 'failed' ? (
+            <>
+              <Button title="Cancel" variant="secondary" onPress={close} style={styles.flex} />
+              <Button title="Try again" variant="outline" onPress={() => send(lastType)} style={styles.flex} />
+            </>
+          ) : phase === 'choose' ? (
+            <Button title="Cancel" variant="secondary" onPress={close} accessibilityLabel="Cancel emergency alert" />
+          ) : null
+        }
       >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <TouchableOpacity
-              style={styles.closeButton}
-              onPress={() => !isTriggering && setShowConfirm(false)}
-              disabled={isTriggering}
-            >
-              <X size={24} color={Colors.textSecondary} />
-            </TouchableOpacity>
+        <Button
+          title="Call 911"
+          icon={PhoneCall}
+          variant="danger"
+          size="lg"
+          onPress={call911}
+          accessibilityLabel="Call 911 emergency services"
+          accessibilityHint="Opens your phone dialer with 911"
+        />
 
-            <View style={styles.modalHeader}>
-              <View style={styles.modalIconContainer}>
-                <AlertTriangle size={48} color={Colors.error} strokeWidth={2} />
-              </View>
-              <Text style={styles.modalTitle}>Emergency Alert</Text>
-              <Text style={styles.modalSubtitle}>
-                Select the type of emergency. Your location will be shared with emergency contacts.
-              </Text>
+        {phase === 'choose' ? (
+          <>
+            <AppText variant="callout">
+              For police, ambulance or fire, call 911. To alert the Escolta Pro operations team, choose what is happening —
+              your location is attached if your device can share it.
+            </AppText>
+            <View style={styles.options}>
+              {OPTIONS.map((opt) => (
+                <PressableScale
+                  key={opt.type}
+                  onPress={() => send(opt.type)}
+                  scaleTo={0.98}
+                  haptic="medium"
+                  accessibilityRole="button"
+                  accessibilityLabel={opt.a11y}
+                  accessibilityHint={opt.hint}
+                  hoverStyle={{ borderColor: Colors.borderStrong }}
+                  style={styles.option}
+                >
+                  <View style={styles.optionIcon}>
+                    <opt.icon size={20} color={Colors.error} strokeWidth={ICON_STROKE} />
+                  </View>
+                  <View style={styles.optionText}>
+                    <AppText variant="headline">{opt.title}</AppText>
+                    <AppText variant="footnote">{opt.subtitle}</AppText>
+                  </View>
+                </PressableScale>
+              ))}
             </View>
-
-            <View style={styles.buttonContainer}>
-              <TouchableOpacity
-                style={[styles.emergencyButton, styles.panicButtonStyle]}
-                onPress={() => handleConfirm('panic')}
-                disabled={isTriggering}
-                accessible={true}
-                accessibilityLabel="Panic - Immediate danger"
-                accessibilityHint="Sends immediate danger alert to emergency contacts"
-                accessibilityRole="button"
-                accessibilityState={{ disabled: isTriggering }}
-              >
-                {isTriggering ? (
-                  <ActivityIndicator color="#fff" />
-                ) : (
-                  <>
-                    <Text style={styles.emergencyButtonTitle}>🚨 Panic</Text>
-                    <Text style={styles.emergencyButtonSubtitle}>
-                      Immediate danger
-                    </Text>
-                  </>
-                )}
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.emergencyButton, styles.sosButtonStyle]}
-                onPress={() => handleConfirm('sos')}
-                disabled={isTriggering}
-                accessible={true}
-                accessibilityLabel="SOS - Need urgent help"
-                accessibilityHint="Sends urgent help request to emergency contacts"
-                accessibilityRole="button"
-                accessibilityState={{ disabled: isTriggering }}
-              >
-                <Text style={styles.emergencyButtonTitle}>🆘 SOS</Text>
-                <Text style={styles.emergencyButtonSubtitle}>
-                  Need urgent help
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.emergencyButton, styles.medicalButtonStyle]}
-                onPress={() => handleConfirm('medical')}
-                disabled={isTriggering}
-                accessible={true}
-                accessibilityLabel="Medical emergency"
-                accessibilityHint="Sends medical emergency alert to emergency contacts"
-                accessibilityRole="button"
-                accessibilityState={{ disabled: isTriggering }}
-              >
-                <Text style={styles.emergencyButtonTitle}>🏥 Medical</Text>
-                <Text style={styles.emergencyButtonSubtitle}>
-                  Medical emergency
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.emergencyButton, styles.securityButtonStyle]}
-                onPress={() => handleConfirm('security')}
-                disabled={isTriggering}
-                accessible={true}
-                accessibilityLabel="Security threat"
-                accessibilityHint="Sends security threat alert to emergency contacts"
-                accessibilityRole="button"
-                accessibilityState={{ disabled: isTriggering }}
-              >
-                <Text style={styles.emergencyButtonTitle}>🛡️ Security</Text>
-                <Text style={styles.emergencyButtonSubtitle}>
-                  Security threat
-                </Text>
-              </TouchableOpacity>
-            </View>
-
-            <TouchableOpacity
-              style={styles.cancelButton}
-              onPress={() => setShowConfirm(false)}
-              disabled={isTriggering}
-            >
-              <Text style={styles.cancelButtonText}>Cancel</Text>
-            </TouchableOpacity>
+          </>
+        ) : phase === 'sending' ? (
+          <View style={styles.status} accessibilityLiveRegion="polite">
+            <ActivityIndicator color={Colors.gold} />
+            <AppText variant="bodyMedium">Alerting Escolta Pro operations…</AppText>
           </View>
-        </View>
-      </Modal>
+        ) : phase === 'sent' ? (
+          <View style={styles.statusBlock} accessibilityLiveRegion="polite">
+            <View style={styles.status}>
+              <CircleCheck size={22} color={Colors.success} strokeWidth={ICON_STROKE} />
+              <AppText variant="bodyMedium">Escolta Pro operations has been alerted.</AppText>
+            </View>
+            <Notice
+              tone={locationShared ? 'info' : 'warning'}
+              message={
+                locationShared
+                  ? 'Your location was shared with the alert.'
+                  : 'Your location could not be shared. If you speak with operations or 911, tell them where you are.'
+              }
+            />
+            <AppText variant="footnote">
+              This alert does not contact police or medical services. If anyone is in danger, call 911.
+            </AppText>
+          </View>
+        ) : (
+          <View style={styles.statusBlock} accessibilityLiveRegion="assertive">
+            <View style={styles.status}>
+              <CircleAlert size={22} color={Colors.error} strokeWidth={ICON_STROKE} />
+              <AppText variant="bodyMedium">{error}</AppText>
+            </View>
+            <AppText variant="footnote">Call 911 now if you need help. You can also try sending the alert again.</AppText>
+          </View>
+        )}
+      </Sheet>
     </>
   );
 }
 
 const styles = StyleSheet.create({
-  panicButton: {
+  trigger: {
     backgroundColor: Colors.error,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 8,
+    gap: 2,
+    borderWidth: 2,
+    borderColor: Colors.hairline,
+    ...Shadow.md,
   },
-  panicText: {
-    color: '#fff',
-    fontSize: 12,
-    fontWeight: '700' as const,
-    marginTop: 4,
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 24,
-  },
-  modalContent: {
-    backgroundColor: Colors.surface,
-    borderRadius: 24,
-    padding: 24,
-    width: '100%',
-    maxWidth: 400,
-  },
-  closeButton: {
-    position: 'absolute' as const,
-    top: 16,
-    right: 16,
-    zIndex: 1,
-    padding: 8,
-  },
-  modalHeader: {
-    alignItems: 'center',
-    marginBottom: 24,
-  },
-  modalIconContainer: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: Colors.background,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 16,
-  },
-  modalTitle: {
-    fontSize: 24,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-    marginBottom: 8,
-  },
-  modalSubtitle: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-    textAlign: 'center' as const,
-    lineHeight: 20,
-  },
-  buttonContainer: {
-    gap: 12,
-  },
-  emergencyButton: {
-    padding: 16,
-    borderRadius: 12,
-    alignItems: 'center',
-  },
-  panicButtonStyle: {
-    backgroundColor: '#DC2626',
-  },
-  sosButtonStyle: {
-    backgroundColor: '#EA580C',
-  },
-  medicalButtonStyle: {
-    backgroundColor: '#0891B2',
-  },
-  securityButtonStyle: {
-    backgroundColor: '#7C3AED',
-  },
-  emergencyButtonTitle: {
-    fontSize: 18,
-    fontWeight: '700' as const,
-    color: '#fff',
-    marginBottom: 4,
-  },
-  emergencyButtonSubtitle: {
+  triggerText: {
+    fontFamily: Fonts.bold,
     fontSize: 13,
-    color: 'rgba(255, 255, 255, 0.8)',
+    lineHeight: 16,
+    letterSpacing: 1.2,
+    color: Colors.white,
   },
-  cancelButton: {
-    marginTop: 16,
-    padding: 16,
+  options: {
+    gap: Space.sm,
+  },
+  option: {
+    flexDirection: 'row',
     alignItems: 'center',
+    gap: Space.md,
+    padding: Space.lg,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.surfaceLight,
+    borderWidth: 1,
+    borderColor: Colors.border,
   },
-  cancelButtonText: {
-    fontSize: 16,
-    fontWeight: '600' as const,
-    color: Colors.textSecondary,
+  optionIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: Radius.sm,
+    backgroundColor: Colors.errorSoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  optionText: {
+    flex: 1,
+    gap: 2,
+  },
+  status: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Space.md,
+  },
+  statusBlock: {
+    gap: Space.md,
+  },
+  flex: {
+    flex: 1,
   },
 });

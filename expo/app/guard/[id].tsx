@@ -1,514 +1,407 @@
-import { useEffect, useState } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  TouchableOpacity,
-  Image,
-  Dimensions,
-  ActivityIndicator,
-} from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useCallback, useEffect, useState } from 'react';
+import { Image, ScrollView, StyleSheet, View } from 'react-native';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import {
-  Shield,
-  Star,
-  MapPin,
-  Languages,
+  AlertTriangle,
   Award,
-  Weight,
-  Ruler,
-  ChevronLeft,
-  TrendingUp,
+  BadgeCheck,
+  CalendarCheck,
   Clock,
+  Languages,
   MessageCircle,
   Mic,
+  Ruler,
+  ShieldCheck,
+  Star,
+  TrendingUp,
+  UserX,
+  Weight,
 } from 'lucide-react-native';
-import { guardService } from '@/services/guardService';
+import type { LucideIcon } from 'lucide-react-native';
+import { guardService, hasCompleteProfile } from '@/services/guardService';
 import type { Guard } from '@/types';
 import Colors from '@/constants/colors';
+import { ICON_STROKE, Radius, Space } from '@/constants/design';
+import {
+  ActionBar,
+  AppText,
+  Avatar,
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  InfoRow,
+  ListGroup,
+  ListRow,
+  NavBar,
+  Screen,
+  SectionTitle,
+  Skeleton,
+  StatTile,
+} from '@/components/ui';
+import { guardDisplayName, hasRating, isVerified, languageName } from '@/components/funnel/format';
+import { formatMXN } from '@/utils/pricing';
 
-const { width } = Dimensions.get('window');
+type LoadState = 'loading' | 'ready' | 'missing' | 'error';
 
 export default function GuardDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
-  const insets = useSafeAreaInsets();
-  const [selectedPhotoIndex, setSelectedPhotoIndex] = useState<number>(0);
   const [guard, setGuard] = useState<Guard | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [state, setState] = useState<LoadState>('loading');
 
-  useEffect(() => {
-    if (!id) return;
-    setIsLoading(true);
-    guardService.getGuardById(id).then((result) => {
+  const load = useCallback(async () => {
+    if (!id) {
+      setState('missing');
+      return;
+    }
+    setState('loading');
+    try {
+      const result = await guardService.getGuardById(id, { throwOnError: true });
       setGuard(result);
-      setIsLoading(false);
-    });
+      setState(result ? 'ready' : 'missing');
+    } catch {
+      setState('error');
+    }
   }, [id]);
 
-  if (isLoading) {
-    return (
-      <View style={styles.container}>
-        <Stack.Screen options={{ headerShown: false }} />
-        <View style={styles.errorContainer}>
-          <ActivityIndicator size="large" color={Colors.gold} />
-        </View>
-      </View>
-    );
-  }
+  useEffect(() => {
+    load();
+  }, [load]);
 
-  if (!guard) {
-    return (
-      <View style={styles.container}>
-        <Stack.Screen options={{ headerShown: false }} />
-        <View style={styles.errorContainer}>
-          <Shield size={64} color={Colors.textTertiary} />
-          <Text style={styles.errorText}>Guard not found</Text>
-        </View>
-      </View>
-    );
-  }
-
-  return (
-    <View style={styles.container}>
+  const shell = (content: React.ReactNode, footer?: React.ReactNode) => (
+    <View style={styles.root}>
       <Stack.Screen options={{ headerShown: false }} />
+      <NavBar title="Protector" />
+      <Screen padTop={false} contentStyle={styles.content} footer={footer}>
+        {content}
+      </Screen>
+    </View>
+  );
 
-      <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
-        <View style={styles.imageContainer}>
-          <Image source={{ uri: guard.photos[selectedPhotoIndex] }} style={styles.mainImage} />
-          
-          <TouchableOpacity style={[styles.backButton, { top: insets.top + 10 }]} onPress={() => router.back()}>
-            <ChevronLeft size={24} color={Colors.white} />
-          </TouchableOpacity>
+  if (state === 'loading') {
+    return shell(
+      <View style={styles.hero} accessibilityLabel="Loading profile">
+        <Skeleton width={112} height={112} radius={34} />
+        <Skeleton width="55%" height={30} style={styles.skeletonGap} />
+        <Skeleton width="35%" height={14} />
+        <View style={styles.statsRow}>
+          <Skeleton height={96} radius={Radius.lg} style={styles.flex} />
+          <Skeleton height={96} radius={Radius.lg} style={styles.flex} />
+        </View>
+      </View>
+    );
+  }
 
-          <View style={styles.photoIndicators}>
-            {guard.photos.map((_, idx) => (
-              <TouchableOpacity
-                key={idx}
-                style={[
-                  styles.photoIndicator,
-                  selectedPhotoIndex === idx && styles.photoIndicatorActive,
-                ]}
-                onPress={() => setSelectedPhotoIndex(idx)}
+  if (state === 'error') {
+    return shell(
+      <EmptyState
+        icon={AlertTriangle}
+        title="Couldn't load this profile"
+        message="Check your connection and try again."
+        actionLabel="Try again"
+        onAction={load}
+      />
+    );
+  }
+
+  if (state === 'missing' || !guard) {
+    return shell(
+      <EmptyState
+        icon={UserX}
+        title="Protector not found"
+        message="This profile is no longer available."
+        actionLabel="Browse protectors"
+        onAction={() => router.replace('/home')}
+      />
+    );
+  }
+
+  const name = guardDisplayName(guard);
+  const verified = isVerified(guard);
+  const rated = hasRating(guard);
+  const priced = hasCompleteProfile(guard);
+  const bookable = priced && verified && guard.availability;
+  const unavailableReason = !priced
+    ? 'This protector has not set a rate yet.'
+    : !verified
+      ? 'This protector is completing identity verification.'
+      : !guard.availability
+        ? 'This protector is not taking bookings right now.'
+        : null;
+  const gallery = guard.photos.slice(1);
+  const breakdown = guard.ratingBreakdown;
+
+  const footer = (
+    <ActionBar>
+      <View style={styles.actionRow}>
+        <View style={styles.priceBlock}>
+          <AppText variant="overline">Hourly rate</AppText>
+          {priced ? (
+            <AppText variant="numeric" color={Colors.goldLight} style={styles.price}>
+              {formatMXN(guard.hourlyRate)}
+            </AppText>
+          ) : (
+            <AppText variant="numeric" color={Colors.textTertiary} style={styles.price}>
+              —
+            </AppText>
+          )}
+        </View>
+        <Button
+          title="Book protection"
+          icon={ShieldCheck}
+          size="lg"
+          disabled={!bookable}
+          onPress={() => router.push({ pathname: '/booking/create', params: { guardId: guard.id } })}
+          style={styles.flex}
+          accessibilityHint={unavailableReason ?? 'Choose the date, time and options for your booking'}
+        />
+      </View>
+      {unavailableReason ? (
+        <AppText variant="caption" color={Colors.textTertiary} style={styles.unavailable}>
+          {unavailableReason}
+        </AppText>
+      ) : null}
+    </ActionBar>
+  );
+
+  return shell(
+    <>
+      {/* Hero: the dossier cover */}
+      <View style={styles.hero}>
+        <Avatar name={`${guard.firstName} ${guard.lastName}`} uri={guard.photos[0]} size={112} verified={verified} />
+        <AppText variant="overline" color={Colors.gold} style={styles.eyebrow}>
+          {guard.isFreelancer ? 'Independent protector' : 'Agency protector'}
+        </AppText>
+        <AppText variant="display" align="center" accessibilityRole="header" numberOfLines={2} adjustsFontSizeToFit minimumFontScale={0.75}>
+          {name}
+        </AppText>
+        <View style={styles.badges}>
+          {verified ? <Badge label="Identity verified" tone="success" icon={BadgeCheck} /> : null}
+          <Badge
+            label={guard.availability ? 'Available' : 'Not taking bookings'}
+            tone={guard.availability ? 'success' : 'neutral'}
+            icon={CalendarCheck}
+          />
+        </View>
+      </View>
+
+      <View style={styles.statsRow}>
+        <StatTile
+          label="Rating"
+          icon={Star}
+          value={rated ? guard.rating.toFixed(1) : '—'}
+          hint={rated ? 'out of 5' : 'No reviews yet'}
+        />
+        <StatTile
+          label="Completed jobs"
+          icon={ShieldCheck}
+          value={guard.completedJobs}
+          hint={guard.completedJobs === 0 ? 'New to Escolta' : 'on Escolta Pro'}
+        />
+      </View>
+
+      {gallery.length > 0 ? (
+        <>
+          <SectionTitle title="Portfolio" />
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.gallery}>
+            {gallery.map((uri, idx) => (
+              <Image
+                key={`${uri}-${idx}`}
+                source={{ uri }}
+                style={styles.photo}
+                accessibilityLabel={`${name}, photo ${idx + 2}`}
               />
             ))}
-          </View>
-        </View>
+          </ScrollView>
+        </>
+      ) : null}
 
-        <View style={styles.content}>
-          <View style={styles.header}>
-            <View style={styles.headerLeft}>
-              <Text style={styles.name}>
-                {guard.firstName} {guard.lastName.charAt(0)}.
-              </Text>
-              <View style={styles.ratingRow}>
-                <Star size={16} color={Colors.gold} fill={Colors.gold} />
-                <Text style={styles.ratingText}>{guard.rating.toFixed(1)}</Text>
-                <Text style={styles.jobsText}>({guard.completedJobs} jobs)</Text>
+      {guard.bio.trim() ? (
+        <>
+          <SectionTitle title="About" />
+          <AppText variant="body" color={Colors.textSecondary} style={styles.bio}>
+            {guard.bio.trim()}
+          </AppText>
+        </>
+      ) : null}
+
+      {guard.languages.length > 0 ? (
+        <>
+          <SectionTitle title="Languages" />
+          <View style={styles.languages}>
+            {guard.languages.map((code) => (
+              <View key={code} style={styles.language}>
+                <Languages size={14} color={Colors.textTertiary} strokeWidth={ICON_STROKE} />
+                <AppText variant="callout" color={Colors.textPrimary}>
+                  {languageName(code)}
+                </AppText>
               </View>
-            </View>
-            <View style={styles.verifiedBadge}>
-              <Shield size={18} color={Colors.gold} />
-              <Text style={styles.verifiedText}>Verified</Text>
-            </View>
+            ))}
           </View>
+        </>
+      ) : null}
 
-          <View style={styles.statsGrid}>
-            <View style={styles.statBox}>
-              <Ruler size={20} color={Colors.gold} />
-              <Text style={styles.statValue}>{guard.height} cm</Text>
-              <Text style={styles.statLabel}>Height</Text>
-            </View>
-            <View style={styles.statBox}>
-              <Weight size={20} color={Colors.gold} />
-              <Text style={styles.statValue}>{guard.weight} kg</Text>
-              <Text style={styles.statLabel}>Weight</Text>
-            </View>
-            <View style={styles.statBox}>
-              <Languages size={20} color={Colors.gold} />
-              <Text style={styles.statValue}>{guard.languages.length}</Text>
-              <Text style={styles.statLabel}>Languages</Text>
-            </View>
-            <View style={styles.statBox}>
-              <Award size={20} color={Colors.gold} />
-              <Text style={styles.statValue}>{guard.certifications.length}</Text>
-              <Text style={styles.statLabel}>Certs</Text>
-            </View>
-          </View>
+      {guard.certifications.length > 0 ? (
+        <>
+          <SectionTitle title="Certifications" />
+          <ListGroup>
+            {guard.certifications.map((cert, idx) => (
+              <ListRow key={`${cert}-${idx}`} icon={Award} title={cert} />
+            ))}
+          </ListGroup>
+        </>
+      ) : null}
 
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>About</Text>
-            <Text style={styles.bio}>{guard.bio}</Text>
-          </View>
+      {guard.height > 0 || guard.weight > 0 ? (
+        <>
+          <SectionTitle title="Physical" />
+          <Card>
+            {guard.height > 0 ? <InfoRow label="Height" icon={Ruler} value={`${guard.height} cm`} /> : null}
+            {guard.weight > 0 ? <InfoRow label="Weight" icon={Weight} value={`${guard.weight} kg`} /> : null}
+          </Card>
+        </>
+      ) : null}
 
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Languages</Text>
-            <View style={styles.languageList}>
-              {guard.languages.map((lang, idx) => (
-                <View key={idx} style={styles.languageBadge}>
-                  <Languages size={14} color={Colors.gold} />
-                  <Text style={styles.languageText}>{lang.toUpperCase()}</Text>
-                </View>
-              ))}
-            </View>
-          </View>
+      {breakdown && rated ? (
+        <>
+          <SectionTitle title="What clients say" />
+          <Card>
+            <RatingBar icon={TrendingUp} label="Professionalism" value={breakdown.professionalism} />
+            <RatingBar icon={Clock} label="Punctuality" value={breakdown.punctuality} />
+            <RatingBar icon={MessageCircle} label="Communication" value={breakdown.communication} />
+            <RatingBar icon={Mic} label="Language clarity" value={breakdown.languageClarity} />
+          </Card>
+        </>
+      ) : null}
+    </>,
+    footer
+  );
+}
 
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Certifications</Text>
-            <View style={styles.certList}>
-              {guard.certifications.map((cert, idx) => (
-                <View key={idx} style={styles.certItem}>
-                  <Award size={16} color={Colors.gold} />
-                  <Text style={styles.certItemText}>{cert}</Text>
-                </View>
-              ))}
-            </View>
-          </View>
-
-          {guard.ratingBreakdown && (
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>Rating Breakdown</Text>
-              <View style={styles.ratingBreakdownContainer}>
-                <View style={styles.ratingItem}>
-                  <View style={styles.ratingItemHeader}>
-                    <TrendingUp size={16} color={Colors.gold} />
-                    <Text style={styles.ratingItemLabel}>Professionalism</Text>
-                  </View>
-                  <View style={styles.ratingBar}>
-                    <View style={[styles.ratingBarFill, { width: `${(guard.ratingBreakdown.professionalism / 5) * 100}%` }]} />
-                  </View>
-                  <Text style={styles.ratingItemValue}>{guard.ratingBreakdown.professionalism.toFixed(1)}</Text>
-                </View>
-
-                <View style={styles.ratingItem}>
-                  <View style={styles.ratingItemHeader}>
-                    <Clock size={16} color={Colors.gold} />
-                    <Text style={styles.ratingItemLabel}>Punctuality</Text>
-                  </View>
-                  <View style={styles.ratingBar}>
-                    <View style={[styles.ratingBarFill, { width: `${(guard.ratingBreakdown.punctuality / 5) * 100}%` }]} />
-                  </View>
-                  <Text style={styles.ratingItemValue}>{guard.ratingBreakdown.punctuality.toFixed(1)}</Text>
-                </View>
-
-                <View style={styles.ratingItem}>
-                  <View style={styles.ratingItemHeader}>
-                    <MessageCircle size={16} color={Colors.gold} />
-                    <Text style={styles.ratingItemLabel}>Communication</Text>
-                  </View>
-                  <View style={styles.ratingBar}>
-                    <View style={[styles.ratingBarFill, { width: `${(guard.ratingBreakdown.communication / 5) * 100}%` }]} />
-                  </View>
-                  <Text style={styles.ratingItemValue}>{guard.ratingBreakdown.communication.toFixed(1)}</Text>
-                </View>
-
-                <View style={styles.ratingItem}>
-                  <View style={styles.ratingItemHeader}>
-                    <Mic size={16} color={Colors.gold} />
-                    <Text style={styles.ratingItemLabel}>Language Clarity</Text>
-                  </View>
-                  <View style={styles.ratingBar}>
-                    <View style={[styles.ratingBarFill, { width: `${(guard.ratingBreakdown.languageClarity / 5) * 100}%` }]} />
-                  </View>
-                  <Text style={styles.ratingItemValue}>{guard.ratingBreakdown.languageClarity.toFixed(1)}</Text>
-                </View>
-              </View>
-            </View>
-          )}
-
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Location</Text>
-            <View style={styles.locationRow}>
-              <MapPin size={16} color={Colors.textSecondary} />
-              <Text style={styles.locationText}>
-                {guard.availability ? 'Available now' : 'Currently unavailable'}
-              </Text>
-            </View>
-          </View>
-
-          <View style={styles.bottomPadding} />
-        </View>
-      </ScrollView>
-
-      <View style={styles.footer}>
-        <View style={styles.priceContainer}>
-          <Text style={styles.priceLabel}>Starting at</Text>
-          <Text style={styles.priceValue}>${guard.hourlyRate} MXN/hr</Text>
-        </View>
-        <TouchableOpacity
-          style={styles.bookButton}
-          onPress={() => router.push({ pathname: '/booking/create', params: { guardId: guard.id } })}
-        >
-          <Text style={styles.bookButtonText}>Book Protection</Text>
-        </TouchableOpacity>
+function RatingBar({ icon: Icon, label, value }: { icon: LucideIcon; label: string; value?: number }) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  const pct = Math.max(0, Math.min(100, (value / 5) * 100));
+  return (
+    <View style={styles.ratingRow} accessible accessibilityLabel={`${label}: ${value.toFixed(1)} out of 5`}>
+      <View style={styles.ratingLabel}>
+        <Icon size={16} color={Colors.textTertiary} strokeWidth={ICON_STROKE} />
+        <AppText variant="callout">{label}</AppText>
       </View>
+      <View style={styles.track}>
+        <View style={[styles.fill, { width: `${pct}%` }]} />
+      </View>
+      <AppText variant="numeric" style={styles.ratingValue}>
+        {value.toFixed(1)}
+      </AppText>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  root: {
     flex: 1,
     backgroundColor: Colors.background,
   },
-  scrollView: {
+  content: {
+    paddingTop: Space.xxl,
+  },
+  flex: {
     flex: 1,
   },
-  imageContainer: {
-    width: width,
-    height: width * 1.2,
-    position: 'relative' as const,
+  hero: {
+    alignItems: 'center',
+    gap: Space.sm,
   },
-  mainImage: {
-    width: '100%',
-    height: '100%',
+  skeletonGap: {
+    marginTop: Space.lg,
+  },
+  eyebrow: {
+    marginTop: Space.lg,
+  },
+  badges: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    gap: Space.sm,
+    marginTop: Space.sm,
+  },
+  statsRow: {
+    flexDirection: 'row',
+    gap: Space.md,
+    marginTop: Space.xxl,
+    alignSelf: 'stretch',
+  },
+  gallery: {
+    gap: Space.md,
+  },
+  photo: {
+    width: 132,
+    height: 168,
+    borderRadius: Radius.lg,
     backgroundColor: Colors.surfaceLight,
   },
-  backButton: {
-    position: 'absolute' as const,
-    left: 16,
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: Colors.overlay,
+  bio: {
+    lineHeight: 24,
+  },
+  languages: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Space.sm,
+  },
+  language: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-  },
-  photoIndicators: {
-    position: 'absolute' as const,
-    bottom: 20,
-    left: 0,
-    right: 0,
-    flexDirection: 'row',
-    justifyContent: 'center',
-    gap: 8,
-  },
-  photoIndicator: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: Colors.white + '40',
-  },
-  photoIndicatorActive: {
-    backgroundColor: Colors.white,
-    width: 24,
-  },
-  content: {
-    padding: 20,
-  },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 20,
-  },
-  headerLeft: {
-    flex: 1,
-  },
-  name: {
-    fontSize: 28,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-    marginBottom: 6,
+    gap: Space.sm,
+    paddingHorizontal: Space.md,
+    height: 36,
+    borderRadius: Radius.pill,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
   },
   ratingRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: Space.md,
+    paddingVertical: Space.sm,
   },
-  ratingText: {
-    fontSize: 16,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-  },
-  jobsText: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-  },
-  verifiedBadge: {
+  ratingLabel: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    backgroundColor: Colors.gold + '20',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 12,
+    gap: Space.sm,
+    width: 150,
   },
-  verifiedText: {
-    fontSize: 13,
-    fontWeight: '700' as const,
-    color: Colors.gold,
-  },
-  statsGrid: {
-    flexDirection: 'row',
-    gap: 12,
-    marginBottom: 24,
-  },
-  statBox: {
+  track: {
     flex: 1,
-    backgroundColor: Colors.surface,
-    borderRadius: 16,
-    padding: 16,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  statValue: {
-    fontSize: 18,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-    marginTop: 8,
-    marginBottom: 2,
-  },
-  statLabel: {
-    fontSize: 11,
-    color: Colors.textSecondary,
-  },
-  section: {
-    marginBottom: 24,
-  },
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-    marginBottom: 12,
-  },
-  bio: {
-    fontSize: 15,
-    color: Colors.textSecondary,
-    lineHeight: 22,
-  },
-  languageList: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-  },
-  languageBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: Colors.surface,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  languageText: {
-    fontSize: 13,
-    fontWeight: '600' as const,
-    color: Colors.textPrimary,
-  },
-  certList: {
-    gap: 12,
-  },
-  certItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    backgroundColor: Colors.surface,
-    padding: 14,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  certItemText: {
-    fontSize: 14,
-    color: Colors.textPrimary,
-    fontWeight: '600' as const,
-  },
-  locationRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  locationText: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-  },
-  bottomPadding: {
-    height: 100,
-  },
-  footer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: 20,
-    backgroundColor: Colors.surface,
-    borderTopWidth: 1,
-    borderTopColor: Colors.border,
-  },
-  priceContainer: {
-    flex: 1,
-  },
-  priceLabel: {
-    fontSize: 13,
-    color: Colors.textSecondary,
-    marginBottom: 2,
-  },
-  priceValue: {
-    fontSize: 24,
-    fontWeight: '700' as const,
-    color: Colors.gold,
-  },
-  bookButton: {
-    backgroundColor: Colors.gold,
-    paddingHorizontal: 32,
-    paddingVertical: 16,
-    borderRadius: 16,
-  },
-  bookButtonText: {
-    fontSize: 16,
-    fontWeight: '700' as const,
-    color: Colors.background,
-  },
-  errorContainer: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  errorText: {
-    fontSize: 18,
-    fontWeight: '600' as const,
-    color: Colors.textPrimary,
-    marginTop: 16,
-  },
-  ratingBreakdownContainer: {
-    gap: 16,
-  },
-  ratingItem: {
-    gap: 8,
-  },
-  ratingItemHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  ratingItemLabel: {
-    fontSize: 14,
-    fontWeight: '600' as const,
-    color: Colors.textPrimary,
-    flex: 1,
-  },
-  ratingItemValue: {
-    fontSize: 14,
-    fontWeight: '700' as const,
-    color: Colors.gold,
-    position: 'absolute' as const,
-    right: 0,
-    top: 0,
-  },
-  ratingBar: {
-    height: 6,
-    backgroundColor: Colors.surface,
-    borderRadius: 3,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: Colors.surfaceLight,
     overflow: 'hidden',
   },
-  ratingBarFill: {
-    height: '100%',
-    backgroundColor: Colors.gold,
-    borderRadius: 3,
+  fill: {
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: Colors.textSecondary,
+  },
+  ratingValue: {
+    minWidth: 30,
+    textAlign: 'right',
+  },
+  actionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Space.lg,
+  },
+  priceBlock: {
+    minWidth: 110,
+  },
+  price: {
+    fontSize: 20,
+    lineHeight: 26,
+    marginTop: 2,
+  },
+  unavailable: {
+    marginTop: Space.sm,
   },
 });

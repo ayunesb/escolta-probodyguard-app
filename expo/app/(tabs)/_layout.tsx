@@ -1,225 +1,138 @@
+import React from "react";
+import { Platform, StyleSheet, View } from "react-native";
 import { Tabs, Redirect } from "expo-router";
-import { Shield, Calendar, User, Briefcase, Settings, LayoutDashboard, Users as UsersIcon, FileText } from "lucide-react-native";
-import React, { useEffect } from "react";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import {
+  Shield,
+  CalendarDays,
+  UserRound,
+  BriefcaseBusiness,
+  LayoutDashboard,
+  Users as UsersIcon,
+  FileCheck2,
+} from "lucide-react-native";
+import type { LucideIcon } from "lucide-react-native";
 import { useAuth } from "@/contexts/AuthContext";
-import { useLocationTracking } from "@/contexts/LocationTrackingContext";
 import Colors from "@/constants/colors";
+import { Fonts } from "@/constants/design";
+import type { UserRole } from "@/types";
+
+type TabName = "home" | "bookings" | "profile" | "company-home" | "company-guards" | "admin-home" | "admin-kyc" | "admin-users";
+type TabSpec = { name: TabName; title: string; icon: LucideIcon };
+
+// Pestanas visibles por rol, en orden. Las demas se registran con href:null
+// (ocultas) porque expo-router necesita declarar todas las rutas del grupo.
+const TABS_BY_ROLE: Record<UserRole, TabSpec[]> = {
+  client: [
+    { name: "home", title: "Protect", icon: Shield },
+    { name: "bookings", title: "Bookings", icon: CalendarDays },
+    { name: "profile", title: "Account", icon: UserRound },
+  ],
+  guard: [
+    { name: "home", title: "Jobs", icon: BriefcaseBusiness },
+    { name: "bookings", title: "History", icon: CalendarDays },
+    { name: "profile", title: "Account", icon: UserRound },
+  ],
+  company: [
+    { name: "company-home", title: "Overview", icon: LayoutDashboard },
+    { name: "company-guards", title: "Roster", icon: Shield },
+    { name: "bookings", title: "Bookings", icon: CalendarDays },
+    { name: "profile", title: "Account", icon: UserRound },
+  ],
+  admin: [
+    { name: "admin-home", title: "Overview", icon: LayoutDashboard },
+    { name: "admin-kyc", title: "Verification", icon: FileCheck2 },
+    { name: "admin-users", title: "Members", icon: UsersIcon },
+    { name: "bookings", title: "Bookings", icon: CalendarDays },
+    { name: "profile", title: "Account", icon: UserRound },
+  ],
+};
+
+const ALL_TABS: TabName[] = ["home", "bookings", "profile", "company-home", "company-guards", "admin-home", "admin-kyc", "admin-users"];
+
+function TabIcon({ icon: Icon, focused, color }: { icon: LucideIcon; focused: boolean; color: string }) {
+  return (
+    <View style={styles.iconWrap}>
+      <View style={[styles.indicator, focused ? styles.indicatorOn : null]} />
+      <Icon size={22} color={color} strokeWidth={focused ? 2 : 1.6} />
+    </View>
+  );
+}
 
 export default function TabLayout() {
   const { user, isLoading } = useAuth();
-  const { setRole } = useLocationTracking();
+  const insets = useSafeAreaInsets();
 
-  useEffect(() => {
-    if (user) {
-      console.log('[TabLayout] User detected:', user.email, 'role:', user.role);
-      setRole(user.role);
-    }
-  }, [user, setRole]);
+  if (isLoading) return <View style={styles.blank} />;
+  if (!user) return <Redirect href="/auth/sign-in" />;
 
-  // Show loading while auth is still initializing
-  if (isLoading) {
-    console.log('[TabLayout] Auth loading...');
-    return null;
-  }
+  const visible = TABS_BY_ROLE[user.role];
+  if (!visible) return <Redirect href="/auth/sign-in" />;
 
-  if (!user) {
-    console.log('[TabLayout] No user, redirecting to sign-in');
-    return <Redirect href="/auth/sign-in" />;
-  }
+  const hidden = ALL_TABS.filter((name) => !visible.some((t) => t.name === name));
+  const bottom = Math.max(insets.bottom, Platform.OS === "web" ? 10 : 8);
 
-  if (user.role === 'client') {
-    return (
-      <Tabs
-        screenOptions={{
-          tabBarActiveTintColor: Colors.gold,
-          tabBarInactiveTintColor: Colors.textSecondary,
-          tabBarStyle: {
-            backgroundColor: Colors.surface,
-            borderTopColor: Colors.border,
-            borderTopWidth: 1,
-          },
-          headerShown: false,
-        }}
-      >
+  return (
+    <Tabs
+      screenOptions={{
+        headerShown: false,
+        tabBarActiveTintColor: Colors.gold,
+        tabBarInactiveTintColor: Colors.textTertiary,
+        tabBarStyle: {
+          backgroundColor: Colors.background,
+          borderTopColor: Colors.border,
+          borderTopWidth: StyleSheet.hairlineWidth,
+          height: 64 + bottom,
+          paddingTop: 8,
+          paddingBottom: bottom,
+          elevation: 0,
+        },
+        tabBarLabelStyle: {
+          fontFamily: Fonts.medium,
+          fontSize: 11,
+          lineHeight: 14,
+          letterSpacing: 0.2,
+          marginTop: 3,
+        },
+        sceneStyle: { backgroundColor: Colors.background },
+      }}
+    >
+      {visible.map((tab) => (
         <Tabs.Screen
-          name="home"
+          key={tab.name}
+          name={tab.name}
           options={{
-            title: "Book",
-            tabBarIcon: ({ color }: { color?: string }) => <Shield size={24} color={color ?? Colors.textSecondary} />,
+            title: tab.title,
+            tabBarAccessibilityLabel: tab.title,
+            tabBarIcon: ({ color, focused }) => <TabIcon icon={tab.icon} focused={focused} color={color} />,
           }}
         />
-        <Tabs.Screen
-          name="bookings"
-          options={{
-            title: "Bookings",
-            tabBarIcon: ({ color }: { color?: string }) => <Calendar size={24} color={color ?? Colors.textSecondary} />,
-          }}
-        />
-        <Tabs.Screen
-          name="profile"
-          options={{
-            title: "Profile",
-            tabBarIcon: ({ color }: { color?: string }) => <User size={24} color={color ?? Colors.textSecondary} />,
-          }}
-        />
-        <Tabs.Screen name="company-home" options={{ href: null }} />
-        <Tabs.Screen name="company-guards" options={{ href: null }} />
-        <Tabs.Screen name="admin-home" options={{ href: null }} />
-        <Tabs.Screen name="admin-kyc" options={{ href: null }} />
-        <Tabs.Screen name="admin-users" options={{ href: null }} />
-      </Tabs>
-    );
-  }
-
-  if (user.role === 'guard') {
-    return (
-      <Tabs
-        screenOptions={{
-          tabBarActiveTintColor: Colors.gold,
-          tabBarInactiveTintColor: Colors.textSecondary,
-          tabBarStyle: {
-            backgroundColor: Colors.surface,
-            borderTopColor: Colors.border,
-            borderTopWidth: 1,
-          },
-          headerShown: false,
-        }}
-      >
-        <Tabs.Screen
-          name="home"
-          options={{
-            title: "Jobs",
-            tabBarIcon: ({ color }: { color?: string }) => <Briefcase size={24} color={color ?? Colors.textSecondary} />,
-          }}
-        />
-        <Tabs.Screen
-          name="bookings"
-          options={{
-            title: "History",
-            tabBarIcon: ({ color }: { color?: string }) => <Calendar size={24} color={color ?? Colors.textSecondary} />,
-          }}
-        />
-        <Tabs.Screen
-          name="profile"
-          options={{
-            title: "Profile",
-            tabBarIcon: ({ color }: { color?: string }) => <Settings size={24} color={color ?? Colors.textSecondary} />,
-          }}
-        />
-        <Tabs.Screen name="company-home" options={{ href: null }} />
-        <Tabs.Screen name="company-guards" options={{ href: null }} />
-        <Tabs.Screen name="admin-home" options={{ href: null }} />
-        <Tabs.Screen name="admin-kyc" options={{ href: null }} />
-        <Tabs.Screen name="admin-users" options={{ href: null }} />
-      </Tabs>
-    );
-  }
-
-  if (user.role === 'company') {
-    return (
-      <Tabs
-        screenOptions={{
-          tabBarActiveTintColor: Colors.gold,
-          tabBarInactiveTintColor: Colors.textSecondary,
-          tabBarStyle: {
-            backgroundColor: Colors.surface,
-            borderTopColor: Colors.border,
-            borderTopWidth: 1,
-          },
-          headerShown: false,
-        }}
-      >
-        <Tabs.Screen
-          name="company-home"
-          options={{
-            title: "Dashboard",
-            tabBarIcon: ({ color }: { color?: string }) => <LayoutDashboard size={24} color={color ?? Colors.textSecondary} />,
-          }}
-        />
-        <Tabs.Screen
-          name="company-guards"
-          options={{
-            title: "Guards",
-            tabBarIcon: ({ color }: { color?: string }) => <Shield size={24} color={color ?? Colors.textSecondary} />,
-          }}
-        />
-        <Tabs.Screen
-          name="bookings"
-          options={{
-            title: "Bookings",
-            tabBarIcon: ({ color }: { color?: string }) => <Calendar size={24} color={color ?? Colors.textSecondary} />,
-          }}
-        />
-        <Tabs.Screen
-          name="profile"
-          options={{
-            title: "Profile",
-            tabBarIcon: ({ color }: { color?: string }) => <User size={24} color={color ?? Colors.textSecondary} />,
-          }}
-        />
-        <Tabs.Screen name="home" options={{ href: null }} />
-        <Tabs.Screen name="admin-home" options={{ href: null }} />
-        <Tabs.Screen name="admin-kyc" options={{ href: null }} />
-        <Tabs.Screen name="admin-users" options={{ href: null }} />
-      </Tabs>
-    );
-  }
-
-  if (user.role === 'admin') {
-    return (
-      <Tabs
-        screenOptions={{
-          tabBarActiveTintColor: Colors.gold,
-          tabBarInactiveTintColor: Colors.textSecondary,
-          tabBarStyle: {
-            backgroundColor: Colors.surface,
-            borderTopColor: Colors.border,
-            borderTopWidth: 1,
-          },
-          headerShown: false,
-        }}
-      >
-        <Tabs.Screen
-          name="admin-home"
-          options={{
-            title: "Dashboard",
-            tabBarIcon: ({ color }: { color?: string }) => <LayoutDashboard size={24} color={color ?? Colors.textSecondary} />,
-          }}
-        />
-        <Tabs.Screen
-          name="admin-kyc"
-          options={{
-            title: "KYC",
-            tabBarIcon: ({ color }: { color?: string }) => <FileText size={24} color={color ?? Colors.textSecondary} />,
-          }}
-        />
-        <Tabs.Screen
-          name="admin-users"
-          options={{
-            title: "Users",
-            tabBarIcon: ({ color }: { color?: string }) => <UsersIcon size={24} color={color ?? Colors.textSecondary} />,
-          }}
-        />
-        <Tabs.Screen
-          name="bookings"
-          options={{
-            title: "Bookings",
-            tabBarIcon: ({ color }: { color?: string }) => <Calendar size={24} color={color ?? Colors.textSecondary} />,
-          }}
-        />
-        <Tabs.Screen
-          name="profile"
-          options={{
-            title: "Profile",
-            tabBarIcon: ({ color }: { color?: string }) => <User size={24} color={color ?? Colors.textSecondary} />,
-          }}
-        />
-        <Tabs.Screen name="home" options={{ href: null }} />
-        <Tabs.Screen name="company-home" options={{ href: null }} />
-        <Tabs.Screen name="company-guards" options={{ href: null }} />
-      </Tabs>
-    );
-  }
-
-  return <Redirect href="/auth/sign-in" />;
+      ))}
+      {hidden.map((name) => (
+        <Tabs.Screen key={name} name={name} options={{ href: null }} />
+      ))}
+    </Tabs>
+  );
 }
+
+const styles = StyleSheet.create({
+  blank: {
+    flex: 1,
+    backgroundColor: Colors.background,
+  },
+  iconWrap: {
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  indicator: {
+    position: "absolute",
+    top: -9,
+    width: 18,
+    height: 2,
+    borderRadius: 1,
+    backgroundColor: "transparent",
+  },
+  indicatorOn: {
+    backgroundColor: Colors.gold,
+  },
+});

@@ -1,5 +1,6 @@
 import { db } from '@/lib/firebase';
-import { doc, setDoc, getDoc, updateDoc, serverTimestamp, collection, query, getDocs } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, query, serverTimestamp, setDoc } from 'firebase/firestore';
+import { logger } from '@/utils/logger';
 
 export interface ConsentRecord {
   userId: string;
@@ -21,6 +22,8 @@ export interface ConsentUpdate {
   locationTracking?: boolean;
 }
 
+// consents/{uid}: preferencias de consentimiento del titular (LFPDPPP).
+// Requiere una regla de Firestore que deje leer/escribir al dueno.
 class ConsentService {
   private readonly CURRENT_VERSION = '1.0.0';
   private readonly COLLECTION = 'consents';
@@ -31,69 +34,54 @@ class ConsentService {
     metadata?: { ipAddress?: string; userAgent?: string }
   ): Promise<void> {
     try {
-      const dbInstance = db();
-      const consentRef = doc(dbInstance, this.COLLECTION, userId);
-
-      const consentRecord: any = {
+      await setDoc(doc(db(), this.COLLECTION, userId), {
         userId,
         ...consents,
+        ...(metadata ?? {}),
         timestamp: serverTimestamp(),
         version: this.CURRENT_VERSION,
-        ...metadata,
-      };
-
-      await setDoc(consentRef, consentRecord);
-      console.log('[Consent] Recorded consent for user:', userId);
+      });
     } catch (error) {
-      console.error('[Consent] Error recording consent:', error);
+      logger.error('[Consent] Error recording consent', error);
       throw new Error('Failed to record consent');
     }
   }
 
   async getConsent(userId: string): Promise<ConsentRecord | null> {
     try {
-      const dbInstance = db();
-      const consentRef = doc(dbInstance, this.COLLECTION, userId);
-      const consentDoc = await getDoc(consentRef);
-
-      if (!consentDoc.exists()) {
-        return null;
-      }
-
+      const consentDoc = await getDoc(doc(db(), this.COLLECTION, userId));
+      if (!consentDoc.exists()) return null;
       const data = consentDoc.data();
       return {
         userId: data.userId,
-        termsOfService: data.termsOfService,
-        privacyPolicy: data.privacyPolicy,
-        dataProcessing: data.dataProcessing,
-        marketing: data.marketing,
-        analytics: data.analytics,
-        locationTracking: data.locationTracking,
-        timestamp: data.timestamp?.toDate() || new Date(),
+        termsOfService: data.termsOfService === true,
+        privacyPolicy: data.privacyPolicy === true,
+        dataProcessing: data.dataProcessing === true,
+        marketing: data.marketing === true,
+        analytics: data.analytics === true,
+        locationTracking: data.locationTracking === true,
+        timestamp: data.timestamp?.toDate?.() || new Date(),
         ipAddress: data.ipAddress,
         userAgent: data.userAgent,
         version: data.version,
       };
     } catch (error) {
-      console.error('[Consent] Error getting consent:', error);
+      logger.error('[Consent] Error getting consent', error);
       throw new Error('Failed to get consent');
     }
   }
 
+  // Merge: funciona aunque el documento aun no exista (antes updateDoc
+  // fallaba para cualquiera que nunca hubiera guardado preferencias).
   async updateConsent(userId: string, updates: ConsentUpdate): Promise<void> {
     try {
-      const dbInstance = db();
-      const consentRef = doc(dbInstance, this.COLLECTION, userId);
-
-      const updateData: any = {
-        ...updates,
-        updatedAt: serverTimestamp(),
-      };
-
-      await updateDoc(consentRef, updateData);
-      console.log('[Consent] Updated consent for user:', userId);
+      await setDoc(
+        doc(db(), this.COLLECTION, userId),
+        { userId, ...updates, version: this.CURRENT_VERSION, updatedAt: serverTimestamp() },
+        { merge: true }
+      );
     } catch (error) {
-      console.error('[Consent] Error updating consent:', error);
+      logger.error('[Consent] Error updating consent', error);
       throw new Error('Failed to update consent');
     }
   }
@@ -101,31 +89,17 @@ class ConsentService {
   async hasValidConsent(userId: string): Promise<boolean> {
     try {
       const consent = await this.getConsent(userId);
-      
-      if (!consent) {
-        return false;
-      }
-
-      return (
-        consent.termsOfService &&
-        consent.privacyPolicy &&
-        consent.dataProcessing
-      );
-    } catch (error) {
-      console.error('[Consent] Error checking consent:', error);
+      return !!consent && consent.termsOfService && consent.privacyPolicy && consent.dataProcessing;
+    } catch {
       return false;
     }
   }
 
   async getConsentHistory(userId: string): Promise<ConsentRecord[]> {
     try {
-      const dbInstance = db();
-      const historyRef = collection(dbInstance, `${this.COLLECTION}/${userId}/history`);
-      const historyQuery = query(historyRef);
-      const historyDocs = await getDocs(historyQuery);
-
-      return historyDocs.docs.map(doc => {
-        const data = doc.data();
+      const historyDocs = await getDocs(query(collection(db(), `${this.COLLECTION}/${userId}/history`)));
+      return historyDocs.docs.map((d) => {
+        const data = d.data();
         return {
           userId: data.userId,
           termsOfService: data.termsOfService,
@@ -134,47 +108,29 @@ class ConsentService {
           marketing: data.marketing,
           analytics: data.analytics,
           locationTracking: data.locationTracking,
-          timestamp: data.timestamp?.toDate() || new Date(),
+          timestamp: data.timestamp?.toDate?.() || new Date(),
           ipAddress: data.ipAddress,
           userAgent: data.userAgent,
           version: data.version,
         };
       });
     } catch (error) {
-      console.error('[Consent] Error getting consent history:', error);
+      logger.error('[Consent] Error getting consent history', error);
       return [];
     }
   }
 
   async withdrawConsent(userId: string, consentType: keyof ConsentUpdate): Promise<void> {
-    try {
-      await this.updateConsent(userId, { [consentType]: false });
-      console.log(`[Consent] Withdrew ${consentType} consent for user:`, userId);
-    } catch (error) {
-      console.error('[Consent] Error withdrawing consent:', error);
-      throw new Error('Failed to withdraw consent');
-    }
+    await this.updateConsent(userId, { [consentType]: false });
   }
 
   async archiveConsentToHistory(userId: string): Promise<void> {
     try {
       const currentConsent = await this.getConsent(userId);
-      
-      if (!currentConsent) {
-        return;
-      }
-
-      const dbInstance = db();
-      const historyRef = doc(
-        dbInstance,
-        `${this.COLLECTION}/${userId}/history`,
-        Date.now().toString()
-      );
-
-      await setDoc(historyRef, currentConsent);
-      console.log('[Consent] Archived consent to history for user:', userId);
+      if (!currentConsent) return;
+      await setDoc(doc(db(), `${this.COLLECTION}/${userId}/history`, Date.now().toString()), currentConsent);
     } catch (error) {
-      console.error('[Consent] Error archiving consent:', error);
+      logger.error('[Consent] Error archiving consent', error);
     }
   }
 }

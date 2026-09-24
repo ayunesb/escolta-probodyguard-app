@@ -1,7 +1,20 @@
-import { collection, addDoc, updateDoc, doc, getDocs, query, where, serverTimestamp } from 'firebase/firestore';
-import { db as getDbInstance } from '@/lib/firebase';
-import { SavedPaymentMethod } from '@/types';
-import { PAYMENT_CONFIG, ENV } from '@/config/env';
+/**
+ * Payments on the client.
+ *
+ * Pricing is NOT computed here: the only formula is `utils/pricing`
+ * (`calculatePrice`), and the server recomputes it from the stored booking
+ * before charging. The client never sends an amount and never writes
+ * `status: 'confirmed'` — the server confirms the booking once the processor
+ * says the charge succeeded (CONTRACT §4).
+ *
+ * - Web: Stripe (Vercel functions in `api/stripe/*`).
+ * - Native: Braintree via Cloud Functions (`/payments/*`), same server rules.
+ */
+import { collection, updateDoc, doc, getDocs, query, where, serverTimestamp } from 'firebase/firestore';
+import { auth as getAuthInstance, db as getDbInstance } from '@/lib/firebase';
+import type { SavedPaymentMethod } from '@/types';
+import type { PriceBreakdown } from '@/utils/pricing';
+import { ENV } from '@/config/env';
 import { logger } from '@/utils/logger';
 
 export interface PaymentResult {
@@ -12,231 +25,214 @@ export interface PaymentResult {
   actionUrl?: string;
 }
 
-export interface PaymentBreakdown {
-  subtotal: number;
-  processingFee: number;
-  platformCut: number;
-  guardPayout: number;
-  total: number;
+/**
+ * Canonical amounts as returned by the server. `total` is always present;
+ * the itemised fields are shown when the server sends them.
+ */
+export type ServerBreakdown = Pick<PriceBreakdown, 'total'> &
+  Partial<Omit<PriceBreakdown, 'total'>>;
+
+export interface PaymentIntentResponse {
+  clientSecret: string;
+  paymentIntentId: string;
+  breakdown: ServerBreakdown;
+}
+
+export type BookingPaymentStatus = 'confirmed' | 'processing';
+
+/** A saved Braintree card is charged by its vault token, a new card by a one-time nonce. */
+export type BraintreeMethod = { paymentMethodNonce: string } | { paymentMethodToken: string };
+
+/** HTTP error from the payments API; `status` lets screens react to 409 etc. */
+export class PaymentApiError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'PaymentApiError';
+    this.status = status;
+  }
+}
+
+// Same origin on web (Vercel serves /api next to the app). Read with a static
+// `process.env.EXPO_PUBLIC_*` access so Expo inlines it at build time.
+const apiBase = (): string => process.env.EXPO_PUBLIC_API_URL ?? '';
+
+async function authHeaders(): Promise<Record<string, string>> {
+  const user = getAuthInstance().currentUser;
+  if (!user) throw new PaymentApiError('Please sign in again to pay.', 401);
+  const idToken = await user.getIdToken();
+  return {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${idToken}`,
+  };
+}
+
+async function readError(response: Response, fallback: string): Promise<string> {
+  try {
+    const body = (await response.json()) as { error?: unknown; message?: unknown };
+    const raw = body?.error ?? body?.message;
+    if (typeof raw === 'string' && raw.trim()) return raw;
+    if (raw && typeof raw === 'object' && typeof (raw as { message?: unknown }).message === 'string') {
+      return (raw as { message: string }).message;
+    }
+  } catch {
+    // Body wasn't JSON; fall through.
+  }
+  return fallback;
+}
+
+const toNumber = (value: unknown): number | undefined =>
+  typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+
+function normalizeBreakdown(raw: unknown, fallbackTotal?: unknown): ServerBreakdown | null {
+  const source = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const total = toNumber(source.total) ?? toNumber(fallbackTotal);
+  if (total === undefined) return null;
+  return {
+    total,
+    subtotal: toNumber(source.subtotal),
+    baseSubtotal: toNumber(source.baseSubtotal),
+    armoredSurcharge: toNumber(source.armoredSurcharge),
+    armedSurcharge: toNumber(source.armedSurcharge),
+    processingFee: toNumber(source.processingFee),
+    platformCut: toNumber(source.platformCut),
+    guardPayout: toNumber(source.guardPayout),
+    totalCents: toNumber(source.totalCents),
+  };
 }
 
 export const paymentService = {
-  async getClientToken(userId: string): Promise<string> {
-    logger.log('[Payment] Requesting client token for user:', userId);
-    
-    try {
-      const url = new URL(`${ENV.API_URL}/payments/client-token`);
-      if (userId) url.searchParams.set('userId', userId);
-      const response = await fetch(url.toString(), {
-        method: 'GET',
-      });
+  // ---------------------------------------------------------------- Stripe (web)
 
-      if (!response.ok) {
-        throw new Error('Failed to get client token');
-      }
+  /**
+   * Asks the server to price the booking canonically and open (or reuse) its
+   * PaymentIntent. Returns the client secret plus the breakdown to display.
+   */
+  async createPaymentIntent(bookingId: string): Promise<PaymentIntentResponse> {
+    const response = await fetch(`${apiBase()}/api/stripe/payment-intent`, {
+      method: 'POST',
+      headers: await authHeaders(),
+      body: JSON.stringify({ bookingId }),
+    });
 
-      const data = await response.json();
-      logger.log('[Payment] Client token received');
-      return data.clientToken;
-    } catch (error) {
-      logger.error('[Payment] Error getting client token:', error);
-      throw error;
+    if (!response.ok) {
+      const message = await readError(response, 'We could not start the payment. Please try again.');
+      logger.error('[Payment] payment-intent rejected', { status: response.status, message });
+      throw new PaymentApiError(message, response.status);
     }
-  },
 
-  async processPayment(
-    nonce: string,
-    amount: number,
-    bookingId: string,
-    userId: string,
-    saveCard: boolean = false
-  ): Promise<PaymentResult> {
-    logger.log('[Payment] Processing payment:', { amount, bookingId, userId, saveCard });
-    
-    try {
-      const response = await fetch(`${ENV.API_URL}/payments/process`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          nonce,
-          amount,
-          bookingId,
-          userId,
-          saveCard,
-          currency: ENV.PAYMENTS_CURRENCY,
-        }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        logger.error('[Payment] Payment failed:', data.error);
-        return {
-          success: false,
-          error: data.error || 'Payment processing failed',
-        };
-      }
-
-      if (data.requiresAction) {
-        logger.log('[Payment] 3DS authentication required');
-        return {
-          success: false,
-          requiresAction: true,
-          actionUrl: data.actionUrl,
-        };
-      }
-
-      logger.log('[Payment] Payment successful:', data.transactionId);
-      
-      await addDoc(collection(getDbInstance(), 'payments'), {
-        bookingId,
-        userId,
-        clientId: userId, // Required by Firestore rules
-        amount,
-        transactionId: data.transactionId,
-        status: 'completed',
-        createdAt: serverTimestamp(),
-      });
-
-      return {
-        success: true,
-        transactionId: data.transactionId,
-      };
-    } catch (error) {
-      logger.error('[Payment] Payment processing error:', error);
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Payment failed',
-      };
+    const data = (await response.json()) as Record<string, unknown>;
+    const clientSecret = typeof data.clientSecret === 'string' ? data.clientSecret : '';
+    const breakdown = normalizeBreakdown(data.breakdown, data.amount);
+    if (!clientSecret || !breakdown) {
+      throw new PaymentApiError('The payment server returned an incomplete response.', 502);
     }
-  },
-
-  async processCardDirectly(
-    cardNumber: string,
-    expirationDate: string,
-    cvv: string,
-    postalCode: string,
-    amount: number,
-    bookingId: string,
-    userId: string
-  ): Promise<PaymentResult> {
-    logger.log('[Payment] Processing card directly:', { amount, bookingId });
-    
-    try {
-      const response = await fetch(`${ENV.API_URL}/payments/process-card`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          cardNumber,
-          expirationDate,
-          cvv,
-          postalCode,
-          amount,
-          bookingId,
-        }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok || !data.success) {
-        logger.error('[Payment] Card payment failed:', data.error);
-        return {
-          success: false,
-          error: data.error || 'Payment processing failed',
-        };
-      }
-
-      logger.log('[Payment] Card payment successful:', data.transactionId);
-      
-      await addDoc(collection(getDbInstance(), 'payments'), {
-        bookingId,
-        userId,
-        clientId: userId, // Required by Firestore rules
-        amount,
-        transactionId: data.transactionId,
-        status: 'completed',
-        createdAt: serverTimestamp(),
-      });
-
-      return {
-        success: true,
-        transactionId: data.transactionId,
-      };
-    } catch (error) {
-      logger.error('[Payment] Card payment processing error:', error);
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Payment failed',
-      };
-    }
-  },
-
-  calculateBreakdown(hourlyRate: number, duration: number): PaymentBreakdown {
-    const subtotal = hourlyRate * duration;
-    const processingFee = subtotal * PAYMENT_CONFIG.PROCESSING_FEE_PERCENT + PAYMENT_CONFIG.PROCESSING_FEE_FIXED;
-    const total = subtotal + processingFee;
-    const platformCut = subtotal * PAYMENT_CONFIG.PLATFORM_CUT_PERCENT;
-    const guardPayout = subtotal - platformCut;
-
     return {
-      subtotal,
-      processingFee,
-      platformCut,
-      guardPayout,
-      total,
+      clientSecret,
+      paymentIntentId: typeof data.paymentIntentId === 'string' ? data.paymentIntentId : '',
+      breakdown,
     };
   },
 
-  formatMXN(amount: number): string {
-    return new Intl.NumberFormat('es-MX', {
-      style: 'currency',
-      currency: 'MXN',
-      minimumFractionDigits: 2,
-    }).format(amount);
+  /**
+   * After Stripe reports success (or processing), the server verifies the
+   * PaymentIntent and marks the booking confirmed. Idempotent: safe to retry.
+   */
+  async confirmBookingPayment(bookingId: string): Promise<{ status: BookingPaymentStatus }> {
+    const response = await fetch(`${apiBase()}/api/stripe/confirm-booking`, {
+      method: 'POST',
+      headers: await authHeaders(),
+      body: JSON.stringify({ bookingId }),
+    });
+
+    if (!response.ok) {
+      const message = await readError(response, 'We could not confirm the booking yet.');
+      logger.error('[Payment] confirm-booking rejected', { status: response.status, message });
+      throw new PaymentApiError(message, response.status);
+    }
+
+    const data = (await response.json()) as { status?: unknown };
+    return { status: data.status === 'confirmed' ? 'confirmed' : 'processing' };
   },
 
-  async calculateBookingCost(
-    hourlyRate: number,
-    duration: number,
-    vehicleType: 'standard' | 'armored',
-    protectionType: 'armed' | 'unarmed',
-    numberOfProtectees: number
-  ): Promise<{
-    subtotal: number;
-    vehicleFee: number;
-    protectionFee: number;
-    platformFee: number;
-    total: number;
-  }> {
-    const subtotal = hourlyRate * duration;
-    const vehicleFee = vehicleType === 'armored' ? 500 * duration : 0;
-    const protectionFee = protectionType === 'armed' ? 200 * duration : 0;
-    const platformFee = (subtotal + vehicleFee + protectionFee) * 0.1;
-    const total = subtotal + vehicleFee + protectionFee + platformFee;
+  // ------------------------------------------------------------ Braintree (native)
+
+  async getClientToken(userId: string): Promise<string> {
+    const url = new URL(`${ENV.API_URL}/payments/client-token`);
+    if (userId) url.searchParams.set('userId', userId);
+    const response = await fetch(url.toString(), { method: 'GET' });
+    if (!response.ok) {
+      logger.error('[Payment] client-token failed', { status: response.status });
+      throw new Error('Failed to get client token');
+    }
+    const data = await response.json();
+    return data.clientToken;
+  },
+
+  /**
+   * Charges the booking through Braintree. The server loads the booking,
+   * charges the canonical amount and confirms it — so the body carries only
+   * the booking id and the payment method, never an amount.
+   *
+   * The result reflects the CHARGE only. Nothing after a successful charge
+   * (bookkeeping, analytics) may turn it into a failure, or the client would
+   * see "Payment failed" after being charged and pay twice.
+   */
+  async processBraintreePayment(bookingId: string, method: BraintreeMethod): Promise<PaymentResult> {
+    let response: Response;
+    try {
+      response = await fetch(`${ENV.API_URL}/payments/process`, {
+        method: 'POST',
+        headers: await authHeaders(),
+        body: JSON.stringify({ bookingId, ...method }),
+      });
+    } catch (error) {
+      logger.error('[Payment] Braintree request failed', error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Network error. You were not charged.',
+      };
+    }
+
+    let data: Record<string, unknown> = {};
+    try {
+      data = (await response.json()) as Record<string, unknown>;
+    } catch {
+      // Non-JSON body; judge by the HTTP status alone.
+    }
+
+    if (!response.ok || data.success === false) {
+      const raw = data.error;
+      const message =
+        typeof raw === 'string'
+          ? raw
+          : raw && typeof raw === 'object' && typeof (raw as { message?: unknown }).message === 'string'
+            ? (raw as { message: string }).message
+            : 'Payment processing failed';
+      logger.error('[Payment] Braintree charge declined', { status: response.status, message });
+      return { success: false, error: message };
+    }
+
+    if (data.requiresAction) {
+      return {
+        success: false,
+        requiresAction: true,
+        actionUrl: typeof data.actionUrl === 'string' ? data.actionUrl : undefined,
+      };
+    }
 
     return {
-      subtotal,
-      vehicleFee,
-      protectionFee,
-      platformFee,
-      total,
+      success: true,
+      transactionId: typeof data.transactionId === 'string' ? data.transactionId : undefined,
     };
   },
 
   async getSavedPaymentMethods(userId: string): Promise<SavedPaymentMethod[]> {
     try {
       const response = await fetch(`${ENV.API_URL}/payments/methods/${userId}`);
-      
-      // Handle 404 gracefully - user doesn't exist in Braintree yet (first-time user)
-      if (response.status === 404) {
-        logger.log('[Payment] No saved cards found (first-time user)');
-        return [];
-      }
-      
-      if (!response.ok) {
-        throw new Error('Failed to fetch payment methods');
-      }
-
+      // 404 = no Braintree customer yet (first-time payer).
+      if (response.status === 404) return [];
+      if (!response.ok) throw new Error('Failed to fetch payment methods');
       const data = await response.json();
       return data.paymentMethods || [];
     } catch (error) {
@@ -246,73 +242,54 @@ export const paymentService = {
   },
 
   async removePaymentMethod(userId: string, token: string): Promise<void> {
-    try {
-      const response = await fetch(`${ENV.API_URL}/payments/methods/${userId}/${token}`, {
-        method: 'DELETE',
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to remove payment method');
-      }
-
-      logger.log('[Payment] Removed payment method');
-    } catch (error) {
-      logger.error('[Payment] Error removing payment method:', error);
-      throw error;
+    const response = await fetch(`${ENV.API_URL}/payments/methods/${userId}/${token}`, {
+      method: 'DELETE',
+    });
+    if (!response.ok) {
+      logger.error('[Payment] Error removing payment method', { status: response.status });
+      throw new Error('Failed to remove payment method');
     }
   },
 
   async processRefund(transactionId: string, bookingId: string, amount?: number): Promise<PaymentResult> {
-    logger.log('[Payment] Processing refund:', { transactionId, bookingId, amount });
-    
+    let data: Record<string, any>;
     try {
       const response = await fetch(`${ENV.API_URL}/payments/refund`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          transactionId,
-          bookingId,
-          amount,
-        }),
+        body: JSON.stringify({ transactionId, bookingId, amount }),
       });
-
-      const data = await response.json();
-
+      data = await response.json();
       if (!response.ok) {
         logger.error('[Payment] Refund failed:', data.error);
-        return {
-          success: false,
-          error: data.error || 'Refund processing failed',
-        };
+        return { success: false, error: data.error || 'Refund processing failed' };
       }
+    } catch (error) {
+      logger.error('[Payment] Refund processing error:', error);
+      return { success: false, error: error instanceof Error ? error.message : 'Refund failed' };
+    }
 
-      logger.log('[Payment] Refund successful:', data.refundId);
-      
+    // Bookkeeping is best-effort: the refund already happened and must be
+    // reported as such even if this record can't be updated.
+    try {
       const paymentQuery = query(
         collection(getDbInstance(), 'payments'),
         where('transactionId', '==', transactionId)
       );
       const paymentSnapshot = await getDocs(paymentQuery);
-      
       if (!paymentSnapshot.empty) {
-        const paymentDoc = paymentSnapshot.docs[0];
-        await updateDoc(doc(getDbInstance(), 'payments', paymentDoc.id), {
+        await updateDoc(doc(getDbInstance(), 'payments', paymentSnapshot.docs[0].id), {
           status: 'refunded',
           refundId: data.refundId,
           refundedAt: serverTimestamp(),
         });
       }
-
-      return {
-        success: true,
-        transactionId: data.refundId,
-      };
     } catch (error) {
-      logger.error('[Payment] Refund processing error:', error);
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Refund failed',
-      };
+      logger.error('[Payment] Refund succeeded but the payment record was not updated', error);
     }
+
+    return { success: true, transactionId: data.refundId };
   },
 };
+
+export default paymentService;

@@ -204,9 +204,9 @@ firebase deploy --only functions
 ```typescript
 import { defineSecret } from 'firebase-functions/params';
 
-const braintreeMerchantId = defineSecret('BRAINTREE_MERCHANT_ID');
-const braintreePublicKey = defineSecret('BRAINTREE_PUBLIC_KEY');
-const braintreePrivateKey = defineSecret('BRAINTREE_PRIVATE_KEY');
+const braintreeMerchantId = REDACTED('BRAINTREE_MERCHANT_ID');
+const braintreePublicKey = REDACTED('BRAINTREE_PUBLIC_KEY');
+const braintreePrivateKey = REDACTED('BRAINTREE_PRIVATE_KEY');
 
 // Use in function:
 export const api = onRequest(
@@ -215,9 +215,9 @@ export const api = onRequest(
     cors: true 
   },
   async (req, res) => {
-    const merchantId = braintreeMerchantId.value();
-    const publicKey = braintreePublicKey.value();
-    const privateKey = braintreePrivateKey.value();
+    const merchantId = REDACTED.value();
+    const publicKey = REDACTED.value();
+    const privateKey = REDACTED.value();
     // ... rest of code
   }
 );

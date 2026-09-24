@@ -1,397 +1,440 @@
-import React, { useState, useEffect, useRef } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  Modal,
-  TouchableOpacity,
-  ActivityIndicator,
-  ScrollView,
-  Alert,
-  TextInput,
-} from 'react-native';
-import { CreditCard, X, Check } from 'lucide-react-native';
-import { paymentService, PaymentBreakdown } from '@/services/paymentService';
-import { SavedPaymentMethod } from '@/types';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Check, CreditCard, Lock, Plus, ShieldCheck, X } from 'lucide-react-native';
 import Colors from '@/constants/colors';
-import BraintreeHostedFields, { BraintreeHostedFieldsHandle, CardDetails } from './BraintreeHostedFields';
-import StripePaymentForm from './StripePaymentForm';
+import { ICON_STROKE, MAX_CONTENT_WIDTH, Radius, Shadow, Space } from '@/constants/design';
+import { AppText, Button, Card, EmptyState, IconButton, ListGroup, ListRow, SectionTitle, Skeleton } from '@/components/ui';
+import { PriceReceipt } from '@/components/funnel/PriceReceipt';
+import type { PaymentOutcome } from '@/components/funnel/paymentTypes';
+import { paymentService, PaymentApiError, type ServerBreakdown } from '@/services/paymentService';
 import { stripeService } from '@/services/stripeService';
+import { bookingService } from '@/services/bookingService';
+import type { SavedPaymentMethod } from '@/types';
+import { formatMXN } from '@/utils/pricing';
+import { logger } from '@/utils/logger';
+import BraintreeHostedFields, { BraintreeHostedFieldsHandle } from './BraintreeHostedFields';
+import StripePaymentForm from './StripePaymentForm';
 
-const TEXT_COLOR = Colors.textPrimary;
+export type { PaymentOutcome } from '@/components/funnel/paymentTypes';
 
 interface PaymentSheetProps {
   visible: boolean;
-  amount: number;
-  breakdown: PaymentBreakdown;
-  userId: string;
   bookingId: string;
-  onSuccess: (transactionId: string) => void;
+  userId: string;
+  // Money moved (or is settling). The parent confirms the booking with the server.
+  onPaid: (outcome: PaymentOutcome) => void;
   onCancel: () => void;
 }
 
-export default function PaymentSheet({
-  visible,
-  amount,
-  breakdown,
-  userId,
-  bookingId,
-  onSuccess,
-  onCancel,
-}: PaymentSheetProps) {
+// web + key → Stripe · web without key → explicit notice (react-native-webview
+// can't run on web, so there is no Braintree fallback there) · native → Braintree.
+type Mode = 'stripe' | 'unconfigured' | 'braintree';
+
+const resolveMode = (): Mode => {
+  if (stripeService.isSupportedOnThisPlatform()) return stripeService.isConfigured() ? 'stripe' : 'unconfigured';
+  return 'braintree';
+};
+
+function quoteErrorMessage(error: unknown): string {
+  if (error instanceof PaymentApiError) {
+    if (error.status === 409) return 'This booking is no longer awaiting payment. Check its status in your bookings.';
+    if (error.status === 401) return 'Your session expired. Please sign in again to pay.';
+    if (error.status === 503) return 'Payments are temporarily unavailable. Nothing has been charged.';
+    return error.message;
+  }
+  return 'We could not reach the payment server. Nothing has been charged.';
+}
+
+export default function PaymentSheet({ visible, bookingId, userId, onPaid, onCancel }: PaymentSheetProps) {
+  const insets = useSafeAreaInsets();
+  const mode = resolveMode();
+
+  // Canonical amounts from the server (Stripe) or the stored booking (Braintree).
+  const [breakdown, setBreakdown] = useState<ServerBreakdown | null>(null);
+  const [quoteError, setQuoteError] = useState<string | null>(null);
+  const [clientSecret, setClientSecret] = useState<string | null>(null);
+  const [quoteAttempt, setQuoteAttempt] = useState(0);
+
+  // Braintree state
   const hostedFieldsRef = useRef<BraintreeHostedFieldsHandle>(null);
-  const [loading, setLoading] = useState(false);
-  const [loadingToken, setLoadingToken] = useState(false);
   const [savedCards, setSavedCards] = useState<SavedPaymentMethod[]>([]);
   const [selectedCard, setSelectedCard] = useState<string | null>(null);
   const [showNewCard, setShowNewCard] = useState(false);
   const [clientToken, setClientToken] = useState<string | null>(null);
-  const [cardholderName, setCardholderName] = useState('');
+  const [tokenState, setTokenState] = useState<'idle' | 'loading' | 'error'>('idle');
+  const [methodsLoading, setMethodsLoading] = useState(false);
+  const [paying, setPaying] = useState(false);
+  const payingRef = useRef(false);
+  const [payError, setPayError] = useState<string | null>(null);
 
-  useEffect(() => {
-    console.log('[PaymentSheet] Visibility changed:', visible);
-    if (visible) {
-      console.log('[PaymentSheet] Loading payment sheet for user:', userId, 'booking:', bookingId);
-      loadSavedCards();
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, userId, bookingId]);
-
-  const loadSavedCards = async () => {
-    try {
-      const cards = await paymentService.getSavedPaymentMethods(userId);
-      setSavedCards(cards);
-      if (cards.length > 0) {
-        setSelectedCard(cards[0].token);
-      } else {
-        setShowNewCard(true);
-        await loadClientToken();
-      }
-    } catch (error) {
-      console.error('[PaymentSheet] Error loading saved cards:', error);
-      setShowNewCard(true);
-      await loadClientToken();
-    }
+  const setPayingState = (value: boolean) => {
+    payingRef.current = value;
+    setPaying(value);
   };
 
-  const loadClientToken = async () => {
-    setLoadingToken(true);
+  // ---------------------------------------------------------------- quote
+
+  useEffect(() => {
+    if (!visible || !bookingId || mode === 'unconfigured') return;
+    let cancelled = false;
+    setBreakdown(null);
+    setQuoteError(null);
+    setClientSecret(null);
+
+    (async () => {
+      try {
+        if (mode === 'stripe') {
+          // Server prices the booking canonically and opens/reuses its PaymentIntent.
+          const intent = await paymentService.createPaymentIntent(bookingId);
+          if (cancelled) return;
+          setClientSecret(intent.clientSecret);
+          setBreakdown(intent.breakdown);
+        } else {
+          // Braintree: show the amounts stored on the booking; the server charges
+          // the canonical amount and rejects the charge if they don't match.
+          const booking = await bookingService.getBookingById(bookingId);
+          if (cancelled) return;
+          if (!booking || !Number.isFinite(booking.totalAmount)) {
+            setQuoteError('We could not load this booking. Nothing has been charged.');
+            return;
+          }
+          if (booking.status !== 'pending') {
+            setQuoteError('This booking is no longer awaiting payment. Check its status in your bookings.');
+            return;
+          }
+          setBreakdown({
+            total: booking.totalAmount,
+            processingFee: booking.processingFee,
+            subtotal: Math.round((booking.totalAmount - (booking.processingFee ?? 0)) * 100) / 100,
+          });
+        }
+      } catch (error) {
+        if (cancelled) return;
+        logger.error('[PaymentSheet] Could not prepare payment', error);
+        setQuoteError(quoteErrorMessage(error));
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [visible, bookingId, mode, quoteAttempt]);
+
+  // ---------------------------------------------------------------- braintree setup
+
+  const loadClientToken = useCallback(async () => {
+    setTokenState('loading');
     try {
       const token = await paymentService.getClientToken(userId);
       setClientToken(token);
+      setTokenState('idle');
     } catch (error) {
-      console.error('[PaymentSheet] Error loading client token:', error);
-      Alert.alert('Error', 'Failed to initialize payment. Please try again.');
-    } finally {
-      setLoadingToken(false);
+      logger.error('[PaymentSheet] Client token failed', error);
+      setClientToken(null);
+      setTokenState('error');
     }
+  }, [userId]);
+
+  useEffect(() => {
+    if (!visible || mode !== 'braintree') return;
+    let cancelled = false;
+    setPayError(null);
+    setMethodsLoading(true);
+    (async () => {
+      const cards = await paymentService.getSavedPaymentMethods(userId);
+      if (cancelled) return;
+      setSavedCards(cards);
+      setMethodsLoading(false);
+      if (cards.length > 0) {
+        setSelectedCard(cards[0].token);
+        setShowNewCard(false);
+      } else {
+        setShowNewCard(true);
+        loadClientToken();
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [visible, mode, userId, loadClientToken]);
+
+  // Closing the sheet must never leave a spinner behind for next time.
+  useEffect(() => {
+    if (!visible) {
+      setPayingState(false);
+      setPayError(null);
+    }
+  }, [visible]);
+
+  const settleBraintree = async (method: { paymentMethodNonce: string } | { paymentMethodToken: string }) => {
+    try {
+      const result = await paymentService.processBraintreePayment(bookingId, method);
+      if (result.success) {
+        setPayingState(false);
+        onPaid({ provider: 'braintree', transactionId: result.transactionId, status: 'succeeded' });
+        return;
+      }
+      if (result.requiresAction) {
+        setPayError('Your bank needs extra verification. Enter the card again to continue.');
+        setShowNewCard(true);
+        if (!clientToken) loadClientToken();
+      } else {
+        setPayError(result.error ?? 'The payment was declined. You have not been charged.');
+      }
+    } catch (error) {
+      logger.error('[PaymentSheet] Braintree payment threw', error);
+      setPayError('We could not reach the payment server. Please try again.');
+    }
+    setPayingState(false);
   };
 
-  const handlePayButtonPress = () => {
-    if (!cardholderName.trim()) {
-      Alert.alert('Cardholder Name Required', 'Please enter the name on the card');
+  const paySavedCard = () => {
+    if (!selectedCard || payingRef.current) return;
+    setPayError(null);
+    setPayingState(true);
+    // Saved cards are charged by vault TOKEN (sending it as a nonce always failed).
+    settleBraintree({ paymentMethodToken: selectedCard });
+  };
+
+  const payNewCard = () => {
+    if (payingRef.current) return;
+    if (!hostedFieldsRef.current) {
+      setPayError('The card form is not ready yet. Please wait a moment.');
       return;
     }
-    
-    setLoading(true);
-    console.log('[PaymentSheet] Submitting payment via Hosted Fields');
-    hostedFieldsRef.current?.submitPayment();
+    setPayError(null);
+    setPayingState(true);
+    hostedFieldsRef.current.submitPayment();
   };
 
-  const handleHostedFieldsSuccess = async (nonce: string, cardDetails: CardDetails) => {
-    console.log('[PaymentSheet] Hosted Fields success - processing payment');
-    console.log('[PaymentSheet] Card type:', cardDetails.cardType);
-    console.log('[PaymentSheet] Last 4:', cardDetails.lastFour);
-    
-    try {
-      const result = await paymentService.processPayment(
-        nonce,
-        breakdown.total,
-        bookingId,
-        userId,
-        false // Don't save card for now
-      );
-      
-      if (result.success && result.transactionId) {
-        console.log('[PaymentSheet] Payment successful! Transaction ID:', result.transactionId);
-        onSuccess(result.transactionId);
-      } else {
-        console.error('[PaymentSheet] Payment failed:', result.error);
-        Alert.alert('Payment Failed', result.error || 'Please try again');
-        setLoading(false);
-      }
-    } catch (error) {
-      console.error('[PaymentSheet] Payment processing error:', error);
-      Alert.alert('Error', 'Failed to process payment');
-      setLoading(false);
-    }
+  const onHostedSuccess = (nonce: string) => {
+    // A nonce that arrives after a timeout is ignored — it is not a charge.
+    if (!payingRef.current) return;
+    settleBraintree({ paymentMethodNonce: nonce });
   };
 
-  const handleHostedFieldsError = (error: string) => {
-    console.error('[PaymentSheet] Hosted Fields error:', error);
-    Alert.alert('Payment Error', error);
-    setLoading(false);
+  const onHostedError = (message: string) => {
+    setPayError(message);
+    setPayingState(false);
   };
 
-  const handleHostedFieldsReady = () => {
-    console.log('[PaymentSheet] Hosted Fields ready');
-    setLoadingToken(false);
+  // ---------------------------------------------------------------- render
+
+  const total = breakdown?.total;
+  const payLabel = typeof total === 'number' ? `Pay ${formatMXN(total)}` : 'Pay';
+  const returnUrl =
+    Platform.OS === 'web' && typeof window !== 'undefined' ? `${window.location.origin}/booking/${bookingId}` : undefined;
+
+  const close = () => {
+    if (payingRef.current) return; // never abandon a charge mid-flight
+    onCancel();
   };
 
-  const handlePayment = async () => {
-    setLoading(true);
-    try {
-      if (selectedCard && !showNewCard) {
-        const result = await paymentService.processPayment(
-          selectedCard,
-          breakdown.total,
-          bookingId,
-          userId,
-          false
-        );
-
-        if (result.success && result.transactionId) {
-          onSuccess(result.transactionId);
-        } else if (result.requiresAction && result.actionUrl) {
-          Alert.alert(
-            '3D Secure Required',
-            'Additional authentication is required. Please complete the verification.',
-            [
-              {
-                text: 'Cancel',
-                style: 'cancel',
-              },
-              {
-                text: 'Continue',
-                onPress: () => {
-                  setShowNewCard(true);
-                },
-              },
-            ]
-          );
-        } else {
-          Alert.alert('Payment Failed', result.error || 'Please try again');
-        }
-      }
-    } catch (error) {
-      console.error('[PaymentSheet] Payment error:', error);
-      Alert.alert('Error', 'Payment processing failed');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Stripe cuando este configurado; si no, sigue el camino de Braintree.
-  // Se decide con la configuracion y no borrando codigo, para poder volver
-  // atras cambiando una variable de entorno y sin desplegar.
-  const usarStripe = stripeService.estaConfigurado() && stripeService.soportadoEnEstaPlataforma();
-
-  if (usarStripe) {
-    return (
-      <Modal visible={visible} animationType="slide" transparent>
-        <View style={styles.overlay}>
-          <View style={styles.sheet}>
-            <View style={styles.header}>
-              <Text style={styles.title}>Pago</Text>
-              <TouchableOpacity onPress={onCancel} style={styles.closeButton}>
-                <X size={24} color={TEXT_COLOR} />
-              </TouchableOpacity>
-            </View>
-
-            <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
-              <View style={styles.breakdownCard}>
-                <Text style={styles.breakdownTitle}>Desglose</Text>
-                <View style={styles.breakdownRow}>
-                  <Text style={styles.breakdownLabel}>Servicio</Text>
-                  <Text style={styles.breakdownValue}>
-                    {paymentService.formatMXN(breakdown.subtotal)}
-                  </Text>
-                </View>
-                <View style={styles.breakdownRow}>
-                  <Text style={styles.breakdownLabel}>Cargo por procesamiento</Text>
-                  <Text style={styles.breakdownValue}>
-                    {paymentService.formatMXN(breakdown.processingFee)}
-                  </Text>
-                </View>
-                <View style={[styles.breakdownRow, styles.totalRow]}>
-                  <Text style={styles.totalLabel}>Total</Text>
-                  <Text style={styles.totalValue}>{paymentService.formatMXN(amount)}</Text>
-                </View>
-              </View>
-
-              {visible && (
-                <StripePaymentForm
-                  bookingId={bookingId}
-                  onExito={(intentoId: string) => onSuccess(intentoId)}
-                />
-              )}
-            </ScrollView>
-          </View>
+  const receipt = (
+    <Card tone="raised" style={styles.receipt}>
+      <View style={styles.receiptHead}>
+        <AppText variant="overline">Receipt</AppText>
+        <AppText variant="caption" color={Colors.textTertiary}>
+          MXN
+        </AppText>
+      </View>
+      {breakdown ? (
+        <PriceReceipt breakdown={breakdown} />
+      ) : quoteError ? (
+        <View style={styles.quoteError}>
+          <AppText variant="callout" color={Colors.error} accessibilityLiveRegion="polite">
+            {quoteError}
+          </AppText>
+          <Button
+            title="Try again"
+            variant="secondary"
+            size="sm"
+            fullWidth={false}
+            onPress={() => setQuoteAttempt((n) => n + 1)}
+          />
         </View>
-      </Modal>
+      ) : (
+        <View style={styles.skeletonRows} accessibilityLabel="Loading amounts">
+          <Skeleton width="70%" height={14} />
+          <Skeleton width="50%" height={14} />
+          <Skeleton width="40%" height={20} style={styles.skeletonTotal} />
+        </View>
+      )}
+    </Card>
+  );
+
+  const assurance = (
+    <View style={styles.assurance}>
+      <ShieldCheck size={15} color={Colors.textTertiary} strokeWidth={ICON_STROKE} />
+      <AppText variant="footnote" color={Colors.textTertiary} style={styles.flex}>
+        The amount is verified by our server before you are charged. Card details go directly to the payment
+        processor.
+      </AppText>
+    </View>
+  );
+
+  let body: React.ReactNode;
+  let footer: React.ReactNode = null;
+
+  if (mode === 'unconfigured') {
+    body = (
+      <EmptyState
+        icon={CreditCard}
+        title="Payments are not configured"
+        message="Card payments aren't enabled in this environment yet. Your booking is saved as pending and nothing has been charged."
+        actionLabel="Close"
+        onAction={onCancel}
+      />
+    );
+  } else if (mode === 'stripe') {
+    body = (
+      <>
+        {receipt}
+        {assurance}
+        <SectionTitle title="Payment method" />
+        {clientSecret ? (
+          <StripePaymentForm
+            clientSecret={clientSecret}
+            payLabel={payLabel}
+            returnUrl={returnUrl}
+            onSucceeded={({ paymentIntentId, status }) =>
+              onPaid({ provider: 'stripe', transactionId: paymentIntentId, status })
+            }
+          />
+        ) : quoteError ? null : (
+          <Skeleton height={140} radius={Radius.md} />
+        )}
+      </>
+    );
+  } else {
+    body = (
+      <>
+        {receipt}
+        {assurance}
+        <SectionTitle title="Payment method" />
+        {methodsLoading ? (
+          <Skeleton height={64} radius={Radius.lg} />
+        ) : !showNewCard && savedCards.length > 0 ? (
+          <ListGroup>
+            {[
+              ...savedCards.map((card) => (
+                <ListRow
+                  key={card.token}
+                  icon={CreditCard}
+                  title={`${card.cardType} •••• ${card.last4}`}
+                  subtitle={`Expires ${card.expirationMonth}/${card.expirationYear}`}
+                  onPress={() => setSelectedCard(card.token)}
+                  showChevron={false}
+                  trailing={
+                    selectedCard === card.token ? (
+                      <Check size={18} color={Colors.gold} strokeWidth={2} />
+                    ) : null
+                  }
+                />
+              )),
+              <ListRow
+                key="new"
+                icon={Plus}
+                title="Use a new card"
+                onPress={() => {
+                  setShowNewCard(true);
+                  setPayError(null);
+                  if (!clientToken) loadClientToken();
+                }}
+              />,
+            ]}
+          </ListGroup>
+        ) : tokenState === 'loading' ? (
+          <Skeleton height={200} radius={Radius.lg} />
+        ) : tokenState === 'error' || !clientToken ? (
+          <View style={styles.quoteError}>
+            <AppText variant="callout" color={Colors.error}>
+              The secure card form could not load.
+            </AppText>
+            <Button title="Try again" variant="secondary" size="sm" fullWidth={false} onPress={loadClientToken} />
+          </View>
+        ) : (
+          <>
+            <BraintreeHostedFields
+              ref={hostedFieldsRef}
+              clientToken={clientToken}
+              onSuccess={onHostedSuccess}
+              onError={onHostedError}
+            />
+            {savedCards.length > 0 ? (
+              <Button
+                title="Use a saved card"
+                variant="ghost"
+                size="sm"
+                fullWidth={false}
+                onPress={() => {
+                  setShowNewCard(false);
+                  setPayError(null);
+                }}
+                disabled={paying}
+              />
+            ) : null}
+          </>
+        )}
+
+        {payError ? (
+          <AppText variant="callout" color={Colors.error} style={styles.payError} accessibilityLiveRegion="polite">
+            {payError}
+          </AppText>
+        ) : null}
+      </>
+    );
+
+    const canPay = !!breakdown && !quoteError && (showNewCard ? !!clientToken : !!selectedCard);
+    footer = (
+      <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, Space.lg) }]}>
+        <Button
+          title={payLabel}
+          icon={Lock}
+          size="lg"
+          onPress={showNewCard ? payNewCard : paySavedCard}
+          loading={paying}
+          disabled={!canPay}
+          accessibilityHint="Charges your card and confirms the booking"
+        />
+      </View>
     );
   }
 
   return (
-    <Modal visible={visible} animationType="slide" transparent>
+    <Modal visible={visible} animationType="slide" transparent onRequestClose={close} statusBarTranslucent>
       <View style={styles.overlay}>
-        <View style={styles.sheet}>
+        <Pressable
+          style={StyleSheet.absoluteFill}
+          onPress={close}
+          accessibilityRole="button"
+          accessibilityLabel="Close payment"
+        />
+        <View style={styles.sheet} accessibilityViewIsModal>
+          <View style={styles.grabber} />
           <View style={styles.header}>
-            <Text style={styles.title}>Payment</Text>
-            <TouchableOpacity onPress={onCancel} style={styles.closeButton}>
-              <X size={24} color={TEXT_COLOR} />
-            </TouchableOpacity>
+            <View style={styles.flex}>
+              <AppText variant="overline" color={Colors.gold}>
+                Secure checkout
+              </AppText>
+              <AppText variant="title2" accessibilityRole="header" style={styles.title}>
+                Complete payment
+              </AppText>
+            </View>
+            <IconButton icon={X} onPress={close} disabled={paying} accessibilityLabel="Close payment" />
           </View>
 
-          <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
-            <View style={styles.breakdownCard}>
-              <Text style={styles.breakdownTitle}>Payment Breakdown</Text>
-              <View style={styles.breakdownRow}>
-                <Text style={styles.breakdownLabel}>Service</Text>
-                <Text style={styles.breakdownValue}>
-                  {paymentService.formatMXN(breakdown.subtotal)}
-                </Text>
-              </View>
-              <View style={styles.breakdownRow}>
-                <Text style={styles.breakdownLabel}>Processing Fee</Text>
-                <Text style={styles.breakdownValue}>
-                  {paymentService.formatMXN(breakdown.processingFee)}
-                </Text>
-              </View>
-              <View style={[styles.breakdownRow, styles.totalRow]}>
-                <Text style={styles.totalLabel}>Total</Text>
-                <Text style={styles.totalValue}>
-                  {paymentService.formatMXN(breakdown.total)}
-                </Text>
-              </View>
-            </View>
-
-            {savedCards.length > 0 && !showNewCard && (
-              <View style={styles.section}>
-                <Text style={styles.sectionTitle}>Saved Cards</Text>
-                {savedCards.map((card) => (
-                  <TouchableOpacity
-                    key={card.token}
-                    style={[
-                      styles.savedCard,
-                      selectedCard === card.token && styles.savedCardSelected,
-                    ]}
-                    onPress={() => setSelectedCard(card.token)}
-                  >
-                    <CreditCard size={24} color={Colors.gold} />
-                    <View style={styles.savedCardInfo}>
-                      <Text style={styles.savedCardType}>{card.cardType}</Text>
-                      <Text style={styles.savedCardNumber}>•••• {card.last4}</Text>
-                    </View>
-                    {selectedCard === card.token && (
-                      <Check size={20} color={Colors.gold} />
-                    )}
-                  </TouchableOpacity>
-                ))}
-                <TouchableOpacity
-                  style={styles.addCardButton}
-                  onPress={async () => {
-                    setShowNewCard(true);
-                    await loadClientToken();
-                  }}
-                >
-                  <Text style={styles.addCardText}>+ Add New Card</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-
-            {showNewCard && (
-              <View style={styles.section}>
-                <Text style={styles.sectionTitle}>Card Details</Text>
-                
-                {loadingToken ? (
-                  <View style={styles.loadingContainer}>
-                    <ActivityIndicator size="large" color={Colors.gold} />
-                    <Text style={styles.loadingText}>Loading payment form...</Text>
-                  </View>
-                ) : clientToken ? (
-                  <View>
-                    {/* Cardholder Name Input (Native) */}
-                    <View style={styles.inputGroup}>
-                      <Text style={styles.inputLabel}>Cardholder Name</Text>
-                      <TextInput
-                        style={styles.input}
-                        placeholder="John Doe"
-                        placeholderTextColor={Colors.textTertiary}
-                        value={cardholderName}
-                        onChangeText={setCardholderName}
-                        autoCapitalize="words"
-                        editable={!loading}
-                      />
-                    </View>
-                    
-                    {/* Braintree Hosted Fields (Secure iframes) */}
-                    <BraintreeHostedFields
-                      ref={hostedFieldsRef}
-                      clientToken={clientToken}
-                      onSuccess={handleHostedFieldsSuccess}
-                      onError={handleHostedFieldsError}
-                      onReady={handleHostedFieldsReady}
-                    />
-                    
-                    {/* Pay Button */}
-                    <TouchableOpacity
-                      style={[styles.payButton, loading && styles.payButtonDisabled]}
-                      onPress={handlePayButtonPress}
-                      disabled={loading}
-                    >
-                      {loading ? (
-                        <ActivityIndicator color={Colors.background} />
-                      ) : (
-                        <>
-                          <Text style={styles.payButtonText}>
-                            Pay {paymentService.formatMXN(breakdown.total)}
-                          </Text>
-                        </>
-                      )}
-                    </TouchableOpacity>
-                  </View>
-                ) : (
-                  <View style={styles.errorContainer}>
-                    <Text style={styles.errorText}>Failed to load payment form</Text>
-                    <TouchableOpacity
-                      style={styles.retryButton}
-                      onPress={loadClientToken}
-                    >
-                      <Text style={styles.retryButtonText}>Retry</Text>
-                    </TouchableOpacity>
-                  </View>
-                )}
-
-                {savedCards.length > 0 && (
-                  <TouchableOpacity
-                    style={styles.backButton}
-                    onPress={() => setShowNewCard(false)}
-                  >
-                    <Text style={styles.backButtonText}>Use Saved Card</Text>
-                  </TouchableOpacity>
-                )}
-              </View>
-            )}
+          <ScrollView
+            style={styles.scroll}
+            contentContainerStyle={[styles.content, footer ? null : { paddingBottom: Math.max(insets.bottom, Space.xxl) }]}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            {body}
           </ScrollView>
 
-          {!showNewCard && (
-            <View style={styles.footer}>
-              <TouchableOpacity
-                style={[styles.payButton, loading && styles.payButtonDisabled]}
-                onPress={handlePayment}
-                disabled={loading}
-              >
-                {loading ? (
-                  <ActivityIndicator color={Colors.background} />
-                ) : (
-                  <Text style={styles.payButtonText}>
-                    Pay {paymentService.formatMXN(breakdown.total)}
-                  </Text>
-                )}
-              </TouchableOpacity>
-            </View>
-          )}
+          {footer}
         </View>
       </View>
     </Modal>
@@ -401,247 +444,86 @@ export default function PaymentSheet({
 const styles = StyleSheet.create({
   overlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
     justifyContent: 'flex-end',
+    backgroundColor: Colors.overlay,
   },
   sheet: {
+    width: '100%',
+    maxWidth: MAX_CONTENT_WIDTH + Space.gutter * 2,
+    alignSelf: 'center',
+    maxHeight: '92%',
     backgroundColor: Colors.background,
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    maxHeight: '90%',
+    borderTopLeftRadius: Radius.xl,
+    borderTopRightRadius: Radius.xl,
+    borderWidth: 1,
+    borderBottomWidth: 0,
+    borderColor: Colors.borderStrong,
+    ...Shadow.lg,
+  },
+  grabber: {
+    alignSelf: 'center',
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: Colors.borderStrong,
+    marginTop: Space.sm,
   },
   header: {
     flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
+    alignItems: 'flex-end',
+    gap: Space.lg,
+    paddingHorizontal: Space.gutter,
+    paddingTop: Space.lg,
+    paddingBottom: Space.md,
   },
   title: {
-    fontSize: 20,
-    fontWeight: '700' as const,
-    color: TEXT_COLOR,
+    marginTop: Space.xs,
   },
-  closeButton: {
-    padding: 4,
+  flex: {
+    flex: 1,
+  },
+  scroll: {
+    flexGrow: 0,
   },
   content: {
-    padding: 20,
+    paddingHorizontal: Space.gutter,
+    paddingBottom: Space.xl,
   },
-  breakdownCard: {
-    backgroundColor: Colors.surface,
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 24,
+  receipt: {
+    marginTop: Space.sm,
   },
-  breakdownTitle: {
-    fontSize: 16,
-    fontWeight: '600' as const,
-    color: TEXT_COLOR,
-    marginBottom: 12,
-  },
-  breakdownRow: {
+  receiptHead: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginBottom: 8,
+    alignItems: 'center',
+    marginBottom: Space.xs,
   },
-  breakdownLabel: {
-    fontSize: 14,
-    color: Colors.textSecondary,
+  skeletonRows: {
+    gap: Space.md,
+    paddingVertical: Space.sm,
   },
-  breakdownValue: {
-    fontSize: 14,
-    fontWeight: '600' as const,
-    color: TEXT_COLOR,
+  skeletonTotal: {
+    alignSelf: 'flex-end',
+    marginTop: Space.xs,
   },
-  totalRow: {
-    marginTop: 8,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: Colors.border,
+  quoteError: {
+    gap: Space.md,
+    alignItems: 'flex-start',
+    paddingVertical: Space.sm,
   },
-  totalLabel: {
-    fontSize: 16,
-    fontWeight: '700' as const,
-    color: TEXT_COLOR,
-  },
-  totalValue: {
-    fontSize: 16,
-    fontWeight: '700' as const,
-    color: Colors.gold,
-  },
-  section: {
-    marginBottom: 24,
-  },
-  sectionTitle: {
-    fontSize: 16,
-    fontWeight: '600' as const,
-    color: TEXT_COLOR,
-    marginBottom: 12,
-  },
-  savedCard: {
+  assurance: {
     flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: Colors.surface,
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 12,
-    borderWidth: 2,
-    borderColor: 'transparent',
+    gap: Space.sm,
+    alignItems: 'flex-start',
+    marginTop: Space.md,
   },
-  savedCardSelected: {
-    borderColor: Colors.gold,
-  },
-  savedCardInfo: {
-    flex: 1,
-    marginLeft: 12,
-  },
-  savedCardType: {
-    fontSize: 14,
-    fontWeight: '600' as const,
-    color: TEXT_COLOR,
-    textTransform: 'capitalize',
-  },
-  savedCardNumber: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-    marginTop: 2,
-  },
-  addCardButton: {
-    padding: 16,
-    alignItems: 'center',
-  },
-  addCardText: {
-    fontSize: 14,
-    fontWeight: '600' as const,
-    color: Colors.gold,
-  },
-  input: {
-    backgroundColor: Colors.surface,
-    borderRadius: 12,
-    padding: 16,
-    fontSize: 16,
-    color: TEXT_COLOR,
-    marginBottom: 12,
-  },
-  row: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  halfInput: {
-    flex: 1,
-  },
-  checkboxRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 8,
-  },
-  checkbox: {
-    width: 24,
-    height: 24,
-    borderRadius: 6,
-    borderWidth: 2,
-    borderColor: Colors.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
-  },
-  checkboxChecked: {
-    backgroundColor: Colors.gold,
-    borderColor: Colors.gold,
-  },
-  checkboxLabel: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-  },
-  backButton: {
-    marginTop: 16,
-    padding: 12,
-    alignItems: 'center',
-  },
-  backButtonText: {
-    fontSize: 14,
-    fontWeight: '600' as const,
-    color: Colors.gold,
+  payError: {
+    marginTop: Space.md,
   },
   footer: {
-    padding: 20,
-    borderTopWidth: 1,
+    paddingTop: Space.md,
+    paddingHorizontal: Space.gutter,
+    borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: Colors.border,
-  },
-  payButton: {
-    backgroundColor: Colors.gold,
-    borderRadius: 12,
-    padding: 16,
-    alignItems: 'center',
-  },
-  payButtonDisabled: {
-    opacity: 0.6,
-  },
-  payButtonText: {
-    fontSize: 16,
-    fontWeight: '700' as const,
-    color: Colors.background,
-  },
-  loadingContainer: {
-    padding: 40,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  loadingText: {
-    marginTop: 16,
-    fontSize: 14,
-    color: Colors.textSecondary,
-  },
-  openPaymentButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: Colors.gold,
-    borderRadius: 12,
-    padding: 20,
-    gap: 12,
-  },
-  openPaymentButtonText: {
-    fontSize: 16,
-    fontWeight: '700' as const,
-    color: Colors.background,
-  },
-  securityNote: {
-    fontSize: 12,
-    color: Colors.textSecondary,
-    textAlign: 'center',
-    marginTop: 12,
-  },
-  errorContainer: {
-    padding: 40,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  errorText: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-    marginBottom: 16,
-  },
-  retryButton: {
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    backgroundColor: Colors.gold,
-    borderRadius: 8,
-  },
-  retryButtonText: {
-    fontSize: 14,
-    fontWeight: '600' as const,
-    color: Colors.background,
-  },
-  inputGroup: {
-    marginBottom: 15,
-  },
-  inputLabel: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-    marginBottom: 8,
-    fontWeight: '500' as const,
   },
 });

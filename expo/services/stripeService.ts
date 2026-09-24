@@ -1,78 +1,46 @@
 /**
- * Cliente de pagos con Stripe.
+ * Stripe on the client: configuration checks and the Stripe.js loader.
  *
- * Habla con la funcion serverless de Vercel (api/stripe/payment-intent), que
- * es quien tiene la llave secreta. Aqui solo vive la llave publicable, que
- * esta pensada para ir en el navegador.
- *
- * El importe NO se envia desde aqui: lo recalcula el servidor leyendo la
- * reserva guardada. Si se mandara desde el cliente, cualquiera podria pagar
- * diez pesos por un servicio de novecientos.
+ * Only the PUBLISHABLE key lives here (it is designed to ship in the browser).
+ * Creating the PaymentIntent and confirming the booking go through
+ * `paymentService` (api/stripe/*), which holds the secret key and recomputes
+ * the amount from the stored booking — the client never sends an amount.
  */
 import { Platform } from 'react-native';
-import { getAuth } from 'firebase/auth';
-import { logger } from '@/utils/logger';
+import type { Stripe } from '@stripe/stripe-js';
 
-const BASE = process.env.EXPO_PUBLIC_PAYMENTS_API_URL ?? '';
-
-export type IntentoDePago = {
-  clientSecret: string;
-  amount: number;
-  currency: string;
-};
+let stripePromise: Promise<Stripe | null> | null = null;
 
 export const stripeService = {
-  /** Verdadero si Stripe esta configurado para usarse. */
-  estaConfigurado(): boolean {
-    return Boolean(process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY && BASE);
+  /** True when a publishable key is present. The API is same-origin on web. */
+  isConfigured(): boolean {
+    return Boolean(process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY);
   },
 
-  llavePublicable(): string {
+  publishableKey(): string {
     return process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? '';
   },
 
   /**
-   * Pide al servidor que abra un intento de pago para esta reserva.
-   * Devuelve el clientSecret que necesita el formulario de Stripe.
+   * The Payment Element is web-only. Native needs @stripe/stripe-react-native
+   * (a native build); until then native payments use the Braintree path.
    */
-  async crearIntento(bookingId: string): Promise<IntentoDePago> {
-    if (!BASE) {
-      throw new Error('Falta EXPO_PUBLIC_PAYMENTS_API_URL: no se sabe a que servidor pedir el pago');
-    }
-
-    const usuario = getAuth().currentUser;
-    if (!usuario) throw new Error('Hay que iniciar sesion para pagar');
-    const idToken = await usuario.getIdToken();
-
-    logger.log('[Stripe] Pidiendo intento de pago para la reserva', { bookingId });
-
-    const respuesta = await fetch(`${BASE}/api/stripe/payment-intent`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${idToken}`,
-      },
-      body: JSON.stringify({ bookingId }),
-    });
-
-    if (!respuesta.ok) {
-      const detalle = await respuesta.json().catch(() => ({}));
-      const mensaje = (detalle as any)?.error ?? `HTTP ${respuesta.status}`;
-      logger.error('[Stripe] El servidor rechazo el intento de pago', { mensaje });
-      throw new Error(mensaje);
-    }
-
-    return (await respuesta.json()) as IntentoDePago;
+  isSupportedOnThisPlatform(): boolean {
+    return Platform.OS === 'web';
   },
 
-  /**
-   * Confirma el pago con el formulario de Stripe. Solo web por ahora.
-   *
-   * En iOS y Android hace falta @stripe/stripe-react-native, que obliga a una
-   * compilacion nativa; queda para cuando se publiquen las apps de tienda.
-   */
-  soportadoEnEstaPlataforma(): boolean {
-    return Platform.OS === 'web';
+  /** Loads Stripe.js once per session. */
+  load(): Promise<Stripe | null> {
+    if (!stripePromise) {
+      stripePromise = import('@stripe/stripe-js')
+        .then(({ loadStripe }) => loadStripe(stripeService.publishableKey()))
+        .catch((error) => {
+          // Allow a retry on the next attempt instead of caching the failure.
+          stripePromise = null;
+          throw error;
+        });
+    }
+    return stripePromise;
   },
 };
 

@@ -1,6 +1,5 @@
 declare module 'hono';
 declare module 'hono/cors';
-declare module '@nkzw/create-context-hook';
 declare module 'node-fetch';
 declare module 'superjson';
 

@@ -1,1078 +1,742 @@
-import { useEffect, useState, useCallback } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  TouchableOpacity,
-  TextInput,
-  KeyboardAvoidingView,
-  Platform,
-  Alert,
-} from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
-import {
-  ChevronLeft,
-  MapPin,
-  Clock,
-  Shield,
-  MessageCircle,
-  Send,
-  Navigation,
-  Key,
-  Copy,
-  Check,
-  X,
-  User,
-  AlertCircle,
-  Plus,
-  Eye,
-} from 'lucide-react-native';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, View } from 'react-native';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
+import {
+  AlertCircle,
+  Ban,
+  Check,
+  CheckCircle2,
+  Copy,
+  CreditCard,
+  Hourglass,
+  KeyRound,
+  MapPin,
+  Navigation,
+  Radio,
+  RefreshCcw,
+  SearchX,
+  ShieldCheck,
+  Star,
+  UserX,
+  type LucideIcon,
+} from 'lucide-react-native';
 import Colors from '@/constants/colors';
-import { bookingService } from '@/services/bookingService';
-import { chatService } from '@/services/chatService';
-import { guardService } from '@/services/guardService';
-import type { Booking, ChatMessage, Guard } from '@/types';
+import { ICON_STROKE, MAX_CONTENT_WIDTH, Radius, Space } from '@/constants/design';
+import {
+  ActionBar,
+  AppText,
+  Avatar,
+  Button,
+  Card,
+  Divider,
+  EmptyState,
+  IconButton,
+  InfoRow,
+  NavBar,
+  SectionTitle,
+  Skeleton,
+  SkeletonCard,
+  StatusBadge,
+} from '@/components/ui';
 import { useAuth } from '@/contexts/AuthContext';
+import { useGuardLocationPublisher } from '@/contexts/LocationTrackingContext';
+import { bookingService, isLiveStatus, _shouldShowGuardLocationByRule } from '@/services/bookingService';
+import { formatMXN } from '@/utils/pricing';
+import StartCodeInput from '@/components/StartCodeInput';
+import { ActionModal } from '@/components/booking/ActionModal';
+import { BookingChat } from '@/components/booking/BookingChat';
+import { StarRating } from '@/components/booking/StarRating';
+import { guardDisplayName, useGuardProfile, useLiveBooking, useNow } from '@/components/booking/hooks';
+import {
+  DRESS_LABEL,
+  PROTECTION_LABEL,
+  VEHICLE_LABEL,
+  formatDuration,
+  formatLongDate,
+  formatShortDate,
+  formatTime,
+  labelOf,
+  shortId,
+} from '@/components/booking/format';
+import type { Booking } from '@/types';
+
+type Viewer = 'client' | 'guard' | 'observer';
+type ModalKind = 'reject' | 'cancel' | 'complete' | null;
+type Tone = 'default' | 'gold' | 'error';
+
+interface StatusCopy {
+  icon: LucideIcon;
+  title: string;
+  message?: string;
+  tone: Tone;
+}
+
+const CHAT_STATUSES = new Set(['confirmed', 'accepted', 'en_route', 'active', 'completed', 'cancelled']);
+const CHAT_WRITABLE = new Set(['confirmed', 'accepted', 'en_route', 'active']);
+const CODE_STATUSES = new Set(['confirmed', 'accepted', 'en_route']);
+const CLIENT_CANCELLABLE = new Set(['pending', 'confirmed', 'accepted', 'rejected']);
+const GUARD_CANCELLABLE = new Set(['accepted', 'en_route']);
+
+const clockTime = (iso?: string) => {
+  if (!iso) return null;
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? null : d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+};
+
+function statusCopy(b: Booking, viewer: Viewer, protectorName: string | null): StatusCopy {
+  // Al inicio de frase va en mayuscula; en medio, en minuscula.
+  const Name = protectorName ?? 'Your protector';
+  const name = protectorName ?? 'your protector';
+  switch (b.status) {
+    case 'pending':
+      return viewer === 'client'
+        ? {
+            icon: CreditCard,
+            title: 'Payment not completed',
+            message: "This request isn't confirmed until it's paid. You can cancel it, or book again from the protector's profile.",
+            tone: 'default',
+          }
+        : { icon: CreditCard, title: 'Awaiting payment', tone: 'default' };
+    case 'confirmed':
+      return viewer === 'guard'
+        ? { icon: Hourglass, title: 'New request', message: 'Review the details, then accept or decline.', tone: 'gold' }
+        : { icon: Hourglass, title: `Waiting for ${name} to accept`, message: 'Your booking is paid. You will see the answer here as soon as they respond.', tone: 'default' };
+    case 'accepted':
+      return viewer === 'guard'
+        ? { icon: ShieldCheck, title: "You're booked", message: 'When you meet, ask the client for their start code to begin the service.', tone: 'default' }
+        : { icon: ShieldCheck, title: `${Name} accepted`, message: 'Share your start code when you meet. Live location appears 10 minutes before the start.', tone: 'default' };
+    case 'en_route':
+      return viewer === 'guard'
+        ? { icon: Navigation, title: 'On your way', message: 'The client can follow your live location.', tone: 'default' }
+        : { icon: Navigation, title: `${Name} is on the way`, message: 'Follow their live location on the map.', tone: 'default' };
+    case 'active': {
+      const since = clockTime(b.startedAt);
+      return { icon: Radio, title: 'Service in progress', message: since ? `Started at ${since}.` : undefined, tone: 'default' };
+    }
+    case 'completed': {
+      const at = clockTime(b.completedAt);
+      return { icon: CheckCircle2, title: 'Service completed', message: at ? `Finished at ${at}.` : undefined, tone: 'default' };
+    }
+    case 'rejected':
+      return viewer === 'client'
+        ? {
+            icon: UserX,
+            title: `${Name} declined`,
+            message: b.rejectionReason ? `“${b.rejectionReason}” Choose another protector to keep this booking.` : 'Choose another protector to keep this booking.',
+            tone: 'error',
+          }
+        : { icon: UserX, title: viewer === 'guard' ? 'You declined this job' : 'Declined by the protector', message: b.rejectionReason, tone: 'error' };
+    case 'cancelled': {
+      const by = b.cancelledBy === 'guard' ? 'the protector' : b.cancelledBy === 'client' ? 'the client' : null;
+      return {
+        icon: Ban,
+        title: 'Booking cancelled',
+        message: [by ? `Cancelled by ${by}.` : null, b.cancellationReason ? `“${b.cancellationReason}”` : null].filter(Boolean).join(' ') || undefined,
+        tone: 'error',
+      };
+    }
+    default:
+      return { icon: AlertCircle, title: 'Status unavailable', tone: 'default' };
+  }
+}
 
 export default function BookingDetailScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, focus } = useLocalSearchParams<{ id: string; focus?: string }>();
   const router = useRouter();
-  const insets = useSafeAreaInsets();
   const { user } = useAuth();
-  const [booking, setBooking] = useState<Booking | null>(null);
-  const [message, setMessage] = useState<string>('');
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [isSending, setIsSending] = useState<boolean>(false);
-  const [showOriginal, setShowOriginal] = useState<Record<string, boolean>>({});
+  const { booking, loading, error, notFound, retry } = useLiveBooking(id);
+  const { guard } = useGuardProfile(booking?.guardId);
+
+  const status = booking?.status;
+  const isClient = !!user && !!booking && booking.clientId === user.id;
+  const isAssignedGuard = !!user && !!booking && user.role === 'guard' && booking.guardId === user.id;
+  const viewer: Viewer = isClient ? 'client' : isAssignedGuard ? 'guard' : 'observer';
+  const protectorName = guardDisplayName(guard) ?? 'your protector';
+
+  // ---- Codigo de inicio (solo el cliente) --------------------------------
+  const showStartCode = isClient && !!status && CODE_STATUSES.has(status);
+  const [startCode, setStartCode] = useState<string | null>(null);
+  const [codeState, setCodeState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [copied, setCopied] = useState(false);
+  const bookingId = booking?.id;
+
+  const loadStartCode = useCallback(async () => {
+    if (!bookingId) return;
+    setCodeState('loading');
+    const code = await bookingService.getStartCode(bookingId);
+    setStartCode(code);
+    setCodeState(code ? 'ready' : 'error');
+  }, [bookingId]);
 
   useEffect(() => {
-    const load = async () => {
-      if (!id) return;
-      const bookingData = await bookingService.getBookingById(id);
-      setBooking(bookingData);
-    };
-    load();
-  }, [id]);
+    if (showStartCode && codeState === 'idle') void loadStartCode();
+  }, [showStartCode, codeState, loadStartCode]);
 
   useEffect(() => {
-    if (!id || !user) return;
+    if (!copied) return;
+    const t = setTimeout(() => setCopied(false), 2000);
+    return () => clearTimeout(t);
+  }, [copied]);
 
-    console.log('[BookingDetail] Subscribing to messages:', id);
-    const unsubscribe = chatService.subscribeToMessages(
-      id,
-      user.language,
-      (updatedMessages) => {
-        setMessages(updatedMessages);
-      },
-      user.id
-    );
-
-    return () => {
-      console.log('[BookingDetail] Unsubscribing from messages:', id);
-      unsubscribe();
-    };
-  }, [id, user]);
-
-
-
-  const [guard, setGuard] = useState<Guard | null>(null);
-
-  useEffect(() => {
-    if (!booking?.guardId) {
-      setGuard(null);
-      return;
-    }
-    guardService.getGuardById(booking.guardId).then(setGuard);
-  }, [booking?.guardId]);
-
-  const handleSendMessage = useCallback(async () => {
-    if (!message.trim() || !booking || !user || isSending) return;
-
-    setIsSending(true);
+  const copyCode = async () => {
+    if (!startCode) return;
     try {
-      await chatService.sendMessage(
-        booking.id,
-        user.id,
-        user.role === 'client' ? 'client' : 'guard',
-        message.trim(),
-        user.language,
-        { clientId: booking.clientId, guardId: booking.guardId }
-      );
-      setMessage('');
-    } catch (error) {
-      console.error('[BookingDetail] Error sending message:', error);
-      Alert.alert('Error', 'Failed to send message. Please try again.');
+      await Clipboard.setStringAsync(startCode);
+      setCopied(true);
+    } catch {
+      // El codigo sigue visible en pantalla.
+    }
+  };
+
+  // ---- Ubicacion en vivo (solo el escolta asignado) ----------------------
+  const now = useNow(30000, isAssignedGuard && status === 'accepted');
+  const shouldPublish = !!booking && isAssignedGuard && _shouldShowGuardLocationByRule(booking, new Date(now));
+  const sharing = useGuardLocationPublisher(bookingId, shouldPublish);
+
+  // ---- Acciones ------------------------------------------------------------
+  const [modal, setModal] = useState<ModalKind>(null);
+  const [codeOpen, setCodeOpen] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  const run = async (key: string, fn: () => Promise<void>) => {
+    if (busy) return;
+    setBusy(key);
+    setActionError(null);
+    try {
+      await fn();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : 'Something went wrong. Please try again.');
     } finally {
-      setIsSending(false);
-    }
-  }, [message, booking, user, isSending]);
-
-  const handleCopyCode = async () => {
-    if (booking?.startCode) {
-      await Clipboard.setStringAsync(booking.startCode);
-      Alert.alert('Copied!', 'Start code copied to clipboard');
+      setBusy(null);
     }
   };
 
-  const handleTrackGuard = () => {
-    if (booking) {
-      router.push(`/tracking/${booking.id}` as any);
-    }
-  };
+  useEffect(() => {
+    setActionError(null);
+  }, [status]);
 
-  const handleAcceptBooking = async () => {
-    if (!booking || !user) return;
-    
-    Alert.alert(
-      'Accept Booking',
-      'Are you sure you want to accept this job?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Accept',
-          onPress: async () => {
-            try {
-              await bookingService.acceptBooking(booking.id, user.id);
-              Alert.alert('Success', 'Booking accepted! The client will be notified.');
-              const updatedBooking = await bookingService.getBookingById(booking.id);
-              setBooking(updatedBooking);
-              router.back();
-            } catch (error) {
-              console.error('[BookingDetail] Error accepting booking:', error);
-              Alert.alert('Error', 'Failed to accept booking. Please try again.');
-            }
-          },
-        },
-      ]
-    );
-  };
+  // ---- Desplazar al chat (?focus=chat, desde el mapa) ----------------------
+  const scrollRef = useRef<ScrollView | null>(null);
+  const chatYRef = useRef<number | null>(null);
+  const scrolledRef = useRef(false);
+  const scrollToChat = useCallback(() => {
+    if (focus !== 'chat' || scrolledRef.current || chatYRef.current === null) return;
+    scrolledRef.current = true;
+    setTimeout(() => scrollRef.current?.scrollTo({ y: Math.max(0, chatYRef.current ?? 0), animated: true }), 150);
+  }, [focus]);
 
-  const handleRejectBooking = async () => {
-    if (!booking) return;
-    
-    Alert.prompt(
-      'Reject Booking',
-      'Please provide a reason for rejection:',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Reject',
-          style: 'destructive',
-          onPress: async (reason: string | undefined) => {
-            if (!reason?.trim()) {
-              Alert.alert('Error', 'Please provide a reason for rejection.');
-              return;
-            }
-            try {
-              await bookingService.rejectBooking(booking.id, reason);
-              Alert.alert('Booking Rejected', 'The client will be notified.');
-              router.back();
-            } catch (error) {
-              console.error('[BookingDetail] Error rejecting booking:', error);
-              Alert.alert('Error', 'Failed to reject booking. Please try again.');
-            }
-          },
-        },
-      ],
-      'plain-text'
-    );
-  };
+  const goBackToList = () => (router.canGoBack() ? router.back() : router.replace('/(tabs)/bookings'));
 
-  const handleCompleteService = async () => {
-    if (!booking) return;
-
-    Alert.alert(
-      'Complete Service',
-      'Are you sure you want to mark this service as completed?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Complete',
-          onPress: async () => {
-            try {
-              await bookingService.updateBookingStatus(booking.id, 'completed');
-              const updatedBooking = await bookingService.getBookingById(booking.id);
-              setBooking(updatedBooking);
-              Alert.alert('Success', 'Service marked as completed.');
-            } catch (error) {
-              console.error('[BookingDetail] Error completing booking:', error);
-              Alert.alert('Error', 'Failed to complete the service. Please try again.');
-            }
-          },
-        },
-      ]
-    );
-  };
-
-  const handleExtendBooking = async (hours: number) => {
-    if (!booking || !user) return;
-
-    const newDuration = booking.duration + hours;
-    if (newDuration > 8) {
-      Alert.alert('Maximum Duration', 'Bookings cannot exceed 8 hours total.');
-      return;
-    }
-
-    Alert.alert(
-      'Extend Booking',
-      `Extend by ${hours === 0.5 ? '30 minutes' : `${hours} hour${hours > 1 ? 's' : ''}`}? Additional charge will apply.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Confirm',
-          onPress: async () => {
-            try {
-              await bookingService.extendBooking(booking.id, hours);
-              Alert.alert('Success', 'Booking extended successfully');
-              const updatedBooking = await bookingService.getBookingById(booking.id);
-              setBooking(updatedBooking);
-            } catch (error: any) {
-              Alert.alert('Error', error.message || 'Failed to extend booking');
-            }
-          },
-        },
-      ]
-    );
-  };
-
-  const handleCancelBooking = async () => {
-    if (!booking || !user) return;
-    
-    Alert.prompt(
-      'Cancel Booking',
-      'Please provide a reason for cancellation:',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Confirm Cancellation',
-          style: 'destructive',
-          onPress: async (reason: string | undefined) => {
-            if (!reason?.trim()) {
-              Alert.alert('Error', 'Please provide a reason for cancellation.');
-              return;
-            }
-            try {
-              await bookingService.cancelBooking(
-                booking.id,
-                user.role === 'client' ? 'client' : 'guard',
-                reason
-              );
-              Alert.alert('Booking Cancelled', 'The booking has been cancelled successfully.');
-              router.back();
-            } catch (error: any) {
-              console.error('[BookingDetail] Error cancelling booking:', error);
-              Alert.alert('Error', error.message || 'Failed to cancel booking. Please try again.');
-            }
-          },
-        },
-      ],
-      'plain-text'
-    );
-  };
-
-  if (!booking) {
+  // ---- Estados de carga / error -------------------------------------------
+  if (loading || error || notFound || !booking) {
     return (
-      <View style={styles.container}>
-        <Stack.Screen options={{ headerShown: false }} />
-        <View style={styles.errorContainer}>
-          <Shield size={64} color={Colors.textTertiary} />
-          <Text style={styles.errorText}>Booking not found</Text>
-        </View>
+      <View style={styles.root}>
+        <NavBar title="Booking" />
+        <ScrollView contentContainerStyle={styles.scrollContent}>
+          <View style={styles.column}>
+            {loading ? (
+              <View accessibilityLabel="Loading booking">
+                <Skeleton width={120} height={11} />
+                <Skeleton width="70%" height={30} style={styles.skelTitle} />
+                <Skeleton width="40%" height={14} style={styles.skelLine} />
+                <View style={styles.skelCards}>
+                  <SkeletonCard lines={2} />
+                  <SkeletonCard lines={3} />
+                  <SkeletonCard lines={4} />
+                </View>
+              </View>
+            ) : error ? (
+              <EmptyState icon={AlertCircle} title="Couldn't load this booking" message={error} actionLabel="Try again" onAction={retry} />
+            ) : (
+              <EmptyState
+                icon={SearchX}
+                title="Booking unavailable"
+                message="It may have been removed, or you don't have access to it."
+                actionLabel="Back to bookings"
+                onAction={goBackToList}
+              />
+            )}
+          </View>
+        </ScrollView>
       </View>
     );
   }
 
-  const isGuardView = user?.role === 'guard';
-  const isClientView = user?.role === 'client';
-  const isPending = booking.status === 'pending';
-  // 'confirmed' = pagado, esperando que el escolta acepte. El pago pasa el
-  // estado de 'pending' a 'confirmed' directamente (confirmBookingPayment),
-  // nunca a 'accepted' — asi que el escolta tiene que poder actuar en
-  // cualquiera de los dos, o toda reserva pagada queda huerfana sin boton
-  // de aceptar ni de rechazar.
-  const awaitingGuardAction = booking.status === 'pending' || booking.status === 'confirmed';
+  const copy = statusCopy(booking, viewer, guardDisplayName(guard));
+  const StatusIcon = copy.icon;
+  const statusColor = copy.tone === 'error' ? Colors.error : copy.tone === 'gold' ? Colors.gold : Colors.textSecondary;
+  const showChat = viewer !== 'observer' && !!booking.guardId && CHAT_STATUSES.has(booking.status) && !!user;
+  const canChat = CHAT_WRITABLE.has(booking.status);
+  const canCancel =
+    (viewer === 'client' && CLIENT_CANCELLABLE.has(booking.status)) ||
+    (viewer === 'guard' && GUARD_CANCELLABLE.has(booking.status));
+  const subtotal = Math.round((booking.totalAmount ?? 0) * 100 - (booking.processingFee ?? 0) * 100) / 100;
+  const openMap = () => router.push(`/tracking/${booking.id}`);
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'completed':
-        return Colors.success;
-      case 'active':
-        return Colors.info;
-      case 'accepted':
-      case 'confirmed':
-        return Colors.warning;
-      case 'cancelled':
-        return Colors.error;
-      default:
-        return Colors.textSecondary;
+  // ---- Barra de accion -----------------------------------------------------
+  let actions: ReactNode = null;
+  if (viewer === 'client') {
+    if (isLiveStatus(booking.status)) {
+      actions = <Button title="Track protector" icon={Navigation} onPress={openMap} accessibilityLabel="Track guard location" />;
+    } else if (booking.status === 'completed' && typeof booking.rating !== 'number') {
+      actions = (
+        <Button title="Rate your protector" icon={Star} onPress={() => router.push(`/booking/rate/${booking.id}`)} />
+      );
+    } else if (booking.status === 'rejected') {
+      actions = (
+        <Button
+          title="Choose another protector"
+          icon={RefreshCcw}
+          onPress={() => router.push(`/booking/select-guard?bookingId=${booking.id}`)}
+          accessibilityLabel="Select another guard"
+        />
+      );
     }
-  };
+  } else if (viewer === 'guard') {
+    if (booking.status === 'confirmed') {
+      actions = (
+        <View style={styles.actionRow}>
+          <Button title="Decline" variant="secondary" onPress={() => setModal('reject')} disabled={!!busy} style={styles.flex} />
+          <Button
+            title="Accept job"
+            icon={Check}
+            onPress={() => run('accept', () => bookingService.acceptBooking(booking.id))}
+            loading={busy === 'accept'}
+            style={styles.flex}
+          />
+        </View>
+      );
+    } else if (booking.status === 'accepted' || booking.status === 'en_route') {
+      actions = (
+        <View style={styles.actionRow}>
+          {booking.status === 'accepted' ? (
+            <Button
+              title="I'm on my way"
+              variant="secondary"
+              onPress={() => run('enroute', () => bookingService.markEnRoute(booking.id))}
+              loading={busy === 'enroute'}
+              style={styles.flex}
+            />
+          ) : (
+            <Button title="Open map" variant="secondary" icon={MapPin} onPress={openMap} style={styles.flex} />
+          )}
+          <Button title="Enter start code" icon={KeyRound} onPress={() => setCodeOpen(true)} disabled={!!busy} style={styles.flex} />
+        </View>
+      );
+    } else if (booking.status === 'active') {
+      actions = (
+        <View style={styles.actionRow}>
+          <Button title="Open map" variant="secondary" icon={MapPin} onPress={openMap} style={styles.flex} />
+          <Button title="Complete service" icon={CheckCircle2} onPress={() => setModal('complete')} disabled={!!busy} style={styles.flex} />
+        </View>
+      );
+    }
+  }
+
+  const footer =
+    actions || actionError ? (
+      <ActionBar>
+        {actionError ? (
+          <AppText variant="footnote" color={Colors.error} style={styles.actionError} accessibilityLiveRegion="polite">
+            {actionError}
+          </AppText>
+        ) : null}
+        {actions}
+      </ActionBar>
+    ) : null;
 
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
-    >
-      <Stack.Screen options={{ headerShown: false }} />
-
-      <View style={[styles.header, { paddingTop: insets.top + 16 }]}>
-        <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
-          <ChevronLeft size={24} color={Colors.textPrimary} />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>Booking Details</Text>
-        <View style={styles.headerSpacer} />
-      </View>
-
-      <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
-        <View style={styles.content}>
-          <View style={[styles.statusBadge, { backgroundColor: getStatusColor(booking.status) + '20' }]}>
-            <Text style={[styles.statusText, { color: getStatusColor(booking.status) }]}>
-              {booking.status.toUpperCase()}
-            </Text>
-          </View>
-
-          {isGuardView && awaitingGuardAction && (
-            <View style={styles.actionButtons}>
-              <TouchableOpacity style={styles.acceptButton} onPress={handleAcceptBooking}>
-                <Check size={20} color={Colors.background} />
-                <Text style={styles.acceptButtonText}>Accept Job</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.rejectButton} onPress={handleRejectBooking}>
-                <X size={20} color={Colors.error} />
-                <Text style={styles.rejectButtonText}>Reject</Text>
-              </TouchableOpacity>
-            </View>
-          )}
-
-          {isClientView && booking.status === 'rejected' && (
-            <View style={styles.rejectedCard}>
-              <View style={styles.rejectedHeader}>
-                <AlertCircle size={24} color={Colors.error} />
-                <Text style={styles.rejectedTitle}>Guard Declined</Text>
-              </View>
-              {booking.rejectionReason && (
-                <Text style={styles.rejectionReason}>{booking.rejectionReason}</Text>
-              )}
-              <TouchableOpacity
-                style={styles.selectNewGuardButton}
-                onPress={() => router.push(`/booking/select-guard?bookingId=${booking.id}` as any)}
-              >
-                <Text style={styles.selectNewGuardText}>Select Another Guard</Text>
-              </TouchableOpacity>
-            </View>
-          )}
-
-          {isClientView && guard && booking.status !== 'rejected' && (
-            <View style={styles.guardCard}>
-              <View style={styles.guardHeader}>
-                <View>
-                  <Text style={styles.guardName}>
-                    {guard.firstName} {guard.lastName.charAt(0)}.
-                  </Text>
-                  <Text style={styles.guardRole}>Your Protector</Text>
-                </View>
-                <View style={styles.verifiedBadge}>
-                  <Shield size={16} color={Colors.gold} />
-                  <Text style={styles.verifiedText}>Verified</Text>
-                </View>
-              </View>
-            </View>
-          )}
-
-          {isClientView && (
-            <View style={styles.startCodeCard}>
-            <View style={styles.startCodeHeader}>
-              <Key size={20} color={Colors.gold} />
-              <Text style={styles.startCodeTitle}>Start Code</Text>
-            </View>
-            <View style={styles.startCodeRow}>
-              <Text style={styles.startCodeValue}>{booking.startCode}</Text>
-              <TouchableOpacity style={styles.copyButton} onPress={handleCopyCode}>
-                <Copy size={20} color={Colors.gold} />
-              </TouchableOpacity>
-            </View>
-              <Text style={styles.startCodeHint}>
-                Share this code with your guard to start the service
-              </Text>
-            </View>
-          )}
-
-          <View style={styles.detailsCard}>
-            <Text style={styles.sectionTitle}>Booking Details</Text>
-
-            <View style={styles.detailRow}>
-              <Clock size={16} color={Colors.textSecondary} />
-              <Text style={styles.detailLabel}>Date & Time</Text>
-              <Text style={styles.detailValue}>
-                {booking.scheduledDate} at {booking.scheduledTime}
-              </Text>
-            </View>
-
-            <View style={styles.detailRow}>
-              <MapPin size={16} color={Colors.textSecondary} />
-              <Text style={styles.detailLabel}>Pickup</Text>
-              <Text style={styles.detailValue} numberOfLines={1}>
-                {booking.pickupAddress}
-              </Text>
-            </View>
-
-            {booking.destinationAddress && (
-              <View style={styles.detailRow}>
-                <MapPin size={16} color={Colors.textSecondary} />
-                <Text style={styles.detailLabel}>Destination</Text>
-                <Text style={styles.detailValue} numberOfLines={1}>
-                  {booking.destinationAddress}
-                </Text>
-              </View>
-            )}
-
-            <View style={styles.detailRow}>
-              <Shield size={16} color={Colors.textSecondary} />
-              <Text style={styles.detailLabel}>Protection</Text>
-              <Text style={styles.detailValue}>
-                {booking.protectionType} • {booking.vehicleType}
-              </Text>
-            </View>
-
-            <View style={styles.detailRow}>
-              <Clock size={16} color={Colors.textSecondary} />
-              <Text style={styles.detailLabel}>Duration</Text>
-              <Text style={styles.detailValue}>{booking.duration} hours</Text>
-            </View>
-          </View>
-
-          {isClientView && (booking.status === 'accepted' || booking.status === 'en_route' || booking.status === 'active') && (
-            <TouchableOpacity style={styles.trackButton} onPress={handleTrackGuard}>
-              <Navigation size={20} color={Colors.background} />
-              <Text style={styles.trackButtonText}>Track Guard Location</Text>
-            </TouchableOpacity>
-          )}
-
-          {booking.status === 'active' && isClientView && (
-            <View style={styles.extendCard}>
-              <View style={styles.extendHeader}>
-                <Clock size={20} color={Colors.gold} />
-                <Text style={styles.extendTitle}>Extend Booking</Text>
-              </View>
-              <Text style={styles.extendSubtext}>
-                Current duration: {booking.duration}h (Max 8h total)
-              </Text>
-              <View style={styles.extendButtons}>
-                <TouchableOpacity
-                  style={styles.extendButton}
-                  onPress={() => handleExtendBooking(0.5)}
-                  disabled={booking.duration >= 8}
-                >
-                  <Plus size={16} color={booking.duration >= 8 ? Colors.textTertiary : Colors.gold} />
-                  <Text style={[styles.extendButtonText, booking.duration >= 8 && styles.extendButtonTextDisabled]}>+30 min</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.extendButton}
-                  onPress={() => handleExtendBooking(1)}
-                  disabled={booking.duration >= 8}
-                >
-                  <Plus size={16} color={booking.duration >= 8 ? Colors.textTertiary : Colors.gold} />
-                  <Text style={[styles.extendButtonText, booking.duration >= 8 && styles.extendButtonTextDisabled]}>+1 hour</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          )}
-
-          {(booking.status === 'pending' || booking.status === 'confirmed' || booking.status === 'accepted') && (
-            <TouchableOpacity style={styles.cancelBookingButton} onPress={handleCancelBooking}>
-              <X size={20} color={Colors.error} />
-              <Text style={styles.cancelBookingText}>Cancel Booking</Text>
-            </TouchableOpacity>
-          )}
-
-          {isGuardView && (booking.status === 'accepted' || booking.status === 'en_route' || booking.status === 'active') && (
-            <View style={styles.clientInfoCard}>
-              <View style={styles.clientHeader}>
-                <User size={20} color={Colors.gold} />
-                <Text style={styles.clientTitle}>Client Information</Text>
-              </View>
-              <Text style={styles.clientNote}>
-                Contact the client through the chat below for any questions or updates.
-              </Text>
-            </View>
-          )}
-
-          {isGuardView && booking.status === 'active' && (
-            <TouchableOpacity style={styles.acceptButton} onPress={handleCompleteService}>
-              <Check size={20} color={Colors.background} />
-              <Text style={styles.acceptButtonText}>Complete Service</Text>
-            </TouchableOpacity>
-          )}
-
-          {!isPending && (
-            <View style={styles.chatSection}>
-              <View style={styles.chatHeader}>
-                <MessageCircle size={20} color={Colors.gold} />
-                <Text style={styles.chatTitle}>
-                  {isGuardView ? 'Chat with Client' : 'Chat with Guard'}
-                </Text>
-              </View>
-
-            <View style={styles.messagesContainer}>
-              {messages.length === 0 ? (
-                <View style={styles.emptyChat}>
-                  <MessageCircle size={48} color={Colors.textTertiary} />
-                  <Text style={styles.emptyChatText}>No messages yet</Text>
-                  <Text style={styles.emptyChatSubtext}>
-                    {isGuardView ? 'Start a conversation with the client' : 'Start a conversation with your guard'}
-                  </Text>
-                </View>
-              ) : (
-                messages.map((msg) => {
-                  const isOwnMessage = msg.senderId === user?.id;
-                  const showingOriginal = showOriginal[msg.id];
-                  const displayText = showingOriginal ? msg.text : (msg.translatedText || msg.text);
-                  const hasTranslation = !!msg.translatedText;
-                  
-                  return (
-                    <View
-                      key={msg.id}
-                      style={[
-                        styles.messageBubble,
-                        isOwnMessage ? styles.messageBubbleClient : styles.messageBubbleGuard,
-                      ]}
-                    >
-                      <Text
-                        style={[
-                          styles.messageText,
-                          isOwnMessage ? styles.messageTextClient : styles.messageTextGuard,
-                        ]}
-                      >
-                        {displayText}
-                      </Text>
-                      {hasTranslation && (
-                        <TouchableOpacity
-                          style={styles.viewOriginalButton}
-                          onPress={() => setShowOriginal(prev => ({ ...prev, [msg.id]: !prev[msg.id] }))}
-                        >
-                          <Eye size={12} color={isOwnMessage ? Colors.background : Colors.gold} />
-                          <Text
-                            style={[
-                              styles.viewOriginalText,
-                              isOwnMessage ? styles.messageTimeClient : { color: Colors.gold },
-                            ]}
-                          >
-                            {showingOriginal ? `Translated from ${msg.originalLanguage.toUpperCase()}` : 'View Original'}
-                          </Text>
-                        </TouchableOpacity>
-                      )}
-                      <Text
-                        style={[
-                          styles.messageTime,
-                          isOwnMessage ? styles.messageTimeClient : styles.messageTimeGuard,
-                        ]}
-                      >
-                        {new Date(msg.timestamp).toLocaleTimeString('en-US', {
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        })}
-                      </Text>
-                    </View>
-                  );
-                })
-              )}
-            </View>
-            </View>
-          )}
-
-          <View style={styles.bottomPadding} />
-        </View>
-      </ScrollView>
-
-      {!isPending && (
-        <View style={[styles.chatInputContainer, { paddingBottom: insets.bottom + 8 }]}>
-        <TextInput
-          style={styles.chatInput}
-          placeholder="Type a message..."
-          placeholderTextColor={Colors.textTertiary}
-          value={message}
-          onChangeText={setMessage}
-          multiline
-          maxLength={500}
-        />
-        <TouchableOpacity
-          style={[styles.sendButton, (!message.trim() || isSending) && styles.sendButtonDisabled]}
-          onPress={handleSendMessage}
-          disabled={!message.trim() || isSending}
+    <View style={styles.root}>
+      <NavBar title="Booking" right={<StatusBadge status={booking.status} />} />
+      <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        {/* ScrollView propio (no <Screen>) para poder desplazar hasta el chat. */}
+        <ScrollView
+          ref={scrollRef}
+          style={styles.flex}
+          contentContainerStyle={styles.scrollContent}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
         >
-          <Send size={20} color={Colors.background} />
-        </TouchableOpacity>
-        </View>
-      )}
-    </KeyboardAvoidingView>
+          <View style={styles.column}>
+            {/* Cabecera */}
+            <AppText variant="overline" color={Colors.gold}>
+              {bookingService.getBookingTypeLabel(booking.bookingType)} · #{shortId(booking.id)}
+            </AppText>
+            <AppText variant="title1" style={styles.title} accessibilityRole="header" accessibilityLabel={formatLongDate(booking)}>
+              {formatShortDate(booking)}
+            </AppText>
+            <AppText variant="callout" tabular>
+              {formatTime(booking)} · {formatDuration(booking.duration)}
+            </AppText>
+
+            {/* Estado */}
+            <Card tone={copy.tone === 'gold' ? 'gold' : 'default'} style={styles.statusCard}>
+              <View style={styles.statusRow}>
+                <View style={[styles.statusIcon, copy.tone === 'error' ? styles.statusIconError : null]}>
+                  <StatusIcon size={18} color={statusColor} strokeWidth={ICON_STROKE} />
+                </View>
+                <View style={styles.flex}>
+                  <AppText variant="headline">{copy.title}</AppText>
+                  {copy.message ? (
+                    <AppText variant="callout" style={styles.statusMessage}>
+                      {copy.message}
+                    </AppText>
+                  ) : null}
+                </View>
+              </View>
+            </Card>
+
+            {/* Codigo de inicio: el cliente se lo dicta al escolta */}
+            {showStartCode ? (
+              <Card tone="gold" style={styles.block}>
+                <View style={styles.codeHeader}>
+                  <AppText variant="overline" color={Colors.gold}>
+                    Start code
+                  </AppText>
+                  {codeState === 'ready' ? (
+                    <IconButton
+                      icon={copied ? Check : Copy}
+                      tone="gold"
+                      size={36}
+                      onPress={copyCode}
+                      accessibilityLabel={copied ? 'Start code copied' : 'Copy start code'}
+                    />
+                  ) : null}
+                </View>
+                {codeState === 'ready' && startCode ? (
+                  <AppText
+                    variant="numericLarge"
+                    color={Colors.goldLight}
+                    style={styles.code}
+                    numberOfLines={1}
+                    adjustsFontSizeToFit
+                    selectable
+                    accessibilityLabel={`Start code ${startCode.split('').join(' ')}`}
+                  >
+                    {startCode}
+                  </AppText>
+                ) : codeState === 'error' ? (
+                  <View style={styles.codeError}>
+                    <AppText variant="callout">{"Your code couldn't be loaded."}</AppText>
+                    <Button title="Try again" variant="ghost" size="sm" fullWidth={false} onPress={loadStartCode} />
+                  </View>
+                ) : (
+                  <Skeleton width={180} height={36} style={styles.code} />
+                )}
+                <AppText variant="footnote">Share this code with your protector when you meet.</AppText>
+              </Card>
+            ) : null}
+
+            {/* Ubicacion compartida (escolta) */}
+            {viewer === 'guard' && isLiveStatus(booking.status) ? (
+              <View style={styles.shareRow}>
+                <View
+                  style={[
+                    styles.dot,
+                    { backgroundColor: sharing.error ? Colors.error : sharing.isPublishing ? Colors.success : Colors.textTertiary },
+                  ]}
+                />
+                <AppText variant="footnote" style={styles.flex} accessibilityLiveRegion="polite">
+                  {sharing.error
+                    ? sharing.error
+                    : sharing.isPublishing
+                      ? 'Sharing your live location with the client.'
+                      : shouldPublish
+                        ? 'Starting location sharing…'
+                        : 'Your location is shared from 10 minutes before the start, or once you tap “I’m on my way”.'}
+                </AppText>
+                {sharing.error ? (
+                  <Button title="Retry" variant="ghost" size="sm" fullWidth={false} onPress={sharing.retry} />
+                ) : null}
+              </View>
+            ) : null}
+
+            {/* Escolta */}
+            {viewer !== 'guard' && booking.guardId ? (
+              <>
+                <SectionTitle title={viewer === 'client' ? 'Your protector' : 'Protector'} />
+                <Card
+                  onPress={() => router.push(`/guard/${booking.guardId}`)}
+                  accessibilityLabel={`View ${guardDisplayName(guard) ?? 'protector'} profile`}
+                >
+                  <View style={styles.personRow}>
+                    <Avatar
+                      name={guardDisplayName(guard) ?? undefined}
+                      uri={guard?.photos?.[0]}
+                      size={52}
+                      verified={guard?.kycStatus === 'approved'}
+                    />
+                    <View style={styles.flex}>
+                      <AppText variant="headline">{guardDisplayName(guard) ?? 'Protector'}</AppText>
+                      <AppText variant="footnote">
+                        {[
+                          guard?.kycStatus === 'approved' ? 'Verified protector' : 'Protector',
+                          guard && guard.rating > 0 && guard.completedJobs > 0
+                            ? `★ ${guard.rating.toFixed(1)} · ${guard.completedJobs} ${guard.completedJobs === 1 ? 'job' : 'jobs'}`
+                            : null,
+                        ]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </AppText>
+                    </View>
+                  </View>
+                </Card>
+              </>
+            ) : null}
+
+            {/* Detalles */}
+            <SectionTitle title="Details" />
+            <Card>
+              <InfoRow label="Pickup" icon={MapPin} value={booking.pickupAddress || '—'} />
+              {booking.destinationAddress ? <InfoRow label="Destination" value={booking.destinationAddress} /> : null}
+              {booking.routeStops?.length ? (
+                <InfoRow label="Stops" value={`${booking.routeStops.length}`} />
+              ) : null}
+              <Divider style={styles.divider} />
+              <InfoRow label="Duration" value={formatDuration(booking.duration)} />
+              <InfoRow label="Protection" value={labelOf(PROTECTION_LABEL, booking.protectionType)} />
+              <InfoRow label="Vehicle" value={labelOf(VEHICLE_LABEL, booking.vehicleType)} />
+              <InfoRow label="Dress code" value={labelOf(DRESS_LABEL, booking.dressCode)} />
+              <InfoRow label="People protected" value={`${booking.numberOfProtectees ?? '—'}`} />
+              <InfoRow label="Protectors" value={`${booking.numberOfProtectors ?? '—'}`} />
+            </Card>
+
+            {/* Importes */}
+            <SectionTitle title={viewer === 'guard' ? 'Earnings' : 'Payment'} />
+            <Card>
+              {viewer === 'guard' ? (
+                <InfoRow label="Your payout" value={formatMXN(booking.guardPayout)} emphasis />
+              ) : viewer === 'client' ? (
+                <>
+                  {typeof booking.hourlyRate === 'number' ? (
+                    <InfoRow label="Rate" value={`${formatMXN(booking.hourlyRate)} / hour`} />
+                  ) : null}
+                  <InfoRow label="Service" value={formatMXN(subtotal)} />
+                  <InfoRow label="Processing fee" value={formatMXN(booking.processingFee)} />
+                  <Divider style={styles.divider} />
+                  <InfoRow label={booking.status === 'pending' ? 'Total due' : 'Total paid'} value={formatMXN(booking.totalAmount)} emphasis />
+                </>
+              ) : (
+                <>
+                  {user?.role === 'admin' ? <InfoRow label="Client total" value={formatMXN(booking.totalAmount)} /> : null}
+                  {user?.role === 'admin' ? <InfoRow label="Platform" value={formatMXN(booking.platformCut)} /> : null}
+                  <InfoRow label="Protector payout" value={formatMXN(booking.guardPayout)} emphasis />
+                </>
+              )}
+            </Card>
+
+            {/* Calificacion */}
+            {typeof booking.rating === 'number' ? (
+              <>
+                <SectionTitle title={viewer === 'client' ? 'Your rating' : 'Client rating'} />
+                <Card>
+                  <StarRating value={booking.rating} size={20} label="Rating" />
+                  {booking.review ? (
+                    <AppText variant="body" style={styles.review}>
+                      {booking.review}
+                    </AppText>
+                  ) : null}
+                </Card>
+              </>
+            ) : null}
+
+            {/* Chat */}
+            {showChat && user ? (
+              <View
+                onLayout={(e) => {
+                  chatYRef.current = e.nativeEvent.layout.y;
+                  scrollToChat();
+                }}
+              >
+                <SectionTitle title="Messages" />
+                <Card>
+                  <BookingChat
+                    bookingId={booking.id}
+                    clientId={booking.clientId}
+                    guardId={booking.guardId}
+                    user={{ id: user.id, role: user.role, language: user.language }}
+                    canSend={canChat}
+                    counterpartLabel={viewer === 'guard' ? 'your client' : protectorName}
+                  />
+                </Card>
+              </View>
+            ) : null}
+
+            {/* Acciones secundarias */}
+            {canCancel || (viewer === 'client' && booking.status === 'active') ? (
+              <View style={styles.secondary}>
+                {viewer === 'client' && booking.status === 'active' ? (
+                  <Button title="End service" variant="outline" icon={CheckCircle2} onPress={() => setModal('complete')} />
+                ) : null}
+                {canCancel ? (
+                  <Button
+                    title={viewer === 'guard' ? 'Cancel job' : 'Cancel booking'}
+                    variant="danger"
+                    icon={Ban}
+                    onPress={() => setModal('cancel')}
+                  />
+                ) : null}
+              </View>
+            ) : null}
+          </View>
+        </ScrollView>
+        {footer}
+      </KeyboardAvoidingView>
+
+      <ActionModal
+        visible={modal === 'reject'}
+        title="Decline this job?"
+        message="The client is told right away and can choose another protector."
+        input={{ label: 'Reason', placeholder: "e.g. I'm not available at that time", required: true }}
+        confirmLabel="Decline job"
+        confirmVariant="danger"
+        onConfirm={(reason) => bookingService.rejectBooking(booking.id, reason)}
+        onClose={() => setModal(null)}
+      />
+      <ActionModal
+        visible={modal === 'cancel'}
+        title={viewer === 'guard' ? 'Cancel this job?' : 'Cancel this booking?'}
+        message={
+          viewer === 'guard'
+            ? 'The client is told right away. This can’t be undone.'
+            : booking.guardId && booking.status !== 'pending'
+              ? `${guardDisplayName(guard) ?? 'Your protector'} is told right away. This can’t be undone.`
+              : 'This can’t be undone.'
+        }
+        input={{ label: 'Reason', placeholder: 'A short note for the record', required: true }}
+        confirmLabel={viewer === 'guard' ? 'Cancel job' : 'Cancel booking'}
+        confirmVariant="danger"
+        cancelLabel="Keep it"
+        onConfirm={(reason) => bookingService.cancelBooking(booking.id, viewer === 'guard' ? 'guard' : 'client', reason)}
+        onClose={() => setModal(null)}
+      />
+      <ActionModal
+        visible={modal === 'complete'}
+        title="Complete the service?"
+        message="Confirm the protection detail has finished. This can’t be undone."
+        confirmLabel="Complete service"
+        onConfirm={() => bookingService.completeBooking(booking.id)}
+        onClose={() => setModal(null)}
+      />
+      <StartCodeInput
+        visible={codeOpen}
+        onSubmit={async (code) => {
+          await bookingService.startBooking(booking.id, code);
+          setCodeOpen(false);
+        }}
+        onCancel={() => setCodeOpen(false)}
+      />
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  root: {
     flex: 1,
     backgroundColor: Colors.background,
   },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingBottom: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-  },
-  backButton: {
-    width: 40,
-    height: 40,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  headerTitle: {
-    fontSize: 18,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-  },
-  headerSpacer: {
-    width: 40,
-  },
-  scrollView: {
+  flex: {
     flex: 1,
   },
-  content: {
-    padding: 20,
+  scrollContent: {
+    flexGrow: 1,
+    paddingHorizontal: Space.gutter,
+    paddingTop: Space.xl,
+    paddingBottom: Space.xxxl,
   },
-  statusBadge: {
-    alignSelf: 'flex-start',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 12,
-    marginBottom: 20,
+  column: {
+    width: '100%',
+    maxWidth: MAX_CONTENT_WIDTH,
+    alignSelf: 'center',
   },
-  statusText: {
-    fontSize: 14,
-    fontWeight: '700' as const,
+  skelTitle: {
+    marginTop: Space.md,
   },
-  guardCard: {
-    backgroundColor: Colors.surface,
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 20,
-    borderWidth: 1,
-    borderColor: Colors.border,
+  skelLine: {
+    marginTop: Space.sm,
   },
-  guardHeader: {
+  skelCards: {
+    marginTop: Space.xxl,
+  },
+  title: {
+    marginTop: Space.sm,
+    marginBottom: Space.xs,
+  },
+  statusCard: {
+    marginTop: Space.xl,
+  },
+  statusRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    gap: Space.md,
   },
-  guardName: {
-    fontSize: 20,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-    marginBottom: 4,
-  },
-  guardRole: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-  },
-  verifiedBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: Colors.gold + '20',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 12,
-  },
-  verifiedText: {
-    fontSize: 12,
-    fontWeight: '700' as const,
-    color: Colors.gold,
-  },
-  startCodeCard: {
-    backgroundColor: Colors.surface,
-    borderRadius: 16,
-    padding: 20,
-    marginBottom: 20,
-    borderWidth: 2,
-    borderColor: Colors.gold,
-  },
-  startCodeHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 12,
-  },
-  startCodeTitle: {
-    fontSize: 16,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-  },
-  startCodeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 8,
-  },
-  startCodeValue: {
-    fontSize: 32,
-    fontWeight: '700' as const,
-    color: Colors.gold,
-    letterSpacing: 4,
-  },
-  copyButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: Colors.gold + '20',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  startCodeHint: {
-    fontSize: 12,
-    color: Colors.textSecondary,
-    lineHeight: 16,
-  },
-  detailsCard: {
-    backgroundColor: Colors.surface,
-    borderRadius: 16,
-    padding: 20,
-    marginBottom: 20,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  sectionTitle: {
-    fontSize: 16,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-    marginBottom: 16,
-  },
-  detailRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    marginBottom: 12,
-  },
-  detailLabel: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-    width: 80,
-  },
-  detailValue: {
-    flex: 1,
-    fontSize: 14,
-    fontWeight: '600' as const,
-    color: Colors.textPrimary,
-  },
-  trackButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: Colors.gold,
-    paddingVertical: 16,
-    borderRadius: 16,
-    marginBottom: 20,
-  },
-  trackButtonText: {
-    fontSize: 16,
-    fontWeight: '700' as const,
-    color: Colors.background,
-  },
-  chatSection: {
-    backgroundColor: Colors.surface,
-    borderRadius: 16,
-    padding: 20,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  chatHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 16,
-  },
-  chatTitle: {
-    fontSize: 16,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-  },
-  messagesContainer: {
-    minHeight: 200,
-  },
-  emptyChat: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 40,
-  },
-  emptyChatText: {
-    fontSize: 16,
-    fontWeight: '600' as const,
-    color: Colors.textPrimary,
-    marginTop: 12,
-  },
-  emptyChatSubtext: {
-    fontSize: 13,
-    color: Colors.textSecondary,
-    marginTop: 4,
-  },
-  messageBubble: {
-    maxWidth: '80%',
-    padding: 12,
-    borderRadius: 16,
-    marginBottom: 8,
-  },
-  messageBubbleClient: {
-    alignSelf: 'flex-end',
-    backgroundColor: Colors.gold,
-  },
-  messageBubbleGuard: {
-    alignSelf: 'flex-start',
+  statusIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: Radius.sm,
     backgroundColor: Colors.surfaceLight,
-  },
-  messageText: {
-    fontSize: 14,
-    lineHeight: 20,
-    marginBottom: 4,
-  },
-  messageTextClient: {
-    color: Colors.background,
-  },
-  messageTextGuard: {
-    color: Colors.textPrimary,
-  },
-  messageTime: {
-    fontSize: 11,
-  },
-  messageTimeClient: {
-    color: Colors.background + 'CC',
-  },
-  messageTimeGuard: {
-    color: Colors.textSecondary,
-  },
-  viewOriginalButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    marginTop: 6,
-    marginBottom: 2,
-  },
-  viewOriginalText: {
-    fontSize: 11,
-    fontWeight: '600' as const,
-  },
-  bottomPadding: {
-    height: 20,
-  },
-  chatInputContainer: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    gap: 12,
-    paddingHorizontal: 20,
-    paddingTop: 12,
-    backgroundColor: Colors.surface,
-    borderTopWidth: 1,
-    borderTopColor: Colors.border,
-  },
-  chatInput: {
-    flex: 1,
-    backgroundColor: Colors.background,
-    borderRadius: 24,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    fontSize: 14,
-    color: Colors.textPrimary,
-    maxHeight: 100,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  sendButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: Colors.gold,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  sendButtonDisabled: {
-    opacity: 0.5,
+  statusIconError: {
+    backgroundColor: Colors.errorSoft,
   },
-  errorContainer: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
+  statusMessage: {
+    marginTop: 2,
   },
-  errorText: {
-    fontSize: 18,
-    fontWeight: '600' as const,
-    color: Colors.textPrimary,
-    marginTop: 16,
+  block: {
+    marginTop: Space.md,
   },
-  actionButtons: {
-    flexDirection: 'row',
-    gap: 12,
-    marginBottom: 20,
-  },
-  acceptButton: {
-    flex: 1,
+  codeHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: Colors.success,
-    paddingVertical: 16,
-    borderRadius: 16,
+    justifyContent: 'space-between',
+    minHeight: 36,
   },
-  acceptButtonText: {
-    fontSize: 16,
-    fontWeight: '700' as const,
-    color: Colors.background,
+  code: {
+    letterSpacing: 6,
+    marginTop: Space.xs,
+    marginBottom: Space.sm,
   },
-  rejectButton: {
-    flex: 1,
+  codeError: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: Colors.surface,
-    paddingVertical: 16,
-    borderRadius: 16,
-    borderWidth: 2,
-    borderColor: Colors.error,
+    justifyContent: 'space-between',
+    marginVertical: Space.sm,
   },
-  rejectButtonText: {
-    fontSize: 16,
-    fontWeight: '700' as const,
-    color: Colors.error,
-  },
-  clientInfoCard: {
-    backgroundColor: Colors.surface,
-    borderRadius: 16,
-    padding: 20,
-    marginBottom: 20,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  clientHeader: {
+  shareRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    marginBottom: 12,
+    gap: Space.sm,
+    marginTop: Space.md,
+    paddingHorizontal: Space.xs,
   },
-  clientTitle: {
-    fontSize: 16,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
+  dot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
   },
-  clientNote: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-    lineHeight: 20,
-  },
-  rejectedCard: {
-    backgroundColor: Colors.error + '20',
-    borderRadius: 16,
-    padding: 20,
-    marginBottom: 20,
-    borderWidth: 2,
-    borderColor: Colors.error,
-  },
-  rejectedHeader: {
+  personRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    marginBottom: 12,
+    gap: Space.md,
   },
-  rejectedTitle: {
-    fontSize: 18,
-    fontWeight: '700' as const,
-    color: Colors.error,
+  divider: {
+    marginVertical: Space.sm,
   },
-  rejectionReason: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-    lineHeight: 20,
-    marginBottom: 16,
+  review: {
+    marginTop: Space.md,
   },
-  selectNewGuardButton: {
-    backgroundColor: Colors.gold,
-    paddingVertical: 14,
-    borderRadius: 12,
-    alignItems: 'center',
+  secondary: {
+    marginTop: Space.xxl,
+    gap: Space.md,
   },
-  selectNewGuardText: {
-    fontSize: 16,
-    fontWeight: '700' as const,
-    color: Colors.background,
-  },
-  cancelBookingButton: {
+  actionRow: {
     flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: Colors.surface,
-    paddingVertical: 16,
-    borderRadius: 16,
-    marginBottom: 20,
-    borderWidth: 2,
-    borderColor: Colors.error,
+    gap: Space.md,
   },
-  cancelBookingText: {
-    fontSize: 16,
-    fontWeight: '700' as const,
-    color: Colors.error,
-  },
-  extendCard: {
-    backgroundColor: Colors.surface,
-    borderRadius: 16,
-    padding: 20,
-    marginBottom: 20,
-    borderWidth: 2,
-    borderColor: Colors.gold,
-  },
-  extendHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 8,
-  },
-  extendTitle: {
-    fontSize: 16,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-  },
-  extendSubtext: {
-    fontSize: 13,
-    color: Colors.textSecondary,
-    marginBottom: 16,
-  },
-  extendButtons: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  extendButton: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    backgroundColor: Colors.gold + '20',
-    paddingVertical: 12,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: Colors.gold,
-  },
-  extendButtonText: {
-    fontSize: 14,
-    fontWeight: '700' as const,
-    color: Colors.gold,
-  },
-  extendButtonTextDisabled: {
-    color: Colors.textTertiary,
+  actionError: {
+    marginBottom: Space.sm,
   },
 });

@@ -64,3 +64,6 @@ GoogleService-Info.plist
 .firebase/
 dist/
 firebase-debug*.log
+
+# Logs: los de emuladores y builds llegaron a traer credenciales de Braintree
+*.log

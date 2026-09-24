@@ -1,0 +1,11 @@
+{
+  "emulators": {
+    "firestore": { "port": 8180, "websocketPort": 9250 },
+    "database": { "port": 9100 },
+    "auth": { "port": 9299 },
+    "storage": { "port": 9399 },
+    "hub": { "port": 4510 },
+    "logging": { "port": 4610 },
+    "ui": { "enabled": false }
+  }
+}

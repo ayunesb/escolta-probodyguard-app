@@ -1,518 +1,526 @@
-import { useState, useCallback } from 'react';
+import { useCallback, useMemo, useState } from 'react';
+import { Linking, RefreshControl, StyleSheet, View } from 'react-native';
+import { Stack, useFocusEffect, useRouter } from 'expo-router';
 import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  ActivityIndicator,
-  TouchableOpacity,
-  Alert,
-} from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Stack, useFocusEffect } from 'expo-router';
-import { Shield, Users, Calendar, DollarSign, AlertCircle, CheckCircle, Download } from 'lucide-react-native';
-import { bookingService } from '@/services/bookingService';
-import { userService } from '@/services/userService';
+  CalendarCheck,
+  ChartColumn,
+  Download,
+  History,
+  MapPin,
+  Phone,
+  Receipt,
+  ShieldCheck,
+  Siren,
+  UserRoundX,
+  Users,
+  Wallet,
+} from 'lucide-react-native';
 import Colors from '@/constants/colors';
-import type { Booking, Guard } from '@/types';
+import { Radius, Space } from '@/constants/design';
+import {
+  AppText,
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  IconButton,
+  ListGroup,
+  ListRow,
+  Screen,
+  ScreenHeader,
+  SectionTitle,
+  SkeletonCard,
+  StatTile,
+  StatusBadge,
+} from '@/components/ui';
+import {
+  ACTIVE_STATUSES,
+  EmergencyAlertRow,
+  Notice,
+  RoleGate,
+  describeSave,
+  fetchActiveEmergencyAlerts,
+  fetchAllBookings,
+  fileStamp,
+  formatDate,
+  formatDateTime,
+  fullName,
+  isPaid,
+  money,
+  openDocument,
+  percent,
+  plural,
+  saveTextFile,
+  shortId,
+  toCSV,
+  todayEyebrow,
+} from '@/components/backoffice';
+import { useAuth } from '@/contexts/AuthContext';
+import { emergencyService } from '@/services/emergencyService';
+import { UserRecord, userService } from '@/services/userService';
+import type { Booking } from '@/types';
+import { formatMXN } from '@/utils/pricing';
+import { logger } from '@/utils/logger';
 
-export default function AdminHomeScreen() {
-  const insets = useSafeAreaInsets();
-  const [bookings, setBookings] = useState<Booking[]>([]);
-  const [guards, setGuards] = useState<Guard[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [isExporting, setIsExporting] = useState(false);
+interface GuardCounts {
+  total: number;
+  approved: number;
+  pending: number;
+}
+
+const ALERT_LABEL: Record<string, string> = {
+  panic: 'Panic — immediate danger',
+  sos: 'SOS — urgent help',
+  medical: 'Medical emergency',
+  security: 'Security threat',
+};
+
+export default function AdminHomeRoute() {
+  return (
+    <>
+      <Stack.Screen options={{ headerShown: false }} />
+      <RoleGate roles={['admin']}>
+        <AdminHomeScreen />
+      </RoleGate>
+    </>
+  );
+}
+
+function AdminHomeScreen() {
+  const router = useRouter();
+  const { user } = useAuth();
+  const [bookings, setBookings] = useState<Booking[] | null>(null);
+  const [guards, setGuards] = useState<GuardCounts | null>(null);
+  const [alerts, setAlerts] = useState<EmergencyAlertRow[]>([]);
+  const [people, setPeople] = useState<Record<string, UserRecord>>({});
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [alertsError, setAlertsError] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [notice, setNotice] = useState<{ tone: 'success' | 'error'; message: string } | null>(null);
+  const [resolvingId, setResolvingId] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoadError(null);
+    const [bookingsResult, countsResult, alertsResult] = await Promise.allSettled([
+      fetchAllBookings(),
+      Promise.all([
+        userService.countUsers({ role: 'guard' }),
+        userService.countUsers({ role: 'guard', kycStatus: 'approved' }),
+        userService.countUsers({ role: 'guard', kycStatus: 'pending' }),
+      ]),
+      fetchActiveEmergencyAlerts(),
+    ]);
+
+    let loaded: Booking[] = [];
+    if (bookingsResult.status === 'fulfilled') {
+      loaded = bookingsResult.value;
+      setBookings(loaded);
+    } else {
+      logger.error('[AdminHome] Failed to load bookings', bookingsResult.reason);
+      setLoadError('We could not load platform bookings.');
+    }
+    if (countsResult.status === 'fulfilled') {
+      const [total, approved, pending] = countsResult.value;
+      setGuards({ total, approved, pending });
+    } else {
+      logger.error('[AdminHome] Failed to count guards', countsResult.reason);
+    }
+    let activeAlerts: EmergencyAlertRow[] = [];
+    if (alertsResult.status === 'fulfilled') {
+      activeAlerts = alertsResult.value;
+      setAlerts(activeAlerts);
+      setAlertsError(false);
+    } else {
+      logger.error('[AdminHome] Failed to load emergency alerts', alertsResult.reason);
+      setAlertsError(true);
+    }
+
+    // Nombres solo de lo que se muestra (reservas recientes, rechazadas, alertas).
+    const shown = [
+      ...loaded.slice(0, 8),
+      ...loaded.filter((b) => b.status === 'rejected' && isPaid(b)).slice(0, 5),
+    ];
+    const ids = [...shown.flatMap((b) => [b.clientId, b.guardId]), ...activeAlerts.map((a) => a.userId)];
+    setPeople(await userService.getUsersByIds(ids));
+  }, []);
 
   useFocusEffect(
     useCallback(() => {
-      console.log('[AdminHome] Setting up real-time listener for all bookings');
-      setIsLoading(true);
-
-      userService.listByRole('guard').then((result) => setGuards(result as Guard[]));
-
-      const unsubscribe = bookingService.subscribeToBookings((allBookings) => {
-        console.log('[AdminHome] Real-time update - all bookings:', allBookings.length);
-        setBookings(allBookings);
-        setIsLoading(false);
-      });
-
-      return () => {
-        console.log('[AdminHome] Cleaning up real-time listener');
-        unsubscribe();
-      };
-    }, [])
+      load();
+    }, [load])
   );
 
-  const totalGuards = guards.length;
-  const activeGuards = guards.filter(g => g.availability).length;
-  const totalBookings = bookings.length;
-  const activeBookings = bookings.filter(b => b.status === 'active' || b.status === 'accepted').length;
-  const completedBookings = bookings.filter(b => b.status === 'completed').length;
-  const totalRevenue = bookings.filter(b => b.status === 'completed').reduce((sum: number, b: Booking) => sum + b.totalAmount, 0);
-  const platformRevenue = bookings.filter(b => b.status === 'completed').reduce((sum: number, b: Booking) => sum + b.platformCut, 0);
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await load();
+    setRefreshing(false);
+  };
 
-  const pendingKYC = guards.filter(g => g.kycStatus === 'pending').length;
+  const stats = useMemo(() => {
+    const list = bookings ?? [];
+    const completed = list.filter((b) => b.status === 'completed');
+    const cancelledPaid = list.filter((b) => b.status === 'cancelled' && isPaid(b));
+    return {
+      total: list.length,
+      inProgress: list.filter((b) => ACTIVE_STATUSES.includes(b.status)).length,
+      awaitingGuard: list.filter((b) => b.status === 'confirmed').length,
+      completed: completed.length,
+      gross: completed.reduce((s, b) => s + money(b.totalAmount), 0),
+      platform: completed.reduce((s, b) => s + money(b.platformCut), 0),
+      declined: list.filter((b) => b.status === 'rejected' && isPaid(b)),
+      refundCandidates: cancelledPaid.length + list.filter((b) => b.status === 'rejected' && isPaid(b)).length,
+    };
+  }, [bookings]);
 
-  const handleExportLedger = async () => {
-    setIsExporting(true);
+  const exportLedger = async () => {
+    if (!bookings || bookings.length === 0) return;
+    setExporting(true);
+    setNotice(null);
     try {
-      const csvData = generateLedgerCSV();
-      Alert.alert(
-        'Export Complete',
-        `Financial ledger exported with ${bookings.length} records. In production, this would download as CSV file.`,
-        [{ text: 'OK' }]
+      const csv = toCSV(
+        [
+          'Booking ID',
+          'Created',
+          'Scheduled date',
+          'Scheduled time',
+          'Status',
+          'Client ID',
+          'Guard ID',
+          'Duration (h)',
+          'Protectors',
+          'Total (MXN)',
+          'Processing fee (MXN)',
+          'Platform fee (MXN)',
+          'Guard payout (MXN)',
+          'Paid',
+          'Transaction ID',
+        ],
+        bookings.map((b) => [
+          b.id,
+          b.createdAt ?? '',
+          b.scheduledDate ?? '',
+          b.scheduledTime ?? '',
+          b.status,
+          b.clientId ?? '',
+          b.guardId ?? '',
+          b.duration ?? '',
+          b.numberOfProtectors ?? '',
+          money(b.totalAmount).toFixed(2),
+          money(b.processingFee).toFixed(2),
+          money(b.platformCut).toFixed(2),
+          money(b.guardPayout).toFixed(2),
+          isPaid(b) ? 'yes' : 'no',
+          b.transactionId ?? '',
+        ])
       );
-      console.log('[AdminHome] CSV Export:', csvData);
+      const result = await saveTextFile({
+        filename: `escolta-pro-bookings-${fileStamp()}.csv`,
+        content: csv,
+        mimeType: 'text/csv',
+        title: 'Escolta Pro bookings ledger',
+      });
+      const message = describeSave(result, `Ledger with ${plural(bookings.length, 'booking')}`);
+      if (message) setNotice({ tone: 'success', message });
     } catch (error) {
-      Alert.alert('Error', 'Failed to export ledger');
+      logger.error('[AdminHome] CSV export failed', error);
+      setNotice({ tone: 'error', message: 'The ledger could not be exported. Please try again.' });
     } finally {
-      setIsExporting(false);
+      setExporting(false);
     }
   };
 
-  const generateLedgerCSV = (): string => {
-    const headers = [
-      'Booking ID',
-      'Date',
-      'Client ID',
-      'Guard ID',
-      'Status',
-      'Duration (h)',
-      'Total Amount (MXN)',
-      'Platform Cut (MXN)',
-      'Guard Payout (MXN)',
-      'Payment Status',
-    ];
-
-    const rows = bookings.map(booking => [
-      booking.id,
-      booking.scheduledDate,
-      booking.clientId,
-      booking.guardId,
-      booking.status,
-      booking.duration.toString(),
-      booking.totalAmount.toFixed(2),
-      booking.platformCut.toFixed(2),
-      (booking.totalAmount - booking.platformCut).toFixed(2),
-      booking.status === 'completed' ? 'Paid' : 'Pending',
-    ]);
-
-    const csvContent = [
-      headers.join(','),
-      ...rows.map(row => row.join(',')),
-    ].join('\n');
-
-    return csvContent;
+  const resolveAlert = async (alert: EmergencyAlertRow, status: 'resolved' | 'false_alarm') => {
+    setResolvingId(alert.id);
+    const ok = await emergencyService.resolveAlert(alert.id, status, undefined, user?.id);
+    setResolvingId(null);
+    if (ok) {
+      setAlerts((prev) => prev.filter((a) => a.id !== alert.id));
+    } else {
+      setNotice({ tone: 'error', message: 'The alert could not be updated. Please try again.' });
+    }
   };
 
+  const loading = bookings === null && !loadError;
+
   return (
-    <View style={styles.container}>
-      <Stack.Screen options={{ headerShown: false }} />
-      
-      <View style={[styles.header, { paddingTop: insets.top + 24 }]}>
-        <View style={styles.headerContent}>
-          <View>
-            <Text style={styles.title}>Admin Dashboard</Text>
-            <Text style={styles.subtitle}>System overview and management</Text>
-          </View>
-          <TouchableOpacity
-            style={styles.exportButton}
-            onPress={handleExportLedger}
-            disabled={isExporting || bookings.length === 0}
-          >
-            {isExporting ? (
-              <ActivityIndicator size="small" color={Colors.gold} />
-            ) : (
-              <Download size={20} color={Colors.gold} />
-            )}
-            <Text style={styles.exportButtonText}>Export CSV</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
+    <Screen glow refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.gold} />}>
+      <ScreenHeader
+        eyebrow={todayEyebrow()}
+        title="Operations"
+        subtitle="The state of Escolta Pro at a glance."
+        right={
+          <IconButton
+            icon={Download}
+            onPress={exportLedger}
+            disabled={exporting || !bookings || bookings.length === 0}
+            accessibilityLabel="Export bookings ledger as CSV"
+          />
+        }
+      />
 
-      <ScrollView style={styles.content} contentContainerStyle={styles.scrollContent}>
-        {isLoading ? (
-          <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color={Colors.gold} />
-            <Text style={styles.loadingText}>Loading dashboard...</Text>
-          </View>
-        ) : (
-          <>
-            {pendingKYC > 0 && (
-              <View style={styles.alertCard}>
-                <AlertCircle size={24} color={Colors.warning} />
-                <View style={styles.alertContent}>
-                  <Text style={styles.alertTitle}>Pending KYC Reviews</Text>
-                  <Text style={styles.alertText}>
-                    {pendingKYC} guard{pendingKYC !== 1 ? 's' : ''} waiting for KYC approval
-                  </Text>
-                </View>
-              </View>
-            )}
+      {notice ? <Notice tone={notice.tone} message={notice.message} onDismiss={() => setNotice(null)} style={styles.block} /> : null}
 
-            <View style={styles.statsGrid}>
-              <View style={styles.statCard}>
-                <View style={styles.statIcon}>
-                  <Users size={24} color={Colors.gold} />
-                </View>
-                <Text style={styles.statValue}>{totalGuards}</Text>
-                <Text style={styles.statLabel}>Total Guards</Text>
-                <Text style={styles.statSubtext}>{activeGuards} active</Text>
-              </View>
-
-              <View style={styles.statCard}>
-                <View style={styles.statIcon}>
-                  <Calendar size={24} color={Colors.info} />
-                </View>
-                <Text style={styles.statValue}>{totalBookings}</Text>
-                <Text style={styles.statLabel}>Total Bookings</Text>
-                <Text style={styles.statSubtext}>{activeBookings} active</Text>
-              </View>
-
-              <View style={styles.statCard}>
-                <View style={styles.statIcon}>
-                  <DollarSign size={24} color={Colors.success} />
-                </View>
-                <Text style={styles.statValue}>${totalRevenue.toFixed(0)}</Text>
-                <Text style={styles.statLabel}>Total Revenue</Text>
-                <Text style={styles.statSubtext}>${platformRevenue.toFixed(0)} platform</Text>
-              </View>
-
-              <View style={styles.statCard}>
-                <View style={styles.statIcon}>
-                  <CheckCircle size={24} color={Colors.success} />
-                </View>
-                <Text style={styles.statValue}>{completedBookings}</Text>
-                <Text style={styles.statLabel}>Completed</Text>
-                <Text style={styles.statSubtext}>
-                  {totalBookings > 0 ? ((completedBookings / totalBookings) * 100).toFixed(0) : 0}% rate
-                </Text>
-              </View>
-            </View>
-
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>System Overview</Text>
-              
-              <View style={styles.overviewCard}>
-                <View style={styles.overviewRow}>
-                  <Text style={styles.overviewLabel}>Guards Pending KYC</Text>
-                  <Text style={[styles.overviewValue, { color: pendingKYC > 0 ? Colors.warning : Colors.success }]}>
-                    {pendingKYC}
-                  </Text>
-                </View>
-                <View style={styles.overviewRow}>
-                  <Text style={styles.overviewLabel}>Approved Guards</Text>
-                  <Text style={styles.overviewValue}>
-                    {guards.filter(g => g.kycStatus === 'approved').length}
-                  </Text>
-                </View>
-                <View style={styles.overviewRow}>
-                  <Text style={styles.overviewLabel}>Pending Bookings</Text>
-                  <Text style={styles.overviewValue}>
-                    {bookings.filter(b => b.status === 'pending').length}
-                  </Text>
-                </View>
-                <View style={styles.overviewRow}>
-                  <Text style={styles.overviewLabel}>Cancelled Bookings</Text>
-                  <Text style={styles.overviewValue}>
-                    {bookings.filter(b => b.status === 'cancelled').length}
-                  </Text>
-                </View>
-              </View>
-            </View>
-
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>Recent Activity</Text>
-              {bookings.length === 0 ? (
-                <View style={styles.emptyState}>
-                  <Calendar size={48} color={Colors.textTertiary} />
-                  <Text style={styles.emptyText}>No activity yet</Text>
-                  <Text style={styles.emptySubtext}>
-                    System activity will appear here
-                  </Text>
-                </View>
-              ) : (
-                bookings.slice(0, 10).map((booking) => {
-                  const guard = guards.find(g => g.id === booking.guardId);
-                  const getStatusColor = (status: string) => {
-                    switch (status) {
-                      case 'completed': return Colors.success;
-                      case 'active': return Colors.info;
-                      case 'accepted': return Colors.warning;
-                      case 'cancelled': return Colors.error;
-                      default: return Colors.textSecondary;
-                    }
-                  };
-
-                  return (
-                    <View key={booking.id} style={styles.activityCard}>
-                      <View style={styles.activityHeader}>
-                        <View style={[styles.statusBadge, { backgroundColor: getStatusColor(booking.status) + '20' }]}>
-                          <Text style={[styles.statusText, { color: getStatusColor(booking.status) }]}>
-                            {booking.status.toUpperCase()}
-                          </Text>
-                        </View>
-                        <Text style={styles.activityId}>#{booking.id.slice(0, 8)}</Text>
-                      </View>
-
-                      <View style={styles.activityDetails}>
-                        <Text style={styles.activityText}>
-                          Client ID: {booking.clientId.slice(0, 8)}
-                        </Text>
-                        {guard && (
-                          <Text style={styles.activityText}>
-                            Guard: {guard.firstName} {guard.lastName}
-                          </Text>
-                        )}
-                        <Text style={styles.activityText}>
-                          {booking.scheduledDate} • {booking.duration}h
-                        </Text>
-                      </View>
-
-                      <View style={styles.activityFooter}>
-                        <Text style={styles.activityAmount}>${booking.totalAmount}</Text>
-                        <Text style={styles.activityPlatform}>
-                          Platform: ${booking.platformCut}
-                        </Text>
-                      </View>
+      {alerts.length > 0 ? (
+        <View style={styles.block}>
+          <SectionTitle title={`Emergency alerts · ${alerts.length}`} style={styles.firstSection} />
+          <View style={styles.list}>
+            {alerts.map((a) => {
+              const person = people[a.userId];
+              const loc = a.location;
+              return (
+                <Card key={a.id} tone="raised" style={styles.alertCard}>
+                  <View style={styles.rowHead}>
+                    <View style={styles.alertIcon}>
+                      <Siren size={18} color={Colors.error} />
                     </View>
-                  );
-                })
-              )}
-            </View>
-          </>
-        )}
-      </ScrollView>
-    </View>
+                    <View style={styles.flex}>
+                      <AppText variant="headline">{ALERT_LABEL[a.type ?? ''] ?? 'Emergency alert'}</AppText>
+                      <AppText variant="footnote">
+                        {person ? fullName(person) : 'Unknown member'} · {formatDateTime(a.timestamp)}
+                        {a.bookingId ? ` · Booking ${shortId(a.bookingId)}` : ''}
+                      </AppText>
+                    </View>
+                  </View>
+                  <AppText variant="caption" color={loc ? Colors.textSecondary : Colors.warning}>
+                    {loc
+                      ? loc.address || `${loc.latitude.toFixed(5)}, ${loc.longitude.toFixed(5)}`
+                      : 'Location not shared by the device'}
+                  </AppText>
+                  <View style={styles.actions}>
+                    {loc ? (
+                      <Button
+                        title="Map"
+                        icon={MapPin}
+                        variant="secondary"
+                        size="sm"
+                        fullWidth={false}
+                        onPress={() => openDocument(`https://www.google.com/maps/search/?api=1&query=${loc.latitude},${loc.longitude}`)}
+                        accessibilityLabel="Open alert location on a map"
+                      />
+                    ) : null}
+                    {person?.phone ? (
+                      <Button
+                        title="Call"
+                        icon={Phone}
+                        variant="secondary"
+                        size="sm"
+                        fullWidth={false}
+                        onPress={() => Linking.openURL(`tel:${person.phone}`).catch(() => {})}
+                        accessibilityLabel={`Call ${fullName(person)}`}
+                      />
+                    ) : null}
+                    <Button
+                      title="Resolved"
+                      variant="outline"
+                      size="sm"
+                      fullWidth={false}
+                      loading={resolvingId === a.id}
+                      onPress={() => resolveAlert(a, 'resolved')}
+                      accessibilityLabel="Mark alert as resolved"
+                    />
+                    <Button
+                      title="False alarm"
+                      variant="ghost"
+                      size="sm"
+                      fullWidth={false}
+                      disabled={resolvingId === a.id}
+                      onPress={() => resolveAlert(a, 'false_alarm')}
+                      accessibilityLabel="Mark alert as a false alarm"
+                    />
+                  </View>
+                </Card>
+              );
+            })}
+          </View>
+        </View>
+      ) : null}
+
+      {alertsError ? (
+        <Notice tone="warning" message="Emergency alerts could not be checked. Pull to refresh." style={styles.block} />
+      ) : null}
+
+      {guards && guards.pending > 0 ? (
+        <Card tone="gold" onPress={() => router.push('/(tabs)/admin-kyc')} accessibilityLabel="Review pending verifications" style={styles.kycCard}>
+          <ShieldCheck size={20} color={Colors.gold} />
+          <View style={styles.flex}>
+            <AppText variant="headline">{plural(guards.pending, 'guard')} waiting for verification</AppText>
+            <AppText variant="footnote">Review documents before they can accept bookings.</AppText>
+          </View>
+        </Card>
+      ) : null}
+
+      <SectionTitle title="Bookings" />
+      {loadError ? (
+        <Notice tone="error" message={loadError} actionLabel="Try again" onAction={load} />
+      ) : loading ? (
+        <View style={styles.grid}>
+          <SkeletonCard lines={1} />
+          <SkeletonCard lines={1} />
+        </View>
+      ) : (
+        <View style={styles.gridWrap}>
+          <View style={styles.grid}>
+            <StatTile label="Bookings" value={stats.total} hint={`${stats.inProgress} in progress`} icon={CalendarCheck} />
+            <StatTile label="Completed" value={stats.completed} hint={`${percent(stats.completed, stats.total)} of all`} icon={ShieldCheck} />
+          </View>
+          <View style={styles.grid}>
+            <StatTile label="Client payments" value={formatMXN(stats.gross)} hint="Completed jobs" icon={Wallet} />
+            <StatTile label="Platform fees" value={formatMXN(stats.platform)} hint="Completed jobs" icon={Receipt} accent />
+          </View>
+          <View style={styles.grid}>
+            <StatTile label="Guards" value={guards ? guards.total : '—'} hint={guards ? `${guards.approved} verified` : undefined} icon={Users} />
+            <StatTile label="Awaiting guard" value={stats.awaitingGuard} hint="Paid, not yet accepted" icon={UserRoundX} />
+          </View>
+        </View>
+      )}
+
+      {stats.declined.length > 0 ? (
+        <>
+          <SectionTitle title="Declined — waiting on the client" />
+          <ListGroup>
+            {stats.declined.slice(0, 5).map((b) => {
+              const client = people[b.clientId];
+              return (
+                <ListRow
+                  key={b.id}
+                  icon={UserRoundX}
+                  title={`${shortId(b.id)} · ${client ? fullName(client) : 'Client'}`}
+                  subtitle={`Declined${b.rejectionReason ? `: ${b.rejectionReason}` : ''} · ${formatDate(b.scheduledDate)}`}
+                  value={formatMXN(b.totalAmount)}
+                  onPress={() =>
+                    router.push({ pathname: '/guard-reassignment', params: { bookingId: b.id, currentGuardId: b.guardId ?? '' } })
+                  }
+                  accessibilityHint="Opens booking details and next steps"
+                />
+              );
+            })}
+          </ListGroup>
+        </>
+      ) : null}
+
+      <SectionTitle title="Back office" />
+      <ListGroup>
+        <ListRow
+          icon={ShieldCheck}
+          title="Guard verification"
+          subtitle="Review identity and license documents"
+          value={guards ? (guards.pending > 0 ? `${guards.pending} pending` : 'Up to date') : undefined}
+          onPress={() => router.push('/(tabs)/admin-kyc')}
+        />
+        <ListRow icon={Users} title="Members" subtitle="Search, edit and suspend accounts" onPress={() => router.push('/(tabs)/admin-users')} />
+        <ListRow icon={ChartColumn} title="Analytics" subtitle="Bookings, revenue and members" onPress={() => router.push('/admin-analytics')} />
+        <ListRow
+          icon={Receipt}
+          title="Refunds"
+          subtitle="Paid bookings that were cancelled or declined"
+          value={bookings ? String(stats.refundCandidates) : undefined}
+          onPress={() => router.push('/admin-refunds')}
+        />
+        <ListRow icon={History} title="KYC audit trail" subtitle="Every upload and decision" onPress={() => router.push('/admin/kyc-audit')} />
+      </ListGroup>
+
+      <SectionTitle
+        title="Recent bookings"
+        action={
+          bookings && bookings.length > 0 ? (
+            <Button title="Export CSV" icon={Download} variant="ghost" size="sm" fullWidth={false} loading={exporting} onPress={exportLedger} />
+          ) : undefined
+        }
+      />
+      {loading ? (
+        <>
+          <SkeletonCard />
+          <SkeletonCard />
+        </>
+      ) : !bookings || bookings.length === 0 ? (
+        loadError ? null : (
+          <EmptyState icon={CalendarCheck} title="No bookings yet" message="Bookings appear here as soon as clients create them." />
+        )
+      ) : (
+        <View style={styles.list}>
+          {bookings.slice(0, 8).map((b) => {
+            const client = people[b.clientId];
+            const guard = b.guardId ? people[b.guardId] : undefined;
+            return (
+              <Card key={b.id} style={styles.bookingCard}>
+                <View style={styles.rowHead}>
+                  <AppText variant="headline" style={styles.flex} numberOfLines={1}>
+                    {shortId(b.id)}
+                  </AppText>
+                  <StatusBadge status={b.status} />
+                </View>
+                <AppText variant="footnote" numberOfLines={1}>
+                  {client ? fullName(client) : 'Client'} → {guard ? fullName(guard) : b.guardId ? 'Guard' : 'No guard'}
+                </AppText>
+                <View style={styles.rowHead}>
+                  <AppText variant="caption" color={Colors.textTertiary} style={styles.flex}>
+                    {formatDate(b.scheduledDate)}
+                    {b.scheduledTime ? ` · ${b.scheduledTime}` : ''}
+                    {b.duration ? ` · ${b.duration} h` : ''}
+                  </AppText>
+                  {isPaid(b) ? <Badge label="Paid" tone="success" /> : null}
+                  <AppText variant="numeric" color={Colors.goldLight}>
+                    {formatMXN(b.totalAmount)}
+                  </AppText>
+                </View>
+              </Card>
+            );
+          })}
+        </View>
+      )}
+    </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: Colors.background,
+  block: {
+    marginBottom: Space.md,
   },
-  header: {
-    padding: 24,
-    paddingTop: 60,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
+  firstSection: {
+    marginTop: 0,
   },
-  headerContent: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  exportButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: Colors.surface,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: Colors.gold,
-  },
-  exportButtonText: {
-    fontSize: 14,
-    fontWeight: '700' as const,
-    color: Colors.gold,
-  },
-  title: {
-    fontSize: 32,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-    marginBottom: 4,
-  },
-  subtitle: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-  },
-  content: {
-    flex: 1,
-  },
-  scrollContent: {
-    padding: 16,
-  },
-  loadingContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 80,
-  },
-  loadingText: {
-    fontSize: 16,
-    color: Colors.textSecondary,
-    marginTop: 16,
+  list: {
+    gap: Space.md,
   },
   alertCard: {
+    gap: Space.md,
+    borderColor: Colors.error,
+  },
+  alertIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: Radius.sm,
+    backgroundColor: Colors.errorSoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  rowHead: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 16,
-    backgroundColor: Colors.warning + '20',
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 16,
-    borderWidth: 2,
-    borderColor: Colors.warning,
+    gap: Space.md,
   },
-  alertContent: {
-    flex: 1,
-  },
-  alertTitle: {
-    fontSize: 16,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-    marginBottom: 4,
-  },
-  alertText: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-  },
-  statsGrid: {
+  actions: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 12,
-    marginBottom: 24,
+    gap: Space.sm,
   },
-  statCard: {
+  kycCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Space.md,
+  },
+  gridWrap: {
+    gap: Space.md,
+  },
+  grid: {
+    flexDirection: 'row',
+    gap: Space.md,
+  },
+  bookingCard: {
+    gap: Space.xs,
+  },
+  flex: {
     flex: 1,
-    minWidth: '47%',
-    backgroundColor: Colors.surface,
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    alignItems: 'center',
-  },
-  statIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: Colors.background,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 12,
-  },
-  statValue: {
-    fontSize: 24,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-    marginBottom: 4,
-  },
-  statLabel: {
-    fontSize: 12,
-    color: Colors.textSecondary,
-    textAlign: 'center' as const,
-    marginBottom: 4,
-  },
-  statSubtext: {
-    fontSize: 11,
-    color: Colors.textTertiary,
-    textAlign: 'center' as const,
-  },
-  section: {
-    marginBottom: 24,
-  },
-  sectionTitle: {
-    fontSize: 20,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-    marginBottom: 16,
-  },
-  overviewCard: {
-    backgroundColor: Colors.surface,
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  overviewRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-  },
-  overviewLabel: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-  },
-  overviewValue: {
-    fontSize: 16,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-  },
-  activityCard: {
-    backgroundColor: Colors.surface,
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  activityHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  statusBadge: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 8,
-  },
-  statusText: {
-    fontSize: 12,
-    fontWeight: '700' as const,
-  },
-  activityId: {
-    fontSize: 12,
-    color: Colors.textTertiary,
-    fontWeight: '600' as const,
-  },
-  activityDetails: {
-    marginBottom: 12,
-  },
-  activityText: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-    marginBottom: 4,
-  },
-  activityFooter: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: Colors.border,
-  },
-  activityAmount: {
-    fontSize: 18,
-    fontWeight: '700' as const,
-    color: Colors.gold,
-  },
-  activityPlatform: {
-    fontSize: 14,
-    fontWeight: '600' as const,
-    color: Colors.success,
-  },
-  emptyState: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 40,
-  },
-  emptyText: {
-    fontSize: 18,
-    fontWeight: '600' as const,
-    color: Colors.textPrimary,
-    marginTop: 12,
-  },
-  emptySubtext: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-    marginTop: 8,
-    textAlign: 'center' as const,
   },
 });

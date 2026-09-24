@@ -1,334 +1,210 @@
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, ActivityIndicator } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Stack, useRouter, useFocusEffect } from 'expo-router';
-import { Calendar, MapPin, Clock, DollarSign, Navigation, AlertCircle } from 'lucide-react-native';
+import { useCallback, useMemo, useRef, useState } from 'react';
+import { FlatList, StyleSheet, View } from 'react-native';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { AlertCircle, BriefcaseBusiness, CalendarDays, History } from 'lucide-react-native';
 import { useAuth } from '@/contexts/AuthContext';
 import { bookingService } from '@/services/bookingService';
-import Colors from '@/constants/colors';
-import { useState, useCallback } from 'react';
-import { Booking } from '@/types';
+import { Space } from '@/constants/design';
+import { EmptyState, Screen, ScreenHeader, SegmentedControl, SkeletonCard } from '@/components/ui';
+import { BookingCard } from '@/components/booking/BookingCard';
+import { scheduledDate } from '@/components/booking/format';
+import type { Booking, BookingStatus, UserRole } from '@/types';
+
+type Segment = 'upcoming' | 'past';
+
+// Que cuenta como "proximo" para cada rol. El cliente ve aqui tambien lo que
+// requiere accion suya (sin pagar, rechazada); el escolta nunca ve 'pending'.
+const UPCOMING: Record<UserRole, BookingStatus[]> = {
+  client: ['pending', 'confirmed', 'accepted', 'en_route', 'active', 'rejected'],
+  guard: ['confirmed', 'accepted', 'en_route', 'active'],
+  company: ['confirmed', 'accepted', 'en_route', 'active', 'rejected'],
+  admin: ['pending', 'confirmed', 'accepted', 'en_route', 'active', 'rejected'],
+};
+
+const HEADER: Record<UserRole, { title: string; subtitle: string }> = {
+  client: { title: 'Your bookings', subtitle: 'Every protection detail, upcoming and past.' },
+  guard: { title: 'Your jobs', subtitle: 'Jobs you have accepted, are working, or have finished.' },
+  company: { title: 'Team bookings', subtitle: 'Every job your protectors are handling.' },
+  admin: { title: 'All bookings', subtitle: 'Bookings across the platform.' },
+};
+
+const LIVE_FIRST: Partial<Record<BookingStatus, number>> = { active: 0, en_route: 1 };
+
+const startTime = (b: Booking) => scheduledDate(b)?.getTime() ?? 0;
+
+function subscribe(role: UserRole, userId: string, onData: (b: Booking[]) => void, onError: (e: Error) => void) {
+  switch (role) {
+    case 'guard':
+      return bookingService.subscribeToGuardBookings(userId, onData, onError);
+    case 'client':
+      return bookingService.subscribeToClientBookings(userId, onData, onError);
+    case 'company':
+      return bookingService.subscribeToCompanyBookings(userId, onData, onError);
+    default:
+      return bookingService.subscribeToBookings(onData, onError);
+  }
+}
 
 export default function BookingsScreen() {
   const { user } = useAuth();
   const router = useRouter();
-  const insets = useSafeAreaInsets();
-  const [userBookings, setUserBookings] = useState<Booking[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const role: UserRole = user?.role ?? 'client';
+  const [bookings, setBookings] = useState<Booking[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [segment, setSegment] = useState<Segment>('upcoming');
+  const [attempt, setAttempt] = useState(0);
+  const hasDataRef = useRef(false);
 
+  // En vivo mientras la pestana esta enfocada; al volver se reusa la lista
+  // anterior (sin esqueleto) mientras llega la nueva.
   useFocusEffect(
     useCallback(() => {
       if (!user) {
-        setUserBookings([]);
-        setIsLoading(false);
+        setBookings([]);
+        setLoading(false);
         return;
       }
-
-      console.log('[Bookings] Setting up real-time listener for user:', user.id, 'role:', user.role);
-      setIsLoading(true);
-
-      // Cliente y escolta leen su propio indice (guardBookingIndex /
-      // clientBookingIndex): las reglas de RTDB solo dejan listar /bookings
-      // completo al admin, asi que un cliente o escolta que use
-      // subscribeToBookings aqui se queda leyendo su cache local viejo en
-      // vez del servidor en vivo. Una empresa no tiene reservas propias (son
-      // de sus escoltas), asi que usa el indice combinado de su equipo.
-      const unsubscribe =
-        user.role === 'guard'
-          ? bookingService.subscribeToGuardBookings(user.id, (bookings) => {
-              console.log('[Bookings] Real-time update - user bookings:', bookings.length);
-              setUserBookings(bookings);
-              setIsLoading(false);
-            })
-          : user.role === 'client'
-          ? bookingService.subscribeToClientBookings(user.id, (bookings) => {
-              console.log('[Bookings] Real-time update - user bookings:', bookings.length);
-              setUserBookings(bookings);
-              setIsLoading(false);
-            })
-          : user.role === 'company'
-          ? bookingService.subscribeToCompanyBookings(user.id, (bookings) => {
-              console.log('[Bookings] Real-time update - company bookings:', bookings.length);
-              setUserBookings(bookings);
-              setIsLoading(false);
-            })
-          : bookingService.subscribeToBookings((allBookings) => {
-              console.log('[Bookings] Real-time update - user bookings:', allBookings.length);
-              setUserBookings(allBookings);
-              setIsLoading(false);
-            });
-
-      return () => {
-        console.log('[Bookings] Cleaning up real-time listener');
-        unsubscribe();
-      };
-    }, [user])
+      if (!hasDataRef.current) setLoading(true);
+      setError(null);
+      return subscribe(
+        user.role,
+        user.id,
+        (list) => {
+          hasDataRef.current = true;
+          setBookings(list);
+          setError(null);
+          setLoading(false);
+        },
+        (e) => {
+          setError(e.message);
+          setLoading(false);
+        }
+      );
+      // `attempt` fuerza una nueva suscripcion al pulsar "Try again".
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [user, attempt])
   );
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'completed': return Colors.success;
-      case 'active': return Colors.info;
-      case 'accepted': return Colors.warning;
-      case 'cancelled': return Colors.error;
-      default: return Colors.textSecondary;
+  const { upcoming, past } = useMemo(() => {
+    const upcomingStatuses = UPCOMING[role];
+    const up: Booking[] = [];
+    const done: Booking[] = [];
+    bookings.forEach((b) => (upcomingStatuses.includes(b.status) ? up : done).push(b));
+    up.sort((a, b) => {
+      const la = LIVE_FIRST[a.status] ?? 9;
+      const lb = LIVE_FIRST[b.status] ?? 9;
+      return la !== lb ? la - lb : startTime(a) - startTime(b);
+    });
+    done.sort((a, b) => startTime(b) - startTime(a));
+    return { upcoming: up, past: done };
+  }, [bookings, role]);
+
+  const data = segment === 'upcoming' ? upcoming : past;
+  const header = HEADER[role];
+  const today = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
+
+  const openBooking = useCallback((id: string) => router.push(`/booking/${id}`), [router]);
+
+  const renderEmpty = () => {
+    if (loading) {
+      return (
+        <View>
+          <SkeletonCard lines={3} />
+          <SkeletonCard lines={3} />
+          <SkeletonCard lines={3} />
+        </View>
+      );
     }
+    if (error) {
+      return (
+        <EmptyState
+          icon={AlertCircle}
+          title="Couldn't load bookings"
+          message={error}
+          actionLabel="Try again"
+          onAction={() => setAttempt((n) => n + 1)}
+        />
+      );
+    }
+    if (segment === 'past') {
+      return (
+        <EmptyState
+          icon={History}
+          title={role === 'guard' ? 'No finished jobs yet' : 'No past bookings yet'}
+          message="Completed and cancelled bookings will appear here."
+        />
+      );
+    }
+    if (role === 'client') {
+      return (
+        <EmptyState
+          icon={CalendarDays}
+          title="No upcoming bookings"
+          message="When you book a protector, the details and live status appear here."
+          actionLabel="Book protection"
+          onAction={() => router.push('/(tabs)/home')}
+        />
+      );
+    }
+    if (role === 'guard') {
+      return (
+        <EmptyState
+          icon={BriefcaseBusiness}
+          title="No upcoming jobs"
+          message="New requests arrive on your Jobs tab. Accepted jobs show up here."
+          actionLabel="See requests"
+          onAction={() => router.push('/(tabs)/home')}
+        />
+      );
+    }
+    return <EmptyState icon={CalendarDays} title="No active bookings" message="Bookings in progress will appear here." />;
   };
 
   return (
-    <View style={styles.container}>
-      <Stack.Screen options={{ headerShown: false }} />
-      
-      <View style={[styles.header, { paddingTop: insets.top + 24 }]}>
-        <Text style={styles.title}>
-          {user?.role === 'client' ? 'My Bookings' : 'Job History'}
-        </Text>
-      </View>
-
-      {isLoading ? (
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={Colors.gold} />
-          <Text style={styles.loadingText}>Loading bookings...</Text>
-        </View>
-      ) : (
-        <FlatList
-          data={userBookings}
-          keyExtractor={(item) => item.id}
-          contentContainerStyle={styles.scrollContent}
-          ListEmptyComponent={
-            <View style={styles.emptyState}>
-              <Calendar size={64} color={Colors.textTertiary} />
-              <Text style={styles.emptyText}>No bookings yet</Text>
-              <Text style={styles.emptySubtext}>
-                {user?.role === 'client' 
-                  ? 'Book your first protector to get started' 
-                  : 'Accept jobs to see them here'}
-              </Text>
-            </View>
-          }
-          renderItem={({ item: booking }) => (
-            <TouchableOpacity 
-              key={booking.id} 
-              style={styles.bookingCard}
-              onPress={() => router.push(`/booking/${booking.id}` as any)}
-              accessible={true}
-              accessibilityLabel={`Booking ${booking.id.slice(0, 8)}, status ${booking.status}, scheduled for ${booking.scheduledDate} at ${booking.scheduledTime}`}
-              accessibilityHint="Double tap to view booking details"
-              accessibilityRole="button"
-            >
-              <View style={styles.bookingHeader}>
-                <View style={[styles.statusBadge, { backgroundColor: getStatusColor(booking.status) + '20' }]}>
-                  <Text style={[styles.statusText, { color: getStatusColor(booking.status) }]}>
-                    {booking.status.toUpperCase()}
-                  </Text>
-                </View>
-                <Text style={styles.bookingId}>#{booking.id.slice(0, 8)}</Text>
-              </View>
-
-              <View style={styles.bookingDetail}>
-                <Calendar size={16} color={Colors.textSecondary} />
-                <Text style={styles.detailText}>
-                  {booking.scheduledDate} at {booking.scheduledTime}
-                </Text>
-              </View>
-
-              <View style={styles.bookingDetail}>
-                <MapPin size={16} color={Colors.textSecondary} />
-                <Text style={styles.detailText} numberOfLines={1}>
-                  {booking.pickupAddress}
-                </Text>
-              </View>
-
-              <View style={styles.bookingDetail}>
-                <Clock size={16} color={Colors.textSecondary} />
-                <Text style={styles.detailText}>
-                  {booking.duration} hours • {booking.protectionType} • {booking.vehicleType}
-                </Text>
-              </View>
-
-              <View style={styles.bookingFooter}>
-                <View style={styles.bookingDetail}>
-                  <DollarSign size={16} color={Colors.gold} />
-                  <Text style={styles.priceText}>
-                    ${user?.role === 'client' ? booking.totalAmount : booking.guardPayout}
-                  </Text>
-                </View>
-                {booking.rating && (
-                  <Text style={styles.ratingText}>⭐ {booking.rating.toFixed(1)}</Text>
-                )}
-              </View>
-
-              {booking.status === 'rejected' && user?.role === 'client' && (
-                <TouchableOpacity 
-                  style={styles.rejectedButton}
-                  onPress={() => router.push(`/booking/select-guard?bookingId=${booking.id}` as any)}
-                  accessible={true}
-                  accessibilityLabel="Select another guard"
-                  accessibilityHint="Double tap to choose a different guard for this booking"
-                  accessibilityRole="button"
-                >
-                  <AlertCircle size={16} color={Colors.error} />
-                  <Text style={styles.rejectedButtonText}>Select Another Guard</Text>
-                </TouchableOpacity>
-              )}
-
-              {(booking.status === 'accepted' || booking.status === 'en_route' || booking.status === 'active') && (
-                <TouchableOpacity 
-                  style={styles.trackButton}
-                  onPress={() => router.push(`/tracking/${booking.id}`)}
-                  accessible={true}
-                  accessibilityLabel="Track guard location"
-                  accessibilityHint="Double tap to view guard's real-time location on map"
-                  accessibilityRole="button"
-                >
-                  <Navigation size={16} color={Colors.background} />
-                  <Text style={styles.trackButtonText}>Track Guard</Text>
-                </TouchableOpacity>
-              )}
-            </TouchableOpacity>
-          )}
-        />
-      )}
-    </View>
+    <Screen glow scroll={false}>
+      <FlatList
+        data={loading || error ? [] : data}
+        keyExtractor={(item) => item.id}
+        contentContainerStyle={styles.list}
+        showsVerticalScrollIndicator={false}
+        ListHeaderComponent={
+          <View>
+            <ScreenHeader eyebrow={today} title={header.title} subtitle={header.subtitle} />
+            <SegmentedControl<Segment>
+              value={segment}
+              onChange={setSegment}
+              options={[
+                { value: 'upcoming', label: `Upcoming${loading ? '' : ` · ${upcoming.length}`}`, accessibilityLabel: 'Upcoming bookings' },
+                { value: 'past', label: `Past${loading ? '' : ` · ${past.length}`}`, accessibilityLabel: 'Past bookings' },
+              ]}
+              style={styles.segments}
+            />
+          </View>
+        }
+        ListEmptyComponent={renderEmpty}
+        renderItem={({ item }) => (
+          <BookingCard
+            booking={item}
+            viewerRole={role}
+            onPress={() => openBooking(item.id)}
+            onTrack={role === 'client' || role === 'guard' ? () => router.push(`/tracking/${item.id}`) : undefined}
+            onReassign={role === 'client' ? () => router.push(`/booking/select-guard?bookingId=${item.id}`) : undefined}
+          />
+        )}
+      />
+    </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: Colors.background,
+  list: {
+    flexGrow: 1,
+    paddingHorizontal: Space.gutter,
+    paddingBottom: Space.xxxl,
   },
-  header: {
-    padding: 24,
-    paddingTop: 60,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-  },
-  title: {
-    fontSize: 32,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-  },
-  content: {
-    flex: 1,
-  },
-  scrollContent: {
-    padding: 16,
-  },
-  emptyState: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 80,
-  },
-  emptyText: {
-    fontSize: 20,
-    fontWeight: '600' as const,
-    color: Colors.textPrimary,
-    marginTop: 16,
-  },
-  emptySubtext: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-    marginTop: 8,
-    textAlign: 'center' as const,
-  },
-  loadingContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 80,
-  },
-  loadingText: {
-    fontSize: 16,
-    color: Colors.textSecondary,
-    marginTop: 16,
-  },
-  bookingCard: {
-    backgroundColor: Colors.surface,
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  bookingHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  statusBadge: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 8,
-  },
-  statusText: {
-    fontSize: 12,
-    fontWeight: '700' as const,
-  },
-  bookingId: {
-    fontSize: 12,
-    color: Colors.textTertiary,
-    fontWeight: '600' as const,
-  },
-  bookingDetail: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 8,
-  },
-  detailText: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-    flex: 1,
-  },
-  bookingFooter: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginTop: 8,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: Colors.border,
-  },
-  priceText: {
-    fontSize: 18,
-    fontWeight: '700' as const,
-    color: Colors.gold,
-  },
-  ratingText: {
-    fontSize: 14,
-    fontWeight: '600' as const,
-    color: Colors.textPrimary,
-  },
-  trackButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: Colors.gold,
-    paddingVertical: 12,
-    borderRadius: 12,
-    marginTop: 12,
-  },
-  trackButtonText: {
-    fontSize: 14,
-    fontWeight: '700' as const,
-    color: Colors.background,
-  },
-  rejectedButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: Colors.surface,
-    paddingVertical: 12,
-    borderRadius: 12,
-    marginTop: 12,
-    borderWidth: 2,
-    borderColor: Colors.error,
-  },
-  rejectedButtonText: {
-    fontSize: 14,
-    fontWeight: '700' as const,
-    color: Colors.error,
+  segments: {
+    alignSelf: 'flex-start',
+    marginBottom: Space.xl,
   },
 });

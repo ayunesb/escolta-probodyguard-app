@@ -1,462 +1,269 @@
-import React, { useState } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  TouchableOpacity,
-  Alert,
-  ActivityIndicator,
-  Platform,
-  Share,
-} from 'react-native';
-import { Stack, router } from 'expo-router';
-
-import { ChevronRight, Download, Trash2, Shield, FileText, ToggleLeft, ToggleRight } from 'lucide-react-native';
+import { useCallback, useEffect, useState } from 'react';
+import { ActivityIndicator, Linking, Platform, StyleSheet, Switch, View } from 'react-native';
+import { Stack, useRouter } from 'expo-router';
+import { Download, FileText, Mail, MapPin, Megaphone, Trash2 } from 'lucide-react-native';
+import Colors from '@/constants/colors';
+import { Space } from '@/constants/design';
+import { AppText, Button, Input, ListGroup, ListRow, NavBar, Screen, SectionTitle, SkeletonCard } from '@/components/ui';
+import { Notice, RoleGate, Sheet, exportMyData } from '@/components/backoffice';
 import { useAuth } from '@/contexts/AuthContext';
-import { gdprService } from '@/services/gdprService';
 import { consentService } from '@/services/consentService';
+import { gdprService } from '@/services/gdprService';
+import { logger } from '@/utils/logger';
 
-export default function PrivacySettingsScreen() {
-  const { user } = useAuth();
-  const [isExporting, setIsExporting] = useState(false);
-  const [isDeleting, setIsDeleting] = useState(false);
-  const [marketingConsent, setMarketingConsent] = useState(false);
-  const [analyticsConsent, setAnalyticsConsent] = useState(false);
-  const [locationConsent, setLocationConsent] = useState(false);
-  const [isLoadingConsent, setIsLoadingConsent] = useState(true);
+const PRIVACY_EMAIL = 'privacy@escoltapro.mx';
 
-  React.useEffect(() => {
-    loadConsent();
-  }, [user]);
+export default function PrivacySettingsRoute() {
+  return (
+    <>
+      <Stack.Screen options={{ headerShown: false }} />
+      <RoleGate roles={['client', 'guard', 'company', 'admin']} nav>
+        <PrivacySettingsScreen />
+      </RoleGate>
+    </>
+  );
+}
 
-  const loadConsent = async () => {
+function PrivacySettingsScreen() {
+  const router = useRouter();
+  const { user, signOut } = useAuth();
+  const [notice, setNotice] = useState<{ tone: 'success' | 'error' | 'info'; message: string } | null>(null);
+  const [exporting, setExporting] = useState(false);
+
+  const [consentState, setConsentState] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [marketing, setMarketing] = useState(false);
+  const [savingMarketing, setSavingMarketing] = useState(false);
+
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [confirmText, setConfirmText] = useState('');
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const loadConsent = useCallback(async () => {
     if (!user) return;
-    
+    setConsentState('loading');
     try {
       const consent = await consentService.getConsent(user.id);
-      if (consent) {
-        setMarketingConsent(consent.marketing);
-        setAnalyticsConsent(consent.analytics);
-        setLocationConsent(consent.locationTracking);
-      }
+      setMarketing(consent?.marketing ?? false);
+      setConsentState('ready');
     } catch (error) {
-      console.error('Failed to load consent:', error);
-    } finally {
-      setIsLoadingConsent(false);
+      logger.error('[PrivacySettings] Failed to load consent', error);
+      setConsentState('error');
     }
-  };
+  }, [user]);
 
-  const handleConsentToggle = async (type: 'marketing' | 'analytics' | 'locationTracking', value: boolean) => {
+  useEffect(() => {
+    loadConsent();
+  }, [loadConsent]);
+
+  const toggleMarketing = async (value: boolean) => {
     if (!user) return;
-
+    const previous = marketing;
+    setMarketing(value);
+    setSavingMarketing(true);
     try {
-      await consentService.updateConsent(user.id, { [type]: value });
-      
-      if (type === 'marketing') setMarketingConsent(value);
-      if (type === 'analytics') setAnalyticsConsent(value);
-      if (type === 'locationTracking') setLocationConsent(value);
-
-      Alert.alert('Success', 'Your consent preferences have been updated.');
+      await consentService.updateConsent(user.id, { marketing: value });
     } catch (error) {
-      console.error('Failed to update consent:', error);
-      Alert.alert('Error', 'Failed to update consent preferences.');
+      logger.error('[PrivacySettings] Failed to update consent', error);
+      setMarketing(previous);
+      setNotice({ tone: 'error', message: 'Your preference could not be saved. Please try again.' });
+    } finally {
+      setSavingMarketing(false);
     }
   };
 
-  const handleExportData = async () => {
-    if (!user) return;
-
-    Alert.alert(
-      'Export Your Data',
-      'This will create a complete export of all your personal data. The export will be available for download.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Export',
-          onPress: async () => {
-            try {
-              setIsExporting(true);
-              const exportedData = await gdprService.exportUserData(user.id);
-              
-              const jsonString = JSON.stringify(exportedData, null, 2);
-              const fileName = `escolta-pro-data-export-${Date.now()}.json`;
-
-              if (Platform.OS === 'web') {
-                const blob = new Blob([jsonString], { type: 'application/json' });
-                const url = URL.createObjectURL(blob);
-                const link = document.createElement('a');
-                link.href = url;
-                link.download = fileName;
-                link.click();
-                URL.revokeObjectURL(url);
-              } else {
-                await Share.share({
-                  message: jsonString,
-                  title: 'Data Export',
-                });
-              }
-
-              Alert.alert('Success', 'Your data has been exported successfully.');
-            } catch (error) {
-              console.error('Export error:', error);
-              Alert.alert('Error', 'Failed to export data. Please try again.');
-            } finally {
-              setIsExporting(false);
-            }
-          },
-        },
-      ]
-    );
+  const handleExport = async () => {
+    if (!user || exporting) return;
+    setExporting(true);
+    setNotice(null);
+    try {
+      const { message, partial } = await exportMyData(user.id);
+      if (message) setNotice({ tone: partial ? 'info' : 'success', message });
+    } catch (error) {
+      logger.error('[PrivacySettings] Export failed', error);
+      setNotice({ tone: 'error', message: 'Your data could not be exported. Please try again.' });
+    } finally {
+      setExporting(false);
+    }
   };
 
-  const handleRequestDeletion = async () => {
-    if (!user) return;
+  const openDelete = () => {
+    setConfirmText('');
+    setDeleteError(null);
+    setDeleteOpen(true);
+  };
 
-    Alert.alert(
-      'Delete Account',
-      'This will permanently delete your account and all associated data. This action cannot be undone.\n\nAre you absolutely sure?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: () => {
-            Alert.alert(
-              'Final Confirmation',
-              'Type DELETE to confirm account deletion',
-              [
-                { text: 'Cancel', style: 'cancel' },
-                {
-                  text: 'Confirm',
-                  style: 'destructive',
-                  onPress: async () => {
-                    try {
-                      setIsDeleting(true);
-                      await gdprService.requestDataDeletion(user.id, 'User requested account deletion');
-                      
-                      Alert.alert(
-                        'Deletion Requested',
-                        'Your account deletion request has been submitted. Your account will be deleted within 30 days.',
-                        [
-                          {
-                            text: 'OK',
-                            onPress: () => router.replace('/auth/sign-in'),
-                          },
-                        ]
-                      );
-                    } catch (error) {
-                      console.error('Deletion error:', error);
-                      Alert.alert('Error', 'Failed to request deletion. Please try again.');
-                    } finally {
-                      setIsDeleting(false);
-                    }
-                  },
-                },
-              ]
-            );
-          },
-        },
-      ]
-    );
+  const confirmed = confirmText.trim().toUpperCase() === 'DELETE';
+
+  const handleDelete = async () => {
+    if (!user || !confirmed) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await gdprService.requestDataDeletion(user.id, 'User requested account deletion');
+    } catch (error) {
+      logger.error('[PrivacySettings] Deletion request failed', error);
+      setDeleteError('Your request could not be sent. Nothing was deleted — please try again.');
+      setDeleting(false);
+      return;
+    }
+    // Cerrar sesion ANTES de ir a la pantalla de acceso: si no, sign-in ve la
+    // sesion abierta y devuelve a la persona a la app.
+    await signOut();
+    setDeleteOpen(false);
+    router.replace('/auth/sign-in');
+  };
+
+  const openDeviceSettings = () => {
+    if (Platform.OS === 'web') return;
+    Linking.openSettings().catch((error) => logger.error('[PrivacySettings] Could not open settings', error));
   };
 
   return (
-    <View style={styles.container}>
-      <Stack.Screen
-        options={{
-          title: 'Privacy & Data',
-          headerStyle: { backgroundColor: '#1a1a1a' },
-          headerTintColor: '#fff',
-        }}
-      />
-
-      <ScrollView style={styles.scrollView} contentContainerStyle={styles.content}>
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Shield size={24} color="#4CAF50" />
-            <Text style={styles.sectionTitle}>Your Privacy Rights</Text>
-          </View>
-          <Text style={styles.sectionDescription}>
-            Under GDPR and data protection laws, you have the right to access, export, and delete your personal data.
-          </Text>
+    <View style={styles.root}>
+      <NavBar title="Privacy & data" />
+      <Screen padTop={false} contentStyle={styles.content}>
+        <View style={styles.intro}>
+          <AppText variant="title2">Your data, your rights</AppText>
+          <AppText variant="callout">
+            Under Mexico’s Federal Law on the Protection of Personal Data Held by Private Parties (LFPDPPP) you can
+            access, rectify, cancel or oppose the use of your personal data — your ARCO rights.
+          </AppText>
         </View>
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Data Management</Text>
+        {notice ? <Notice tone={notice.tone} message={notice.message} onDismiss={() => setNotice(null)} /> : null}
 
-          <TouchableOpacity
-            style={styles.option}
-            onPress={handleExportData}
-            disabled={isExporting}
-          >
-            <View style={styles.optionLeft}>
-              <View style={[styles.iconContainer, { backgroundColor: '#2196F3' }]}>
-                {isExporting ? (
-                  <ActivityIndicator size="small" color="#fff" />
-                ) : (
-                  <Download size={20} color="#fff" />
-                )}
-              </View>
-              <View style={styles.optionText}>
-                <Text style={styles.optionTitle}>Export My Data</Text>
-                <Text style={styles.optionDescription}>
-                  Download a copy of all your personal data
-                </Text>
-              </View>
-            </View>
-            <ChevronRight size={20} color="#666" />
-          </TouchableOpacity>
+        <SectionTitle title="Your data" />
+        <ListGroup>
+          <ListRow
+            icon={Download}
+            title="Export my data"
+            subtitle="Download a copy of your profile, bookings and messages"
+            onPress={handleExport}
+            trailing={exporting ? <ActivityIndicator size="small" color={Colors.gold} /> : undefined}
+            showChevron={!exporting}
+          />
+          <ListRow icon={FileText} title="Privacy policy" subtitle="What we collect and why" onPress={() => router.push('/privacy-policy')} />
+          <ListRow
+            icon={Mail}
+            title="Exercise your ARCO rights"
+            subtitle={`Write to ${PRIVACY_EMAIL}`}
+            onPress={() => Linking.openURL(`mailto:${PRIVACY_EMAIL}?subject=ARCO%20request`).catch(() => {})}
+          />
+        </ListGroup>
 
-          <TouchableOpacity
-            style={styles.option}
-            onPress={() => router.push('/privacy-policy')}
-          >
-            <View style={styles.optionLeft}>
-              <View style={[styles.iconContainer, { backgroundColor: '#9C27B0' }]}>
-                <FileText size={20} color="#fff" />
-              </View>
-              <View style={styles.optionText}>
-                <Text style={styles.optionTitle}>Privacy Policy</Text>
-                <Text style={styles.optionDescription}>
-                  Read our privacy policy
-                </Text>
-              </View>
-            </View>
-            <ChevronRight size={20} color="#666" />
-          </TouchableOpacity>
-        </View>
+        <SectionTitle title="Preferences" />
+        {consentState === 'loading' ? (
+          <SkeletonCard lines={1} />
+        ) : consentState === 'error' ? (
+          <Notice tone="error" message="Your preferences could not be loaded." actionLabel="Try again" onAction={loadConsent} />
+        ) : (
+          <ListGroup>
+            <ListRow
+              icon={Megaphone}
+              title="News and offers"
+              subtitle="Occasional emails about new services. Off by default."
+              showChevron={false}
+              trailing={
+                <Switch
+                  value={marketing}
+                  onValueChange={toggleMarketing}
+                  disabled={savingMarketing}
+                  trackColor={{ false: Colors.borderStrong, true: Colors.goldDark }}
+                  thumbColor={marketing ? Colors.goldLight : Colors.textSecondary}
+                  ios_backgroundColor={Colors.borderStrong}
+                  accessibilityLabel="News and offers emails"
+                />
+              }
+            />
+          </ListGroup>
+        )}
+        <ListGroup style={styles.gapTop}>
+          <ListRow
+            icon={MapPin}
+            title="Location"
+            subtitle={
+              user?.role === 'guard'
+                ? 'Shared with your client only while you are on an active job. Controlled by your device permission.'
+                : 'Used to set pickup points and to show your guard during a job. Controlled by your device permission.'
+            }
+            onPress={Platform.OS === 'web' ? undefined : openDeviceSettings}
+            accessibilityHint="Opens your device settings"
+          />
+        </ListGroup>
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Consent Management</Text>
-          <Text style={styles.sectionDescription}>
-            Manage your consent preferences. You can change these at any time.
-          </Text>
+        <SectionTitle title="Delete account" />
+        <ListGroup>
+          <ListRow
+            icon={Trash2}
+            title="Delete my account"
+            subtitle="Request permanent deletion of your account and personal data"
+            destructive
+            onPress={openDelete}
+          />
+        </ListGroup>
+      </Screen>
 
-          {isLoadingConsent ? (
-            <View style={[styles.option, { justifyContent: 'center' }]}>
-              <ActivityIndicator size="small" color="#fff" />
-            </View>
-          ) : (
-            <>
-              <View style={styles.option}>
-                <View style={styles.optionLeft}>
-                  <View style={[styles.iconContainer, { backgroundColor: '#FF9800' }]}>
-                    {marketingConsent ? (
-                      <ToggleRight size={20} color="#fff" />
-                    ) : (
-                      <ToggleLeft size={20} color="#fff" />
-                    )}
-                  </View>
-                  <View style={styles.optionText}>
-                    <Text style={styles.optionTitle}>Marketing Communications</Text>
-                    <Text style={styles.optionDescription}>
-                      Receive updates about new features and offers
-                    </Text>
-                  </View>
-                </View>
-                <TouchableOpacity
-                  onPress={() => handleConsentToggle('marketing', !marketingConsent)}
-                  style={[styles.toggle, marketingConsent && styles.toggleActive]}
-                >
-                  <View style={[styles.toggleThumb, marketingConsent && styles.toggleThumbActive]} />
-                </TouchableOpacity>
-              </View>
-
-              <View style={styles.option}>
-                <View style={styles.optionLeft}>
-                  <View style={[styles.iconContainer, { backgroundColor: '#3F51B5' }]}>
-                    {analyticsConsent ? (
-                      <ToggleRight size={20} color="#fff" />
-                    ) : (
-                      <ToggleLeft size={20} color="#fff" />
-                    )}
-                  </View>
-                  <View style={styles.optionText}>
-                    <Text style={styles.optionTitle}>Analytics</Text>
-                    <Text style={styles.optionDescription}>
-                      Help us improve by sharing usage data
-                    </Text>
-                  </View>
-                </View>
-                <TouchableOpacity
-                  onPress={() => handleConsentToggle('analytics', !analyticsConsent)}
-                  style={[styles.toggle, analyticsConsent && styles.toggleActive]}
-                >
-                  <View style={[styles.toggleThumb, analyticsConsent && styles.toggleThumbActive]} />
-                </TouchableOpacity>
-              </View>
-
-              <View style={styles.option}>
-                <View style={styles.optionLeft}>
-                  <View style={[styles.iconContainer, { backgroundColor: '#009688' }]}>
-                    {locationConsent ? (
-                      <ToggleRight size={20} color="#fff" />
-                    ) : (
-                      <ToggleLeft size={20} color="#fff" />
-                    )}
-                  </View>
-                  <View style={styles.optionText}>
-                    <Text style={styles.optionTitle}>Location Tracking</Text>
-                    <Text style={styles.optionDescription}>
-                      Allow location tracking for better service
-                    </Text>
-                  </View>
-                </View>
-                <TouchableOpacity
-                  onPress={() => handleConsentToggle('locationTracking', !locationConsent)}
-                  style={[styles.toggle, locationConsent && styles.toggleActive]}
-                >
-                  <View style={[styles.toggleThumb, locationConsent && styles.toggleThumbActive]} />
-                </TouchableOpacity>
-              </View>
-            </>
-          )}
-        </View>
-
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Danger Zone</Text>
-
-          <TouchableOpacity
-            style={[styles.option, styles.dangerOption]}
-            onPress={handleRequestDeletion}
-            disabled={isDeleting}
-          >
-            <View style={styles.optionLeft}>
-              <View style={[styles.iconContainer, { backgroundColor: '#f44336' }]}>
-                {isDeleting ? (
-                  <ActivityIndicator size="small" color="#fff" />
-                ) : (
-                  <Trash2 size={20} color="#fff" />
-                )}
-              </View>
-              <View style={styles.optionText}>
-                <Text style={[styles.optionTitle, styles.dangerText]}>Delete My Account</Text>
-                <Text style={styles.optionDescription}>
-                  Permanently delete your account and all data
-                </Text>
-              </View>
-            </View>
-            <ChevronRight size={20} color="#f44336" />
-          </TouchableOpacity>
-        </View>
-
-        <View style={styles.footer}>
-          <Text style={styles.footerText}>
-            We take your privacy seriously. All data is encrypted and stored securely.
-          </Text>
-          <Text style={styles.footerText}>
-            For questions, contact: privacy@escoltapro.com
-          </Text>
-        </View>
-      </ScrollView>
+      <Sheet
+        visible={deleteOpen}
+        onClose={() => setDeleteOpen(false)}
+        dismissable={!deleting}
+        eyebrow="Delete account"
+        title="Are you sure?"
+        footer={
+          <>
+            <Button title="Cancel" variant="secondary" onPress={() => setDeleteOpen(false)} disabled={deleting} style={styles.flex} />
+            <Button
+              title="Delete account"
+              variant="danger"
+              icon={Trash2}
+              onPress={handleDelete}
+              disabled={!confirmed}
+              loading={deleting}
+              style={styles.flex}
+              accessibilityLabel="Confirm account deletion request"
+            />
+          </>
+        }
+      >
+        <AppText variant="callout">
+          We will send your request to Escolta Pro and sign you out. Your account and personal data are deleted within
+          30 days, except records the law requires us to keep (for example payment and tax records). Upcoming bookings
+          are not cancelled or refunded automatically — cancel them first.
+        </AppText>
+        <Input
+          label="Type DELETE to confirm"
+          value={confirmText}
+          onChangeText={setConfirmText}
+          autoCapitalize="characters"
+          autoCorrect={false}
+          placeholder="DELETE"
+          accessibilityLabel="Type DELETE to confirm"
+          returnKeyType="done"
+          onSubmitEditing={handleDelete}
+        />
+        {deleteError ? <Notice tone="error" message={deleteError} /> : null}
+      </Sheet>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  root: {
     flex: 1,
-    backgroundColor: '#000',
-  },
-  scrollView: {
-    flex: 1,
+    backgroundColor: Colors.background,
   },
   content: {
-    padding: 20,
+    paddingTop: Space.xl,
   },
-  section: {
-    marginBottom: 30,
+  intro: {
+    gap: Space.sm,
+    marginBottom: Space.lg,
   },
-  sectionHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 10,
+  gapTop: {
+    marginTop: Space.md,
   },
-  sectionTitle: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#fff',
-    marginLeft: 10,
-  },
-  sectionDescription: {
-    fontSize: 14,
-    color: '#999',
-    lineHeight: 20,
-    marginTop: 5,
-  },
-  option: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: '#1a1a1a',
-    padding: 16,
-    borderRadius: 12,
-    marginBottom: 12,
-  },
-  dangerOption: {
-    borderWidth: 1,
-    borderColor: '#f44336',
-  },
-  optionLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  flex: {
     flex: 1,
-  },
-  iconContainer: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
-  },
-  optionText: {
-    flex: 1,
-  },
-  optionTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#fff',
-    marginBottom: 4,
-  },
-  dangerText: {
-    color: '#f44336',
-  },
-  optionDescription: {
-    fontSize: 13,
-    color: '#999',
-  },
-  footer: {
-    marginTop: 20,
-    padding: 16,
-    backgroundColor: '#1a1a1a',
-    borderRadius: 12,
-  },
-  footerText: {
-    fontSize: 12,
-    color: '#999',
-    textAlign: 'center',
-    marginBottom: 8,
-  },
-  toggle: {
-    width: 50,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: '#333',
-    padding: 2,
-    justifyContent: 'center',
-  },
-  toggleActive: {
-    backgroundColor: '#4CAF50',
-  },
-  toggleThumb: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    backgroundColor: '#fff',
-  },
-  toggleThumbActive: {
-    alignSelf: 'flex-end',
   },
 });

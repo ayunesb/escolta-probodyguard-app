@@ -1,59 +1,107 @@
 rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
-    
+
     function isAuthenticated() {
       return request.auth != null;
     }
-    
+
     function isValidImageFile() {
       return request.resource.contentType.matches('image/.*');
     }
-    
+
     function isValidDocumentFile() {
       return request.resource.contentType.matches('image/.*') ||
              request.resource.contentType == 'application/pdf';
     }
-    
+
     function isValidSize(maxSizeMB) {
       return request.resource.size < maxSizeMB * 1024 * 1024;
     }
-    
-    // firestore.get() cruzado desde Storage Rules NO funciona en este
-    // proyecto (probado en vivo: hasta el caso mas simple posible, sin
-    // ninguna otra condicion, devuelve 403 para un admin real leyendo su
-    // propio documento — no es un problema de logica de la regla, es una
-    // limitacion/permiso de infraestructura de este proyecto de GCP, fuera
-    // de lo que se puede arreglar desde aqui). Por eso esta regla NO llama a
-    // firestore.get() en ningun lado: el "dueno" del documento se codifica
-    // directo en la ruta como {scopeId}, que es el companyId del escolta si
-    // pertenece a una empresa, o su propio uid si es independiente. Asi la
-    // empresa puede subir/ver los documentos de SU escolta sin que la regla
-    // necesite consultar Firestore para saberlo.
-    match /documents/{scopeId}/{userId}/{document} {
-      allow read: if isAuthenticated() && (request.auth.uid == userId || request.auth.uid == scopeId);
 
-      allow write: if isAuthenticated() &&
-                     (request.auth.uid == userId || request.auth.uid == scopeId) &&
-                     isValidDocumentFile() &&
-                     isValidSize(5);
+    // --- Consultas cruzadas a Firestore -------------------------------------
+    // Requieren que el agente de servicio de Storage tenga el rol
+    // "Firebase Rules Firestore Service Agent" (roles/firebaserules.firestoreServiceAgent).
+    // `firebase deploy --only storage` ofrece otorgarlo; si se rechaza, estas
+    // consultas devuelven 403 y SOLO el dueno del archivo puede leerlo/escribirlo
+    // (la comprobacion barata del dueno va primero en cada regla).
+    function userDoc(uid) {
+      return firestore.get(/databases/(default)/documents/users/$(uid));
     }
 
+    function isAdmin() {
+      return isAuthenticated() &&
+        firestore.exists(/databases/(default)/documents/users/$(request.auth.uid)) &&
+        userDoc(request.auth.uid).data.get('role', null) == 'admin';
+    }
+
+    // La empresa que llama es la empresa de ese escolta.
+    function isCompanyOf(userId) {
+      return isAuthenticated() &&
+        firestore.exists(/databases/(default)/documents/users/$(userId)) &&
+        userDoc(userId).data.get('companyId', null) == request.auth.uid &&
+        userDoc(request.auth.uid).data.get('role', null) == 'company';
+    }
+
+    function isBookingParticipant(bookingId) {
+      return isAuthenticated() &&
+        firestore.exists(/databases/(default)/documents/bookingParticipants/$(bookingId)) &&
+        request.auth.uid in [
+          firestore.get(/databases/(default)/documents/bookingParticipants/$(bookingId)).data.clientId,
+          firestore.get(/databases/(default)/documents/bookingParticipants/$(bookingId)).data.guardId
+        ];
+    }
+
+    // Documentos KYC: documents/{scopeId}/{userId}/{archivo}. scopeId se
+    // conserva por compatibilidad con la ruta que ya usa la app, pero YA NO
+    // decide permisos: antes cualquiera que pusiera su uid como scopeId
+    // quedaba como "empresa" de esa carpeta. Ahora el acceso sale de
+    // Firestore: el dueno, la empresa real del escolta (users/{uid}.companyId)
+    // o un admin.
+    match /documents/{scopeId}/{userId}/{document} {
+      allow read: if isAuthenticated() && (
+        request.auth.uid == userId ||
+        isCompanyOf(userId) ||
+        isAdmin()
+      );
+
+      allow write: if isAuthenticated() &&
+        (request.auth.uid == userId || isCompanyOf(userId)) &&
+        isValidDocumentFile() &&
+        isValidSize(5);
+
+      allow delete: if isAuthenticated() &&
+        (request.auth.uid == userId || isCompanyOf(userId) || isAdmin());
+    }
+
+    // Fotos de perfil: publicas para usuarios con sesion.
     match /photos/{scopeId}/{userId}/{photo} {
       allow read: if isAuthenticated();
 
       allow write: if isAuthenticated() &&
-                     (request.auth.uid == userId || request.auth.uid == scopeId) &&
-                     isValidImageFile() &&
-                     isValidSize(5);
+        (request.auth.uid == userId || isCompanyOf(userId)) &&
+        isValidImageFile() &&
+        isValidSize(5);
+
+      allow delete: if isAuthenticated() &&
+        (request.auth.uid == userId || isCompanyOf(userId) || isAdmin());
     }
 
+    // Archivos de una reserva: solo el cliente y el escolta de esa reserva
+    // (Firestore bookingParticipants/{bookingId}) y admin. Antes cualquier
+    // usuario con sesion leia y escribia aqui.
     match /bookings/{bookingId}/{file} {
-      allow read: if isAuthenticated();
-      
-      allow write: if isAuthenticated() &&
-                     isValidImageFile() &&
-                     isValidSize(10);
+      allow read: if isBookingParticipant(bookingId) || isAdmin();
+
+      allow write: if isBookingParticipant(bookingId) &&
+        isValidImageFile() &&
+        isValidSize(10);
+
+      allow delete: if isAdmin();
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
     }
   }
 }

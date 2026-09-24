@@ -1,216 +1,203 @@
-import { useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Stack, useRouter } from 'expo-router';
-import { ChevronLeft, AlertCircle, CheckCircle } from 'lucide-react-native';
-import { useAuth } from '@/contexts/AuthContext';
-import KYCDocumentUpload, { DocumentType } from '@/components/KYCDocumentUpload';
-import type { Guard, User } from '@/types';
+import { useCallback, useEffect, useState } from 'react';
+import { StyleSheet, View } from 'react-native';
+import { Stack } from 'expo-router';
+import { ShieldCheck } from 'lucide-react-native';
 import Colors from '@/constants/colors';
+import { Space } from '@/constants/design';
+import { AppText, Badge, NavBar, Screen, SectionTitle, SkeletonCard } from '@/components/ui';
+import { Notice, RoleGate, kycMeta } from '@/components/backoffice';
+import KYCDocumentUpload from '@/components/KYCDocumentUpload';
+import { useAuth } from '@/contexts/AuthContext';
+import { GuardKycRecord, KycDocField, PublicGuardMediaField, UserRecord, userService } from '@/services/userService';
+import type { User } from '@/types';
+import { logger } from '@/utils/logger';
 
-type DocField = 'photos' | 'governmentIdUrls' | 'licenseUrls' | 'vehicleDocUrls' | 'insuranceUrls' | 'outfitPhotos';
+export default function KYCDocumentsRoute() {
+  return (
+    <>
+      <Stack.Screen options={{ headerShown: false }} />
+      <RoleGate roles={['guard']} nav>
+        <KYCDocumentsScreen />
+      </RoleGate>
+    </>
+  );
+}
 
-const KYC_DOCUMENT_TYPES: DocumentType[] = ['id', 'license', 'vehicle', 'insurance', 'outfit'];
+function KYCDocumentsScreen() {
+  const { user, updateUser } = useAuth();
+  const guard = user as UserRecord;
+  const [kyc, setKyc] = useState<GuardKycRecord | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
-export default function KYCDocumentsScreen() {
-  const insets = useSafeAreaInsets();
-  const router = useRouter();
-  const { user, updateUser } = useAuth() as {
-    user: Guard | null;
-    updateUser: (updates: Partial<User>) => Promise<void>;
-  };
-  const [isSaving, setIsSaving] = useState(false);
-
-  if (!user || user.role !== 'guard') {
-    return (
-      <View style={styles.container}>
-        <Stack.Screen options={{ headerShown: false }} />
-        <View style={styles.emptyState}>
-          <Text style={styles.emptyText}>This screen is for guard accounts only.</Text>
-        </View>
-      </View>
-    );
-  }
-
-  // Documents/{scopeId}/{userId}/... en Storage: scopeId es el companyId si
-  // el escolta pertenece a una empresa, o su propio uid si es independiente.
-  const scopeId = user.companyId || user.id;
-
-  const handleFieldUpdate = async (
-    field: DocField,
-    documentType: DocumentType,
-    urls: string[]
-  ) => {
-    setIsSaving(true);
+  const load = useCallback(async () => {
+    setLoadError(null);
     try {
-      const updates: Partial<Guard> = { [field]: urls };
-      if (KYC_DOCUMENT_TYPES.includes(documentType) && user.kycStatus !== 'pending') {
-        // Any change to an actual KYC document sends it back for review.
-        updates.kycStatus = 'pending';
-      }
-      await updateUser(updates);
-    } finally {
-      setIsSaving(false);
+      setKyc(await userService.getGuardKyc(guard.id));
+    } catch (error) {
+      logger.error('[KYCDocuments] Failed to load private KYC record', error);
+      setLoadError('We could not load your documents.');
     }
+  }, [guard.id]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  // Cualquier cambio a un documento de verificacion lo manda de vuelta a
+  // revision. El dueno solo puede poner 'pending' (nunca aprobarse solo).
+  const markPending = async () => {
+    if (guard.kycStatus !== 'pending') await updateUser({ kycStatus: 'pending' });
   };
+
+  const saveKyc = (field: KycDocField) => async (urls: string[]) => {
+    await userService.saveGuardKycDocuments(guard.id, field, urls);
+    setKyc((prev) => ({ ...(prev ?? {}), [field]: urls }));
+    await markPending();
+  };
+
+  const savePublic = (field: PublicGuardMediaField) => async (urls: string[]) => {
+    const updates: Record<string, unknown> = { [field]: urls };
+    if (field === 'outfitPhotos' && guard.kycStatus !== 'pending') updates.kycStatus = 'pending';
+    await updateUser(updates as Partial<User>);
+  };
+
+  // documents/{scopeId}/{userId}/...: scopeId es el companyId si el escolta
+  // pertenece a una empresa, o su propio uid si es independiente.
+  const scopeId = guard.companyId || guard.id;
+  const status = kycMeta(guard.kycStatus);
 
   return (
-    <View style={styles.container}>
-      <Stack.Screen options={{ headerShown: false }} />
+    <View style={styles.root}>
+      <NavBar title="My documents" />
+      <Screen padTop={false} contentStyle={styles.content}>
+        <View style={styles.intro}>
+          <AppText variant="title2">Verification</AppText>
+          <AppText variant="callout">
+            ID, license, insurance and vehicle files are private: only you, your company and Escolta Pro reviewers can
+            open them. Your profile and outfit photos are shown to clients.
+          </AppText>
+          <Badge label={status.label} tone={status.tone} icon={ShieldCheck} style={styles.badge} />
+        </View>
 
-      <View style={[styles.header, { paddingTop: insets.top + 16 }]}>
-        <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
-          <ChevronLeft size={24} color={Colors.textPrimary} />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>My Documents</Text>
-        <View style={styles.headerSpacer} />
-      </View>
-
-      <View style={styles.statusBanner}>
-        {user.kycStatus === 'approved' ? (
-          <CheckCircle size={18} color={Colors.success} />
+        {guard.kycStatus === 'rejected' ? (
+          <Notice
+            tone="error"
+            title="Your last submission was not approved"
+            message={
+              kyc?.rejectionReason
+                ? `Reviewer note: ${kyc.rejectionReason}. Upload updated files to resubmit.`
+                : 'Upload updated files to resubmit for review.'
+            }
+          />
+        ) : guard.kycStatus === 'approved' ? (
+          <Notice tone="success" message="You're verified. Changing a verification file sends your profile back for review." />
         ) : (
-          <AlertCircle size={18} color={Colors.warning} />
+          <Notice tone="info" message="Your documents are waiting for review by Escolta Pro. Keep them up to date here." />
         )}
-        <Text style={styles.statusText}>
-          {user.kycStatus === 'approved'
-            ? 'Your documents are verified.'
-            : user.kycStatus === 'rejected'
-            ? 'Your last submission was rejected. Upload updated documents to resubmit.'
-            : 'Your documents are pending review.'}
-        </Text>
-        {isSaving && <ActivityIndicator size="small" color={Colors.gold} />}
-      </View>
 
-      <ScrollView style={styles.content} contentContainerStyle={styles.scrollContent}>
+        {loadError ? (
+          <Notice tone="error" message={loadError} actionLabel="Try again" onAction={load} style={styles.gapTop} />
+        ) : null}
+
+        <SectionTitle title="Shown to clients" />
         <KYCDocumentUpload
-          userId={user.id}
+          userId={guard.id}
           scopeId={scopeId}
           documentType="photo"
-          label="Profile Photo"
-          description="A clear photo of your face, shown to clients."
+          label="Profile photo"
+          description="A clear, recent photo of your face."
           maxImages={1}
-          initialImages={user.photos ?? []}
-          onUpload={(urls) => handleFieldUpdate('photos', 'photo', urls)}
+          initialImages={guard.photos ?? []}
+          onUpload={savePublic('photos')}
         />
-
         <KYCDocumentUpload
-          userId={user.id}
-          scopeId={scopeId}
-          documentType="id"
-          label="Government ID"
-          description="A valid government-issued photo ID."
-          maxImages={2}
-          initialImages={user.governmentIdUrls ?? []}
-          onUpload={(urls) => handleFieldUpdate('governmentIdUrls', 'id', urls)}
-        />
-
-        <KYCDocumentUpload
-          userId={user.id}
-          scopeId={scopeId}
-          documentType="license"
-          label="Security License"
-          description="Your private security license or credential."
-          maxImages={2}
-          initialImages={user.licenseUrls ?? []}
-          onUpload={(urls) => handleFieldUpdate('licenseUrls', 'license', urls)}
-        />
-
-        <KYCDocumentUpload
-          userId={user.id}
-          scopeId={scopeId}
-          documentType="insurance"
-          label="Insurance"
-          description="Proof of liability insurance, if applicable."
-          maxImages={2}
-          initialImages={user.insuranceUrls ?? []}
-          onUpload={(urls) => handleFieldUpdate('insuranceUrls', 'insurance', urls)}
-        />
-
-        <KYCDocumentUpload
-          userId={user.id}
-          scopeId={scopeId}
-          documentType="vehicle"
-          label="Vehicle Documents"
-          description="Registration and insurance for your vehicle, if you provide one."
-          maxImages={3}
-          initialImages={user.vehicleDocUrls ?? []}
-          onUpload={(urls) => handleFieldUpdate('vehicleDocUrls', 'vehicle', urls)}
-        />
-
-        <KYCDocumentUpload
-          userId={user.id}
+          userId={guard.id}
           scopeId={scopeId}
           documentType="outfit"
-          label="Outfit Photos"
-          description="Photos of your uniform or work attire."
+          label="Outfit photos"
+          description="Your uniform or work attire."
           maxImages={3}
-          initialImages={user.outfitPhotos ?? []}
-          onUpload={(urls) => handleFieldUpdate('outfitPhotos', 'outfit', urls)}
+          initialImages={guard.outfitPhotos ?? []}
+          onUpload={savePublic('outfitPhotos')}
         />
-      </ScrollView>
+
+        <SectionTitle title="Private — for verification" />
+        {kyc === null && !loadError ? (
+          <>
+            <SkeletonCard lines={2} />
+            <SkeletonCard lines={2} />
+          </>
+        ) : kyc !== null ? (
+          <>
+            <KYCDocumentUpload
+              userId={guard.id}
+              scopeId={scopeId}
+              documentType="id"
+              label="Government ID"
+              description="INE, passport or another valid photo ID. Both sides if applicable."
+              maxImages={2}
+              initialImages={kyc.governmentIdUrls ?? []}
+              onUpload={saveKyc('governmentIdUrls')}
+            />
+            <KYCDocumentUpload
+              userId={guard.id}
+              scopeId={scopeId}
+              documentType="license"
+              label="Security license"
+              description="Your private security license or credential."
+              maxImages={2}
+              initialImages={kyc.licenseUrls ?? []}
+              onUpload={saveKyc('licenseUrls')}
+            />
+            <KYCDocumentUpload
+              userId={guard.id}
+              scopeId={scopeId}
+              documentType="insurance"
+              label="Insurance"
+              description="Proof of liability insurance, if you have it."
+              maxImages={2}
+              initialImages={kyc.insuranceUrls ?? []}
+              onUpload={saveKyc('insuranceUrls')}
+            />
+            <KYCDocumentUpload
+              userId={guard.id}
+              scopeId={scopeId}
+              documentType="vehicle"
+              label="Vehicle documents"
+              description="Registration and insurance, if you provide a vehicle."
+              maxImages={3}
+              initialImages={kyc.vehicleDocUrls ?? []}
+              onUpload={saveKyc('vehicleDocUrls')}
+            />
+          </>
+        ) : null}
+        <AppText variant="caption" color={Colors.textTertiary} style={styles.footnote}>
+          Images only, up to 5 MB each.
+        </AppText>
+      </Screen>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  root: {
     flex: 1,
     backgroundColor: Colors.background,
   },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingBottom: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-  },
-  backButton: {
-    width: 40,
-    height: 40,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  headerTitle: {
-    flex: 1,
-    fontSize: 18,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-    textAlign: 'center' as const,
-  },
-  headerSpacer: {
-    width: 40,
-  },
-  statusBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    padding: 16,
-    backgroundColor: Colors.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-  },
-  statusText: {
-    flex: 1,
-    fontSize: 13,
-    color: Colors.textSecondary,
-  },
   content: {
-    flex: 1,
+    paddingTop: Space.xl,
   },
-  scrollContent: {
-    padding: 16,
+  intro: {
+    gap: Space.sm,
+    marginBottom: Space.lg,
   },
-  emptyState: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 24,
+  badge: {
+    marginTop: Space.xs,
   },
-  emptyText: {
-    fontSize: 16,
-    color: Colors.textSecondary,
-    textAlign: 'center' as const,
+  gapTop: {
+    marginTop: Space.md,
+  },
+  footnote: {
+    marginTop: Space.sm,
   },
 });

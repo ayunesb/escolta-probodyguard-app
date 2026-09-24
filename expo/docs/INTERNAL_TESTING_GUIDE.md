@@ -156,9 +156,9 @@ ZIP: Any valid ZIP
 ### Server-Side Config (Firebase Functions)
 ```bash
 firebase functions:config:set \
-  braintree.merchant_id="8jbcpm9yj7df7w4h" \
+  braintree.merchant_id="REDACTED" \
   braintree.public_key="sandbox_p2dkbpfh_8jbpcm9yj7df7w4h" \
-  braintree.private_key="eba1c4f45e0d8f9c20e31d7b3a6f2e9d" \
+  braintree.private_key="REDACTED" \
   braintree.environment="sandbox"
 ```
 

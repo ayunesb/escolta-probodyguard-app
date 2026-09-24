@@ -1,224 +1,175 @@
 import createContextHook from "@nkzw/create-context-hook";
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { AppState, Platform } from "react-native";
 import { User, UserRole } from "@/types";
-import { auth as getAuthInstance, db as getDbInstance } from "@/lib/firebase";
+import { auth as getAuthInstance, db as getDbInstance, realtimeDb as getRealtimeDb } from "@/lib/firebase";
 import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   signOut as firebaseSignOut,
   onAuthStateChanged,
   sendEmailVerification,
-  reload,
+  sendPasswordResetEmail,
 } from "firebase/auth";
 import { doc, setDoc, getDoc, updateDoc } from "firebase/firestore";
-import { registerForPushNotificationsAsync } from "@/services/notificationService";
-import { pushNotificationService } from '@/services/pushNotificationService';
+import { ref, set } from "firebase/database";
+import { pushNotificationService } from "@/services/pushNotificationService";
 import { rateLimitService } from "@/services/rateLimitService";
 import { monitoringService } from "@/services/monitoringService";
 import { validatePasswordStrength } from "@/utils/passwordValidation";
 import { logger } from "@/utils/logger";
 
-const SESSION_TIMEOUT_MS = 30 * 60 * 1000;
-const ACTIVITY_CHECK_INTERVAL_MS = 60 * 1000;
+// Roles que la app sabe mostrar. Un documento con otro valor (p. ej. el
+// 'bodyguard' viejo del sembrador) provocaba un bucle de redirecciones
+// infinito entre index, tabs y sign-in.
+const VALID_ROLES: readonly UserRole[] = ["client", "guard", "company", "admin"];
+// Roles que cualquiera puede elegir al registrarse. 'admin' nunca: antes el
+// formulario lo ofrecia y las reglas no lo impedian.
+const SELF_SERVICE_ROLES: readonly UserRole[] = ["client", "guard", "company"];
+
+// Cierre de sesion por inactividad real (toques/teclado), no 30 minutos
+// despues del acceso sin importar lo que el usuario estuviera haciendo.
+// Los escoltas quedan exentos: en servicio publican su ubicacion con el
+// telefono en el bolsillo, y cerrarles la sesion cortaria el seguimiento.
+const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
+const IDLE_CHECK_INTERVAL_MS = 60 * 1000;
+
+const allowUnverified = () => __DEV__ && (process.env.EXPO_PUBLIC_ALLOW_UNVERIFIED_LOGIN ?? "") === "1";
+
+export type AuthResult = { success: boolean; error?: string };
 
 export const [AuthProvider, useAuth] = createContextHook(() => {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  // Motivo por el que no hay sesion (perfil ilegible, rol invalido,
+  // suspension, inactividad). La pantalla de acceso lo muestra.
+  const [authError, setAuthError] = useState<string | null>(null);
   const lastActivityRef = useRef<number>(Date.now());
-  const sessionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const activityCheckIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Mientras un flujo maneja la sesion por su cuenta (registro, reenvio de
+  // verificacion), el listener no debe cerrar la sesion ni crear documentos.
+  // Sin esto el registro fallaba siempre en produccion: el listener cerraba la
+  // sesion del usuario recien creado (sin verificar) antes de que se guardara
+  // su perfil, las reglas rechazaban la escritura, y el rol elegido se perdia.
+  const authFlowRef = useRef(false);
 
-  const ensureUserDocument = useCallback(
-    async (firebaseUser: { uid: string; email: string | null }) => {
-      try {
-        const userRef = doc(getDbInstance(), "users", firebaseUser.uid);
-        const snap = await getDoc(userRef);
-        if (!snap.exists()) {
-          const now = new Date().toISOString();
-          const minimal: Omit<User, "id"> = {
-            email: firebaseUser.email ?? "",
-            role: "client",
-            firstName: "",
-            lastName: "",
-            phone: "",
-            language: "en",
-            kycStatus: "pending",
-            createdAt: now,
-            isActive: true,
-            emailVerified: false,
-            updatedAt: now,
-          } as Omit<User, "id">;
-          try {
-            await setDoc(userRef, minimal);
-            logger.log("[Auth] Created minimal user document");
-          } catch (setDocError: any) {
-            logger.error(
-              "[Auth] Failed to create user document:",
-              { error: setDocError?.message ?? setDocError }
-            );
-            if (setDocError?.code === "permission-denied") {
-              logger.error("[Auth] Permission denied - check Firestore rules");
-            }
-            throw setDocError;
-          }
-          return minimal;
-        }
-        return snap.data() as Omit<User, "id">;
-      } catch (e: any) {
-        logger.warn("[Auth] ensureUserDocument failed:", { error: e?.message ?? e });
-        throw e;
-      }
-    },
-    []
-  );
+  const markActivity = useCallback(() => {
+    lastActivityRef.current = Date.now();
+  }, []);
+
+  const loadProfile = useCallback(async (uid: string, email: string | null): Promise<Omit<User, "id">> => {
+    const userRef = doc(getDbInstance(), "users", uid);
+    const snap = await getDoc(userRef);
+    if (snap.exists()) return snap.data() as Omit<User, "id">;
+
+    // Cuentas antiguas sin documento: se crea uno minimo de cliente.
+    logger.warn("[Auth] User document not found. Creating minimal client profile");
+    const now = new Date().toISOString();
+    const minimal = {
+      email: email ?? "",
+      role: "client" as const,
+      firstName: "",
+      lastName: "",
+      phone: "",
+      language: "en" as const,
+      kycStatus: "pending" as const,
+      createdAt: now,
+      updatedAt: now,
+      isActive: true,
+      // Las reglas exigen false al crear: el estado real vive en Firebase Auth
+      emailVerified: false,
+    };
+    await setDoc(userRef, minimal);
+    return minimal;
+  }, []);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(
-      getAuthInstance(),
-      async (firebaseUser) => {
-        logger.log("[Auth] State changed:", { userId: firebaseUser?.uid });
-        if (firebaseUser) {
-          const allowUnverified = __DEV__ && (process.env.EXPO_PUBLIC_ALLOW_UNVERIFIED_LOGIN ?? "") === "1";
-          if (!firebaseUser.emailVerified && !allowUnverified) {
-            logger.log("[Auth] Email not verified - skipping Firestore access and signing out early");
-            try {
-              await firebaseSignOut(getAuthInstance());
-            } catch {}
-            setUser(null);
-            setIsLoading(false);
-            return;
-          }
+    const unsubscribe = onAuthStateChanged(getAuthInstance(), async (firebaseUser) => {
+      if (authFlowRef.current) return;
 
-          try {
-            let userData: Omit<User, "id"> | null = null;
-            let retryCount = 0;
-            const maxRetries = 2;
+      if (!firebaseUser) {
+        setUser(null);
+        setIsLoading(false);
+        return;
+      }
 
-            while (retryCount < maxRetries && !userData) {
-              try {
-                const userDoc = await getDoc(
-                  doc(getDbInstance(), "users", firebaseUser.uid)
-                );
-                if (userDoc.exists()) {
-                  userData = userDoc.data() as Omit<User, "id">;
-                  logger.log("[Auth] User document loaded successfully");
-                } else {
-                  logger.warn("[Auth] User document not found. Creating...");
-                  userData = await ensureUserDocument({
-                    uid: firebaseUser.uid,
-                    email: firebaseUser.email,
-                  });
-                }
-              } catch (err: any) {
-                if (err?.code === "permission-denied") {
-                  logger.warn("[Auth] Firestore permission denied - stopping retries");
-                  break;
-                }
-                throw err;
-              }
-            }
+      if (!firebaseUser.emailVerified && !allowUnverified()) {
+        await firebaseSignOut(getAuthInstance()).catch(() => {});
+        setUser(null);
+        setIsLoading(false);
+        return;
+      }
 
-            if (userData) {
-              setUser({ id: firebaseUser.uid, ...userData });
+      try {
+        const profile = await loadProfile(firebaseUser.uid, firebaseUser.email);
 
-              const token = await registerForPushNotificationsAsync();
-              if (token && firebaseUser?.uid) {
-                logger.log("[Auth] Expo Push Token:", { token });
-                try {
-                  await pushNotificationService.registerDevice(firebaseUser.uid, 'client');
-                } catch (regErr) {
-                  logger.warn('[Auth] Failed to register device for push notifications:', { error: regErr });
-                }
-              }
-            } else {
-              logger.error("[Auth] No user data available (permission denied or creation blocked)");
-              setUser(null);
-            }
-          } catch (error: any) {
-            logger.error("[Auth] Error loading user data:", { error: error?.message ?? error });
-            setUser(null);
-          }
-        } else {
+        if (!VALID_ROLES.includes(profile.role)) {
+          logger.error("[Auth] Invalid role on profile", { role: profile.role });
+          setAuthError("This account isn't set up correctly. Please contact support.");
+          await firebaseSignOut(getAuthInstance()).catch(() => {});
           setUser(null);
+        } else if ((profile as { suspended?: boolean }).suspended === true) {
+          setAuthError("This account has been suspended. Please contact support.");
+          await firebaseSignOut(getAuthInstance()).catch(() => {});
+          setUser(null);
+        } else {
+          setAuthError(null);
+          markActivity();
+          setUser({ id: firebaseUser.uid, ...profile });
+          // El registro de avisos push va en segundo plano: antes el
+          // arranque esperaba el permiso, dos peticiones de token y dos
+          // escrituras antes de mostrar nada. Y ya registra el rol real
+          // (estaba fijo en 'client').
+          pushNotificationService
+            .registerDevice(firebaseUser.uid, profile.role)
+            .catch((e) => logger.warn("[Auth] Push registration failed", { error: e }));
         }
+      } catch (error: any) {
+        logger.error("[Auth] Error loading user profile", { error: error?.message ?? error });
+        setAuthError(
+          error?.code === "permission-denied"
+            ? "We couldn't open your profile. Please contact support."
+            : "We couldn't load your profile. Check your connection and try again."
+        );
+        // Sin cerrar sesion aqui el boton de acceso giraba para siempre:
+        // Firebase no vuelve a disparar el listener para el mismo usuario.
+        await firebaseSignOut(getAuthInstance()).catch(() => {});
+        setUser(null);
+      } finally {
         setIsLoading(false);
       }
-    );
+    });
     return () => unsubscribe();
-  }, [ensureUserDocument]);
+  }, [loadProfile, markActivity]);
 
   const signIn = useCallback(
-    async (
-      email: string,
-      password: string
-    ): Promise<{
-      success: boolean;
-      error?: string;
-      emailNotVerified?: boolean;
-    }> => {
+    async (email: string, password: string): Promise<AuthResult & { emailNotVerified?: boolean }> => {
       try {
-        logger.log("[Auth] Signing in:", { email });
-        const rateLimitCheck = await rateLimitService.checkRateLimit(
-          "login",
-          email
-        );
+        const rateLimitCheck = await rateLimitService.checkRateLimit("login", email);
         if (!rateLimitCheck.allowed) {
-          const errorMessage = rateLimitService.getRateLimitError(
-            "login",
-            rateLimitCheck.blockedUntil!
-          );
-          logger.log("[Auth] Rate limit exceeded for:", { email });
-          return { success: false, error: errorMessage };
+          return { success: false, error: rateLimitService.getRateLimitError("login", rateLimitCheck.blockedUntil!) };
         }
-        const userCredential = await signInWithEmailAndPassword(
-          getAuthInstance(),
-          email,
-          password
-        );
-        logger.log("[Auth] Sign in successful:", { userId: userCredential.user.uid });
-        const allowUnverified =
-          __DEV__ && (process.env.EXPO_PUBLIC_ALLOW_UNVERIFIED_LOGIN ?? "") === "1";
-        if (!userCredential.user.emailVerified && !allowUnverified) {
-          logger.log("[Auth] Email not verified");
-          await firebaseSignOut(getAuthInstance());
-          return {
-            success: false,
-            error: "Please verify your email before signing in",
-            emailNotVerified: true,
-          };
-        }
-        if (!userCredential.user.emailVerified && allowUnverified) {
-          logger.warn(
-            "[Auth] Email not verified — allowed due to EXPO_PUBLIC_ALLOW_UNVERIFIED_LOGIN=1"
-          );
+        setAuthError(null);
+        const credential = await signInWithEmailAndPassword(getAuthInstance(), email, password);
+        if (!credential.user.emailVerified && !allowUnverified()) {
+          await firebaseSignOut(getAuthInstance()).catch(() => {});
+          return { success: false, error: "Please verify your email before signing in.", emailNotVerified: true };
         }
         await rateLimitService.resetRateLimit("login", email);
-        await monitoringService.trackEvent(
-          "user_login",
-          { email, userId: userCredential.user.uid },
-          userCredential.user.uid
-        );
+        monitoringService.trackEvent("user_login", { userId: credential.user.uid }, credential.user.uid).catch(() => {});
         return { success: true };
       } catch (error: any) {
-        logger.error("[Auth] Sign in error:", { error });
-        await monitoringService.reportError({
-          error,
-          context: { action: "signIn", email },
-        });
-        let errorMessage = "Failed to sign in";
-        if (
-          error.code === "auth/user-not-found" ||
-          error.code === "auth/invalid-credential"
-        ) {
-          errorMessage = "Invalid email or password";
-        } else if (error.code === "auth/wrong-password") {
-          errorMessage = "Incorrect password";
-        } else if (error.code === "auth/invalid-email") {
-          errorMessage = "Invalid email address";
-        } else if (error.code === "auth/too-many-requests") {
-          errorMessage = "Too many attempts. Please try again later";
+        logger.error("[Auth] Sign in error", { code: error?.code });
+        let message = "We couldn't sign you in. Please try again.";
+        if (error?.code === "auth/user-not-found" || error?.code === "auth/invalid-credential" || error?.code === "auth/wrong-password") {
+          message = "That email and password don't match.";
+        } else if (error?.code === "auth/invalid-email") {
+          message = "That email address isn't valid.";
+        } else if (error?.code === "auth/too-many-requests") {
+          message = "Too many attempts. Please wait a moment and try again.";
+        } else if (error?.code === "auth/network-request-failed") {
+          message = "No connection. Check your network and try again.";
         }
-        return { success: false, error: errorMessage };
+        return { success: false, error: message };
       }
     },
     []
@@ -231,30 +182,25 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
       firstName: string,
       lastName: string,
       phone: string,
-      role: UserRole
-    ): Promise<{
-      success: boolean;
-      error?: string;
-      needsVerification?: boolean;
-    }> => {
+      role: UserRole,
+      // Consentimientos del registro (LFPDPPP). Antes se pedian y se tiraban.
+      consents?: { terms: boolean; privacy: boolean; dataProcessing: boolean; marketing: boolean }
+    ): Promise<AuthResult & { needsVerification?: boolean }> => {
+      if (!SELF_SERVICE_ROLES.includes(role)) {
+        return { success: false, error: "That account type isn't available." };
+      }
+      const passwordValidation = validatePasswordStrength(password);
+      if (!passwordValidation.isValid) {
+        return { success: false, error: `Password is not strong enough: ${passwordValidation.feedback.join(", ")}` };
+      }
+
+      authFlowRef.current = true;
       try {
-        const passwordValidation = validatePasswordStrength(password);
-        if (!passwordValidation.isValid) {
-          return {
-            success: false,
-            error: `Password is not strong enough: ${passwordValidation.feedback.join(', ')}`,
-          };
-        }
-        logger.log("[Auth] Signing up:", { email, role });
-        const userCredential = await createUserWithEmailAndPassword(
-          getAuthInstance(),
-          email,
-          password
-        );
-        const userId = userCredential.user.uid;
-        await sendEmailVerification(userCredential.user);
-        logger.log("[Auth] Verification email sent to:", { email });
-        const userData: Omit<User, "id"> = {
+        const credential = await createUserWithEmailAndPassword(getAuthInstance(), email, password);
+        const uid = credential.user.uid;
+        const now = new Date().toISOString();
+        // El perfil se escribe PRIMERO, con la sesion todavia abierta.
+        await setDoc(doc(getDbInstance(), "users", uid), {
           email,
           role,
           firstName,
@@ -262,35 +208,41 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
           phone,
           language: "en",
           kycStatus: "pending",
-          createdAt: new Date().toISOString(),
-          isActive: false,
+          createdAt: now,
+          updatedAt: now,
+          isActive: true,
           emailVerified: false,
-          updatedAt: ""
-        };
-        await setDoc(doc(getDbInstance(), "users", userId), userData);
-        logger.log("[Auth] User document created:", { userId });
-        await monitoringService.trackEvent(
-          "user_signup",
-          { email, role, userId },
-          userId
+          ...(consents
+            ? {
+                consents: {
+                  terms: consents.terms ? now : null,
+                  privacy: consents.privacy ? now : null,
+                  dataProcessing: consents.dataProcessing ? now : null,
+                  marketing: consents.marketing,
+                  recordedAt: now,
+                },
+              }
+            : {}),
+        });
+        // Espejo del rol en Realtime Database: lo usan sus reglas para
+        // reconocer empresas. Las reglas solo lo dejan crear una vez.
+        await set(ref(getRealtimeDb(), `users/${uid}`), { role }).catch((e) =>
+          logger.warn("[Auth] Role mirror write failed", { error: e?.message })
         );
-        await firebaseSignOut(getAuthInstance());
+        await sendEmailVerification(credential.user);
+        monitoringService.trackEvent("user_signup", { role, userId: uid }, uid).catch(() => {});
         return { success: true, needsVerification: true };
       } catch (error: any) {
-        logger.error("[Auth] Sign up error:", { error });
-        await monitoringService.reportError({
-          error,
-          context: { action: "signUp", email, role },
-        });
-        let errorMessage = "Failed to sign up";
-        if (error.code === "auth/email-already-in-use") {
-          errorMessage = "Email already in use";
-        } else if (error.code === "auth/invalid-email") {
-          errorMessage = "Invalid email address";
-        } else if (error.code === "auth/weak-password") {
-          errorMessage = "Password should be at least 6 characters";
-        }
-        return { success: false, error: errorMessage };
+        logger.error("[Auth] Sign up error", { code: error?.code, message: error?.message });
+        let message = "We couldn't create your account. Please try again.";
+        if (error?.code === "auth/email-already-in-use") message = "An account with this email already exists. Try signing in.";
+        else if (error?.code === "auth/invalid-email") message = "That email address isn't valid.";
+        else if (error?.code === "auth/weak-password") message = "Please choose a stronger password.";
+        else if (error?.code === "auth/network-request-failed") message = "No connection. Check your network and try again.";
+        return { success: false, error: message };
+      } finally {
+        await firebaseSignOut(getAuthInstance()).catch(() => {});
+        authFlowRef.current = false;
       }
     },
     []
@@ -298,103 +250,123 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
 
   const signOut = useCallback(async () => {
     try {
-      logger.log("[Auth] Signing out");
-      if (sessionTimeoutRef.current) {
-        clearTimeout(sessionTimeoutRef.current);
-        sessionTimeoutRef.current = null;
-      }
-      if (activityCheckIntervalRef.current) {
-        clearInterval(activityCheckIntervalRef.current);
-        activityCheckIntervalRef.current = null;
+      const uid = getAuthInstance().currentUser?.uid;
+      if (uid) {
+        // Que este telefono deje de recibir los avisos de esta cuenta.
+        await pushNotificationService.unregisterDevice(uid).catch(() => {});
       }
       await firebaseSignOut(getAuthInstance());
     } catch (error) {
-      logger.error("[Auth] Sign out error:", { error });
+      logger.error("[Auth] Sign out error", { error });
     }
   }, []);
 
+  // Lanza si falla: antes tragaba el error y, p. ej., un documento KYC subido
+  // parecia guardado aunque el perfil nunca se actualizara.
   const updateUser = useCallback(
     async (updates: Partial<User>) => {
-      if (!user) return;
-      try {
-        logger.log("[Auth] Updating user:", { userId: user.id });
-        const { id, ...updateData } = updates as Partial<User> & {
-          id?: string;
-        };
-        await updateDoc(doc(getDbInstance(), "users", user.id), updateData);
-        setUser({ ...user, ...updates });
-      } catch (error) {
-        logger.error("[Auth] Update user error:", { error });
-      }
+      if (!user) throw new Error("Not signed in");
+      const { id: _id, ...updateData } = updates as Partial<User> & { id?: string };
+      await updateDoc(doc(getDbInstance(), "users", user.id), { ...updateData, updatedAt: new Date().toISOString() });
+      setUser((prev) => (prev ? { ...prev, ...updateData } : prev));
     },
     [user]
   );
 
-  const resetSessionTimeout = useCallback(() => {
-    lastActivityRef.current = Date.now();
-    if (sessionTimeoutRef.current) {
-      clearTimeout(sessionTimeoutRef.current);
-    }
-    sessionTimeoutRef.current = setTimeout(async () => {
-      logger.log('[Auth] Session expired due to inactivity');
-      await monitoringService.trackEvent('session_timeout', { userId: user?.id });
-      await signOut();
-    }, SESSION_TIMEOUT_MS);
-  }, [user?.id, signOut]);
-
-  const checkSessionActivity = useCallback(() => {
-    const now = Date.now();
-    const inactiveTime = now - lastActivityRef.current;
-    if (inactiveTime >= SESSION_TIMEOUT_MS) {
-      logger.log('[Auth] Session expired - no activity for 30 minutes');
-      signOut();
-    }
-  }, [signOut]);
-
-  useEffect(() => {
-    if (user) {
-      resetSessionTimeout();
-      activityCheckIntervalRef.current = setInterval(checkSessionActivity, ACTIVITY_CHECK_INTERVAL_MS);
-      return () => {
-        if (sessionTimeoutRef.current) clearTimeout(sessionTimeoutRef.current);
-        if (activityCheckIntervalRef.current) clearInterval(activityCheckIntervalRef.current);
-      };
-    }
-  }, [user, resetSessionTimeout, checkSessionActivity]);
-
-  const resendVerificationEmail = useCallback(async (): Promise<{
-    success: boolean;
-    error?: string;
-  }> => {
+  // Reenvio de verificacion. Necesita las credenciales: la cuenta sin
+  // verificar ya no tiene sesion abierta (antes fallaba siempre por eso).
+  const resendVerificationEmail = useCallback(async (email: string, password: string): Promise<AuthResult> => {
+    authFlowRef.current = true;
     try {
-      const authInstance = getAuthInstance();
-      if (!authInstance.currentUser) {
-        return { success: false, error: "No user signed in" };
+      const credential = await signInWithEmailAndPassword(getAuthInstance(), email, password);
+      if (credential.user.emailVerified) {
+        return { success: false, error: "Your email is already verified. Sign in again." };
       }
-      await reload(authInstance.currentUser);
-      if (authInstance.currentUser.emailVerified) {
-        return { success: false, error: "Email already verified" };
-      }
-      await sendEmailVerification(authInstance.currentUser);
-      logger.log("[Auth] Verification email resent");
+      await sendEmailVerification(credential.user);
       return { success: true };
     } catch (error: any) {
-      logger.error("[Auth] Resend verification error:", { error });
-      return { success: false, error: "Failed to resend verification email" };
+      logger.error("[Auth] Resend verification error", { code: error?.code });
+      if (error?.code === "auth/too-many-requests") {
+        return { success: false, error: "We just sent one. Please wait a few minutes before trying again." };
+      }
+      return { success: false, error: "We couldn't resend the verification email." };
+    } finally {
+      await firebaseSignOut(getAuthInstance()).catch(() => {});
+      authFlowRef.current = false;
     }
   }, []);
+
+  // Restablecer contrasena. Responde igual exista o no la cuenta, para no
+  // revelar que correos estan registrados.
+  const resetPassword = useCallback(async (email: string): Promise<AuthResult> => {
+    const trimmed = email.trim();
+    if (!trimmed) return { success: false, error: "Enter your email address first." };
+    try {
+      await sendPasswordResetEmail(getAuthInstance(), trimmed);
+      return { success: true };
+    } catch (error: any) {
+      if (error?.code === "auth/invalid-email") return { success: false, error: "That email address isn't valid." };
+      if (error?.code === "auth/user-not-found") return { success: true };
+      if (error?.code === "auth/network-request-failed") return { success: false, error: "No connection. Check your network and try again." };
+      logger.error("[Auth] Password reset error", { code: error?.code });
+      return { success: false, error: "We couldn't send the reset email. Please try again." };
+    }
+  }, []);
+
+  const clearAuthError = useCallback(() => setAuthError(null), []);
+
+  // Inactividad: se mide desde el ultimo toque/tecla (ver ActivityBoundary en
+  // app/_layout.tsx) y al volver del segundo plano.
+  useEffect(() => {
+    if (!user || user.role === "guard") return;
+
+    const expireIfIdle = () => {
+      if (Date.now() - lastActivityRef.current >= IDLE_TIMEOUT_MS) {
+        logger.log("[Auth] Signing out after inactivity");
+        setAuthError("You were signed out after 30 minutes of inactivity.");
+        signOut();
+      }
+    };
+
+    const interval = setInterval(expireIfIdle, IDLE_CHECK_INTERVAL_MS);
+    const appStateSub = AppState.addEventListener("change", (state) => {
+      if (state === "active") expireIfIdle();
+    });
+
+    let removeWebListeners: (() => void) | undefined;
+    if (Platform.OS === "web" && typeof window !== "undefined") {
+      const onActivity = () => markActivity();
+      window.addEventListener("pointerdown", onActivity, { passive: true });
+      window.addEventListener("keydown", onActivity, { passive: true });
+      removeWebListeners = () => {
+        window.removeEventListener("pointerdown", onActivity);
+        window.removeEventListener("keydown", onActivity);
+      };
+    }
+
+    return () => {
+      clearInterval(interval);
+      appStateSub.remove();
+      removeWebListeners?.();
+    };
+  }, [user, signOut, markActivity]);
 
   return useMemo(
     () => ({
       user,
       isLoading,
+      authError,
+      clearAuthError,
       signIn,
       signUp,
       signOut,
       updateUser,
       resendVerificationEmail,
-      resetSessionTimeout,
+      resetPassword,
+      markActivity,
+      // Compatibilidad con el nombre anterior
+      resetSessionTimeout: markActivity,
     }),
-    [user, isLoading, signIn, signUp, signOut, updateUser, resendVerificationEmail, resetSessionTimeout]
+    [user, isLoading, authError, clearAuthError, signIn, signUp, signOut, updateUser, resendVerificationEmail, resetPassword, markActivity]
   );
 });

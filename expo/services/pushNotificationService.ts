@@ -1,7 +1,7 @@
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
-import { doc, getDoc, updateDoc, collection, addDoc, query, where, getDocs } from 'firebase/firestore';
-import { db as getDbInstance } from '@/lib/firebase';
+import { doc, getDoc, setDoc, updateDoc, collection, addDoc, query, where, getDocs } from 'firebase/firestore';
+import { db as getDbInstance, auth as getAuthInstance } from '@/lib/firebase';
 import { UserRole } from '@/types';
 
 export interface PushNotificationPayload {
@@ -113,22 +113,24 @@ export const pushNotificationService = {
       }
 
       const token = (await Notifications.getExpoPushTokenAsync()).data;
-      console.log('[Push] Device token:', token);
 
-      await updateDoc(doc(getDbInstance(), 'users', userId), {
-        pushToken: token,
-        pushTokenUpdatedAt: new Date().toISOString(),
-        devicePlatform: Platform.OS,
-      });
-
-      await addDoc(collection(getDbInstance(), 'deviceTokens'), {
-        userId,
-        token,
-        platform: Platform.OS,
-        role,
-        createdAt: new Date().toISOString(),
-        lastUsedAt: new Date().toISOString(),
-      });
+      // Un documento por (usuario, dispositivo), con id determinista: antes se
+      // agregaba uno nuevo en cada arranque y el servidor mandaba el mismo
+      // aviso N veces. El token tampoco se guarda ya en el perfil publico
+      // users/{uid}, que cualquier usuario registrado puede leer.
+      const tokenId = `${userId}_${token.replace(/[^A-Za-z0-9]/g, '').slice(-40)}`;
+      await setDoc(
+        doc(getDbInstance(), 'deviceTokens', tokenId),
+        {
+          userId,
+          token,
+          platform: Platform.OS,
+          role,
+          active: true,
+          lastUsedAt: new Date().toISOString(),
+        },
+        { merge: true }
+      );
 
       return token;
     } catch (error) {
@@ -169,12 +171,20 @@ export const pushNotificationService = {
       // leer el padron. Ahora quien resuelve los tokens es la funcion de
       // servidor `enviarAvisoEncolado`, que corre con Admin SDK y ademas
       // atiende todos los aparatos del usuario, no solo el ultimo.
+      // Forma que exigen las reglas: remitente = quien escribe, tipo de una
+      // lista cerrada y, si el destinatario es otra persona, la reserva que
+      // comparten. Titulo y cuerpo los arma el servidor desde plantillas: un
+      // cliente ya no puede mandarle texto arbitrario a otro usuario.
+      const senderId = getAuthInstance().currentUser?.uid;
+      const type = typeof payload.data?.type === 'string' ? payload.data.type : undefined;
+      if (!senderId || !type) return;
       await addDoc(collection(getDbInstance(), 'notifications'), {
         userId,
-        title: payload.title,
-        body: payload.body,
-        data: payload.data || {},
+        senderId,
+        type,
+        ...(typeof payload.data?.bookingId === 'string' ? { bookingId: payload.data.bookingId } : {}),
         status: 'pending',
+        read: false,
         createdAt: new Date().toISOString(),
       });
 

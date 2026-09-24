@@ -1,8 +1,11 @@
-import React, { useRef, useState, useEffect, forwardRef, useImperativeHandle } from 'react';
-import { View, StyleSheet, ActivityIndicator, Alert } from 'react-native';
-import { WebView } from 'react-native-webview';
+import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import { StyleSheet, View } from 'react-native';
+import { WebView, WebViewMessageEvent } from 'react-native-webview';
 import Colors from '@/constants/colors';
+import { Radius, Space } from '@/constants/design';
+import { Skeleton } from '@/components/ui';
 import { ENV } from '@/config/env';
+import { logger } from '@/utils/logger';
 
 interface BraintreeHostedFieldsProps {
   clientToken: string;
@@ -18,129 +21,136 @@ export interface CardDetails {
 }
 
 export interface BraintreeHostedFieldsHandle {
+  // Always ends in exactly one onSuccess or onError call — never silence.
   submitPayment: () => void;
 }
 
+// If the page never answers a submit, give the Pay button back.
+const SUBMIT_TIMEOUT_MS = 45_000;
+
+/**
+ * Braintree Hosted Fields inside a WebView (native only — react-native-webview
+ * does not run on web; the web app pays with Stripe). Card data stays in
+ * Braintree's iframes; we only receive a one-time nonce.
+ */
 const BraintreeHostedFields = forwardRef<BraintreeHostedFieldsHandle, BraintreeHostedFieldsProps>(
   ({ clientToken, onSuccess, onError, onReady }, ref) => {
     const webViewRef = useRef<WebView>(null);
-    const [loading, setLoading] = useState(true);
     const [pageLoaded, setPageLoaded] = useState(false);
-    
+    const [fieldsReady, setFieldsReady] = useState(false);
+    const pendingSubmit = useRef<ReturnType<typeof setTimeout> | null>(null);
+
     const hostedFieldsUrl = `${ENV.API_URL}/payments/hosted-fields-page`;
-    
-    console.log('[BraintreeHostedFields] Component mounted');
-    console.log('[BraintreeHostedFields] URL:', hostedFieldsUrl);
-    
+
+    const clearPending = () => {
+      if (pendingSubmit.current) {
+        clearTimeout(pendingSubmit.current);
+        pendingSubmit.current = null;
+      }
+    };
+
+    // Resolve a pending submit with an error (idempotent).
+    const fail = (message: string) => {
+      clearPending();
+      onError(message);
+    };
+
+    useEffect(() => clearPending, []);
+
     useEffect(() => {
-      // Initialize hosted fields once page is loaded
       if (pageLoaded && clientToken) {
-        console.log('[BraintreeHostedFields] Sending initialize message');
-        const message = JSON.stringify({
-          action: 'initialize',
-          clientToken: clientToken
-        });
-        
-        console.log('[BraintreeHostedFields] Posting initialize message');
-        webViewRef.current?.postMessage(message);
+        webViewRef.current?.postMessage(JSON.stringify({ action: 'initialize', clientToken }));
       }
     }, [pageLoaded, clientToken]);
-    
-    const handleMessage = (event: any) => {
-      let data;
+
+    const handleMessage = (event: WebViewMessageEvent) => {
+      let data: { type?: string; nonce?: string; details?: CardDetails; error?: unknown };
       try {
         data = JSON.parse(event.nativeEvent.data);
-        console.log('[BraintreeHostedFields] Message received:', data.type);
-      } catch (e) {
-        console.error('[BraintreeHostedFields] Failed to parse message:', e);
+      } catch (error) {
+        logger.error('[BraintreeHostedFields] Unparseable message', error);
+        if (pendingSubmit.current) fail('The payment form sent an unexpected response. Please try again.');
         return;
       }
-      
+
       switch (data.type) {
         case 'loaded':
-          console.log('[BraintreeHostedFields] Page loaded');
           setPageLoaded(true);
           break;
-          
         case 'ready':
-          console.log('[BraintreeHostedFields] Braintree fields ready');
-          setLoading(false);
+          setFieldsReady(true);
           onReady?.();
           break;
-          
         case 'success':
-          console.log('[BraintreeHostedFields] Payment nonce received:', data.nonce);
-          console.log('[BraintreeHostedFields] Card details:', data.details);
-          onSuccess(data.nonce, data.details);
+          clearPending();
+          if (typeof data.nonce === 'string' && data.nonce) {
+            onSuccess(data.nonce, data.details ?? { cardType: '', lastFour: '', lastTwo: '' });
+          } else {
+            onError('The card could not be verified. Please check the details and try again.');
+          }
           break;
-          
-        case 'error':
-          console.error('[BraintreeHostedFields] Error:', data.error);
-          setLoading(false);
-          onError(data.error);
+        case 'error': {
+          const message = typeof data.error === 'string' && data.error ? data.error : 'Please check your card details.';
+          fail(message);
           break;
-          
+        }
         default:
-          console.warn('[BraintreeHostedFields] Unknown message type:', data.type);
+          // Unknown message types are ignored; a pending submit still times out.
+          break;
       }
     };
-    
-    const handleLoad = () => {
-      console.log('[BraintreeHostedFields] WebView loaded');
+
+    const handleWebViewError = () => {
+      logger.error('[BraintreeHostedFields] WebView failed to load', { url: hostedFieldsUrl });
+      setFieldsReady(false);
+      fail('The payment form could not load. Please check your connection.');
     };
-    
-    const handleError = (syntheticEvent: any) => {
-      const { nativeEvent } = syntheticEvent;
-      console.error('[BraintreeHostedFields] WebView error:', nativeEvent);
-      setLoading(false);
-      onError('Failed to load payment form. Please check your connection.');
-    };
-    
-    // Expose submitPayment method to parent component
+
     useImperativeHandle(ref, () => ({
       submitPayment: () => {
-        console.log('[BraintreeHostedFields] submitPayment called');
-        
-        if (!pageLoaded) {
-          console.error('[BraintreeHostedFields] Cannot submit - page not loaded');
-          Alert.alert('Error', 'Payment form is not ready yet');
+        if (!pageLoaded || !fieldsReady) {
+          onError('The payment form is still loading. Please try again in a moment.');
           return;
         }
-        
-        const message = JSON.stringify({
-          action: 'submit'
-        });
-        
-        console.log('[BraintreeHostedFields] Posting submit message');
-        webViewRef.current?.postMessage(message);
-      }
+        if (!webViewRef.current) {
+          onError('The payment form is not available. Please close and reopen payment.');
+          return;
+        }
+        clearPending();
+        pendingSubmit.current = setTimeout(() => {
+          pendingSubmit.current = null;
+          onError('The payment form did not respond. You have not been charged — please try again.');
+        }, SUBMIT_TIMEOUT_MS);
+        webViewRef.current.postMessage(JSON.stringify({ action: 'submit' }));
+      },
     }));
-    
+
     return (
       <View style={styles.container}>
-        {loading && (
-          <View style={styles.loadingOverlay}>
-            <ActivityIndicator size="large" color={Colors.gold} />
+        {!fieldsReady ? (
+          <View style={styles.loading} pointerEvents="none" accessibilityLabel="Loading secure card form">
+            <Skeleton height={52} radius={Radius.md} />
+            <View style={styles.loadingRow}>
+              <Skeleton height={52} radius={Radius.md} style={styles.flex} />
+              <Skeleton height={52} radius={Radius.md} style={styles.flex} />
+            </View>
           </View>
-        )}
-        
+        ) : null}
+
         <WebView
           ref={webViewRef}
           source={{ uri: hostedFieldsUrl }}
           onMessage={handleMessage}
-          onLoad={handleLoad}
-          onError={handleError}
+          onError={handleWebViewError}
+          onHttpError={handleWebViewError}
           style={styles.webview}
           scrollEnabled={false}
           bounces={false}
-          javaScriptEnabled={true}
-          domStorageEnabled={true}
+          javaScriptEnabled
+          domStorageEnabled
           startInLoadingState={false}
-          mixedContentMode="always"
-          allowsInlineMediaPlayback={true}
-          mediaPlaybackRequiresUserAction={false}
-          // Allow postMessage communication
-          injectedJavaScript=""
+          mixedContentMode="compatibility"
+          originWhitelist={['https://*', 'http://*']}
         />
       </View>
     );
@@ -151,20 +161,31 @@ BraintreeHostedFields.displayName = 'BraintreeHostedFields';
 
 const styles = StyleSheet.create({
   container: {
-    height: 350, // Adjust based on your layout
-    backgroundColor: 'transparent',
-    marginVertical: 10,
+    height: 320,
+    marginVertical: Space.sm,
+    borderRadius: Radius.lg,
+    overflow: 'hidden',
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.border,
   },
   webview: {
-    backgroundColor: 'transparent',
     flex: 1,
+    backgroundColor: 'transparent',
   },
-  loadingOverlay: {
+  loading: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0, 0, 0, 0.3)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    zIndex: 10,
+    zIndex: 1,
+    padding: Space.lg,
+    gap: Space.md,
+    backgroundColor: Colors.surface,
+  },
+  loadingRow: {
+    flexDirection: 'row',
+    gap: Space.md,
+  },
+  flex: {
+    flex: 1,
   },
 });
 

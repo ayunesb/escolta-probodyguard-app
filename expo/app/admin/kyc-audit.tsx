@@ -1,505 +1,325 @@
-import { useState, useCallback } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  TouchableOpacity,
-  ActivityIndicator,
-  TextInput,
-} from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Stack, useFocusEffect, useRouter } from 'expo-router';
-import { FileText, Search, User, Shield, CheckCircle, XCircle, Eye, ChevronLeft } from 'lucide-react-native';
-import { kycAuditService } from '@/services/kycAuditService';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { RefreshControl, StyleSheet, View } from 'react-native';
+import { Stack } from 'expo-router';
+import { FileText, History, Search, ShieldCheck, ShieldX, Trash2 } from 'lucide-react-native';
+import type { LucideIcon } from 'lucide-react-native';
 import Colors from '@/constants/colors';
+import { ICON_STROKE, Radius, Space } from '@/constants/design';
+import {
+  AppText,
+  Badge,
+  Card,
+  EmptyState,
+  InfoRow,
+  Input,
+  NavBar,
+  Screen,
+  SectionTitle,
+  SegmentedControl,
+  SkeletonCard,
+} from '@/components/ui';
+import type { Tone } from '@/components/ui';
+import { Notice, RoleGate, Sheet, formatDateTime, fullName, plural, roleLabel } from '@/components/backoffice';
 import { withErrorBoundary } from '@/components/CriticalScreenErrorBoundary';
+import { kycAuditService, KYCAuditAction, KYCAuditEntry } from '@/services/kycAuditService';
+import { UserRecord, userService } from '@/services/userService';
+import { logger } from '@/utils/logger';
 
-interface AuditEntry {
-  userId: string;
-  documentId: string;
-  action: 'upload' | 'review' | 'approve' | 'reject' | 'delete';
-  reviewerId?: string;
-  reviewerRole?: string;
-  previousStatus?: string;
-  newStatus?: string;
-  notes?: string;
-  metadata: Record<string, any>;
-  timestamp: Date;
+type Range = '7' | '30' | '90';
+
+const ACTION_META: Record<KYCAuditAction, { label: string; tone: Tone; icon: LucideIcon; color: string }> = {
+  upload: { label: 'Upload', tone: 'info', icon: FileText, color: Colors.info },
+  review: { label: 'Review', tone: 'neutral', icon: History, color: Colors.textSecondary },
+  approve: { label: 'Approved', tone: 'success', icon: ShieldCheck, color: Colors.success },
+  reject: { label: 'Rejected', tone: 'error', icon: ShieldX, color: Colors.error },
+  delete: { label: 'Deleted', tone: 'error', icon: Trash2, color: Colors.error },
+};
+
+const DOC_TYPE_LABEL: Record<string, string> = {
+  id: 'Government ID',
+  license: 'Security license',
+  insurance: 'Insurance',
+  vehicle: 'Vehicle document',
+  outfit: 'Outfit photo',
+  photo: 'Profile photo',
+};
+
+const metaFor = (action: string) => ACTION_META[action as KYCAuditAction] ?? ACTION_META.review;
+
+function describe(entry: KYCAuditEntry): string {
+  if (entry.action === 'upload') {
+    const type = String(entry.metadata?.documentType ?? '');
+    return `Uploaded ${DOC_TYPE_LABEL[type]?.toLowerCase() ?? 'a document'}`;
+  }
+  if (entry.action === 'approve') return 'Verification approved';
+  if (entry.action === 'reject') return 'Verification rejected';
+  if (entry.action === 'delete') return 'Document deleted';
+  return 'Reviewed';
+}
+
+function AdminKYCAuditRoute() {
+  return (
+    <>
+      <Stack.Screen options={{ headerShown: false }} />
+      <RoleGate roles={['admin']} nav>
+        <AdminKYCAuditScreen />
+      </RoleGate>
+    </>
+  );
 }
 
 function AdminKYCAuditScreen() {
-  const insets = useSafeAreaInsets();
-  const router = useRouter();
-  const [auditLog, setAuditLog] = useState<AuditEntry[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [selectedEntry, setSelectedEntry] = useState<AuditEntry | null>(null);
+  const [range, setRange] = useState<Range>('30');
+  const [entries, setEntries] = useState<KYCAuditEntry[] | null>(null);
+  const [people, setPeople] = useState<Record<string, UserRecord>>({});
+  const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [search, setSearch] = useState('');
+  const [selected, setSelected] = useState<KYCAuditEntry | null>(null);
 
-  useFocusEffect(
-    useCallback(() => {
-      loadAuditLog();
-    }, [])
-  );
-
-  const loadAuditLog = async () => {
-    setIsLoading(true);
+  const load = useCallback(async () => {
+    setError(null);
     try {
-      const startDate = new Date();
-      startDate.setDate(startDate.getDate() - 30);
-      const endDate = new Date();
-
-      const report = await kycAuditService.generateComplianceReport(startDate, endDate);
-      console.log('[AdminKYCAudit] Compliance report:', report);
-      
-      setAuditLog([]);
-    } catch (error) {
-      console.error('[AdminKYCAudit] Error loading audit log:', error);
-    } finally {
-      setIsLoading(false);
+      const since = new Date();
+      since.setDate(since.getDate() - Number(range));
+      // Con cota inferior de fecha y limite: nunca la coleccion completa.
+      const list = await kycAuditService.getEntriesSince(since, 300);
+      setEntries(list);
+      setPeople(await userService.getUsersByIds(list.flatMap((e) => [e.userId, e.reviewerId])));
+    } catch (e) {
+      logger.error('[KYCAudit] Failed to load audit trail', e);
+      setError('The audit trail could not be loaded.');
+      setEntries((prev) => prev ?? []);
     }
+  }, [range]);
+
+  useEffect(() => {
+    setEntries(null);
+    load();
+  }, [load]);
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await load();
+    setRefreshing(false);
   };
 
-  const filteredLog = auditLog.filter(entry => {
-    if (!searchQuery) return true;
-    const query = searchQuery.toLowerCase();
-    return (
-      entry.userId.toLowerCase().includes(query) ||
-      entry.documentId.toLowerCase().includes(query) ||
-      entry.action.toLowerCase().includes(query) ||
-      entry.reviewerId?.toLowerCase().includes(query)
+  const nameOf = useCallback((id?: string) => (id && people[id] ? fullName(people[id]) : id ? `ID ${id.slice(0, 8)}…` : '—'), [people]);
+
+  const visible = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return entries ?? [];
+    return (entries ?? []).filter((e) =>
+      [e.userId, e.reviewerId, e.documentId, e.action, e.notes, nameOf(e.userId), nameOf(e.reviewerId)].some((v) =>
+        (v ?? '').toLowerCase().includes(q)
+      )
     );
-  });
+  }, [entries, search, nameOf]);
 
-  const getActionIcon = (action: string) => {
-    switch (action) {
-      case 'upload':
-        return <FileText size={20} color={Colors.info} />;
-      case 'approve':
-        return <CheckCircle size={20} color={Colors.success} />;
-      case 'reject':
-        return <XCircle size={20} color={Colors.error} />;
-      case 'delete':
-        return <XCircle size={20} color={Colors.error} />;
-      default:
-        return <Eye size={20} color={Colors.textSecondary} />;
-    }
-  };
-
-  const getActionColor = (action: string) => {
-    switch (action) {
-      case 'upload':
-        return Colors.info;
-      case 'approve':
-        return Colors.success;
-      case 'reject':
-      case 'delete':
-        return Colors.error;
-      default:
-        return Colors.textSecondary;
-    }
-  };
+  const counts = useMemo(() => {
+    const list = entries ?? [];
+    return {
+      uploads: list.filter((e) => e.action === 'upload').length,
+      approvals: list.filter((e) => e.action === 'approve').length,
+      rejections: list.filter((e) => e.action === 'reject').length,
+    };
+  }, [entries]);
 
   return (
-    <View style={styles.container}>
-      <Stack.Screen options={{ headerShown: false }} />
-      
-      <View style={[styles.header, { paddingTop: insets.top + 16 }]}>
-        <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
-          <ChevronLeft size={24} color={Colors.textPrimary} />
-        </TouchableOpacity>
-        <View style={styles.headerContent}>
-          <Text style={styles.title}>KYC Audit Trail</Text>
-          <Text style={styles.subtitle}>Document verification history</Text>
+    <View style={styles.root}>
+      <NavBar title="KYC audit trail" />
+      <Screen
+        padTop={false}
+        keyboard
+        contentStyle={styles.content}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.gold} />}
+      >
+        <View style={styles.header}>
+          <AppText variant="title2">Audit trail</AppText>
+          <AppText variant="callout">Every document upload and verification decision. Entries can’t be edited or deleted.</AppText>
         </View>
-        <View style={styles.headerSpacer} />
-      </View>
 
-      <View style={styles.searchContainer}>
-        <Search size={20} color={Colors.textTertiary} />
-        <TextInput
-          style={styles.searchInput}
-          placeholder="Search by user, document, or reviewer..."
-          placeholderTextColor={Colors.textTertiary}
-          value={searchQuery}
-          onChangeText={setSearchQuery}
+        <SegmentedControl<Range>
+          value={range}
+          onChange={setRange}
+          options={[
+            { value: '7', label: '7 days' },
+            { value: '30', label: '30 days' },
+            { value: '90', label: '90 days' },
+          ]}
         />
-      </View>
 
-      <ScrollView style={styles.content} contentContainerStyle={styles.scrollContent}>
-        {isLoading ? (
-          <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color={Colors.gold} />
-            <Text style={styles.loadingText}>Loading audit trail...</Text>
+        <Input
+          icon={Search}
+          placeholder="Search name, ID or note"
+          value={search}
+          onChangeText={setSearch}
+          autoCapitalize="none"
+          autoCorrect={false}
+          accessibilityLabel="Search the audit trail"
+          containerStyle={styles.search}
+        />
+
+        {entries && entries.length > 0 ? (
+          <View style={styles.summary}>
+            <Badge label={plural(counts.uploads, 'upload')} tone="info" />
+            <Badge label={`${counts.approvals} approved`} tone="success" />
+            <Badge label={`${counts.rejections} rejected`} tone="error" />
           </View>
-        ) : filteredLog.length === 0 ? (
-          <View style={styles.emptyState}>
-            <FileText size={64} color={Colors.textTertiary} />
-            <Text style={styles.emptyText}>No audit entries found</Text>
-            <Text style={styles.emptySubtext}>
-              {searchQuery ? 'Try a different search query' : 'Audit trail will appear here'}
-            </Text>
-          </View>
+        ) : null}
+
+        {error ? <Notice tone="error" message={error} actionLabel="Try again" onAction={load} style={styles.block} /> : null}
+
+        <SectionTitle title={search.trim() ? plural(visible.length, 'result') : `Last ${range} days`} />
+
+        {entries === null ? (
+          <>
+            <SkeletonCard media lines={1} />
+            <SkeletonCard media lines={1} />
+            <SkeletonCard media lines={1} />
+          </>
+        ) : visible.length === 0 ? (
+          error ? null : (
+            <EmptyState
+              icon={History}
+              title={entries.length === 0 ? 'No activity in this period' : 'No matches'}
+              message={entries.length === 0 ? 'Uploads and decisions will appear here.' : 'Try another search.'}
+            />
+          )
         ) : (
-          filteredLog.map((entry, index) => (
-            <TouchableOpacity
-              key={`${entry.documentId}-${index}`}
-              style={styles.auditCard}
-              onPress={() => setSelectedEntry(entry)}
-            >
-              <View style={styles.auditHeader}>
-                <View style={[styles.actionBadge, { backgroundColor: getActionColor(entry.action) + '20' }]}>
-                  {getActionIcon(entry.action)}
-                  <Text style={[styles.actionText, { color: getActionColor(entry.action) }]}>
-                    {entry.action.toUpperCase()}
-                  </Text>
-                </View>
-                <Text style={styles.timestamp}>
-                  {new Date(entry.timestamp).toLocaleDateString('en-US', {
-                    month: 'short',
-                    day: 'numeric',
-                    hour: '2-digit',
-                    minute: '2-digit',
-                  })}
-                </Text>
-              </View>
-
-              <View style={styles.auditDetails}>
-                <View style={styles.detailRow}>
-                  <User size={16} color={Colors.textSecondary} />
-                  <Text style={styles.detailLabel}>User ID:</Text>
-                  <Text style={styles.detailValue}>{entry.userId.slice(0, 12)}...</Text>
-                </View>
-
-                <View style={styles.detailRow}>
-                  <FileText size={16} color={Colors.textSecondary} />
-                  <Text style={styles.detailLabel}>Document:</Text>
-                  <Text style={styles.detailValue}>{entry.documentId.slice(0, 12)}...</Text>
-                </View>
-
-                {entry.reviewerId && (
-                  <View style={styles.detailRow}>
-                    <Shield size={16} color={Colors.textSecondary} />
-                    <Text style={styles.detailLabel}>Reviewer:</Text>
-                    <Text style={styles.detailValue}>
-                      {entry.reviewerId.slice(0, 12)}... ({entry.reviewerRole})
-                    </Text>
+          <View style={styles.list}>
+            {visible.map((entry, index) => {
+              const meta = metaFor(entry.action);
+              return (
+                <Card
+                  key={entry.id ?? `${entry.documentId}-${index}`}
+                  onPress={() => setSelected(entry)}
+                  accessibilityLabel={`${describe(entry)} for ${nameOf(entry.userId)}`}
+                  style={styles.row}
+                >
+                  <View style={[styles.icon, { backgroundColor: Colors.surfaceLight }]}>
+                    <meta.icon size={18} color={meta.color} strokeWidth={ICON_STROKE} />
                   </View>
-                )}
-
-                {entry.notes && (
-                  <View style={styles.notesContainer}>
-                    <Text style={styles.notesLabel}>Notes:</Text>
-                    <Text style={styles.notesText}>{entry.notes}</Text>
+                  <View style={styles.flex}>
+                    <AppText variant="headline" numberOfLines={1}>
+                      {nameOf(entry.userId)}
+                    </AppText>
+                    <AppText variant="footnote" numberOfLines={1}>
+                      {describe(entry)}
+                      {entry.reviewerId ? ` · by ${nameOf(entry.reviewerId)}` : ''}
+                    </AppText>
+                    <AppText variant="caption" color={Colors.textTertiary}>
+                      {formatDateTime(entry.timestamp)}
+                    </AppText>
                   </View>
-                )}
-              </View>
-            </TouchableOpacity>
-          ))
-        )}
-      </ScrollView>
-
-      {selectedEntry && (
-        <View style={styles.modalOverlay}>
-          <View style={styles.modal}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Audit Entry Details</Text>
-              <TouchableOpacity onPress={() => setSelectedEntry(null)}>
-                <XCircle size={24} color={Colors.textPrimary} />
-              </TouchableOpacity>
-            </View>
-
-            <ScrollView style={styles.modalContent}>
-              <View style={styles.modalSection}>
-                <Text style={styles.modalLabel}>Action</Text>
-                <Text style={styles.modalValue}>{selectedEntry.action.toUpperCase()}</Text>
-              </View>
-
-              <View style={styles.modalSection}>
-                <Text style={styles.modalLabel}>User ID</Text>
-                <Text style={styles.modalValue}>{selectedEntry.userId}</Text>
-              </View>
-
-              <View style={styles.modalSection}>
-                <Text style={styles.modalLabel}>Document ID</Text>
-                <Text style={styles.modalValue}>{selectedEntry.documentId}</Text>
-              </View>
-
-              {selectedEntry.reviewerId && (
-                <>
-                  <View style={styles.modalSection}>
-                    <Text style={styles.modalLabel}>Reviewer ID</Text>
-                    <Text style={styles.modalValue}>{selectedEntry.reviewerId}</Text>
-                  </View>
-
-                  <View style={styles.modalSection}>
-                    <Text style={styles.modalLabel}>Reviewer Role</Text>
-                    <Text style={styles.modalValue}>{selectedEntry.reviewerRole}</Text>
-                  </View>
-                </>
-              )}
-
-              {selectedEntry.previousStatus && (
-                <View style={styles.modalSection}>
-                  <Text style={styles.modalLabel}>Status Change</Text>
-                  <Text style={styles.modalValue}>
-                    {selectedEntry.previousStatus} → {selectedEntry.newStatus}
-                  </Text>
-                </View>
-              )}
-
-              {selectedEntry.notes && (
-                <View style={styles.modalSection}>
-                  <Text style={styles.modalLabel}>Notes</Text>
-                  <Text style={styles.modalValue}>{selectedEntry.notes}</Text>
-                </View>
-              )}
-
-              <View style={styles.modalSection}>
-                <Text style={styles.modalLabel}>Timestamp</Text>
-                <Text style={styles.modalValue}>
-                  {new Date(selectedEntry.timestamp).toLocaleString()}
-                </Text>
-              </View>
-
-              {Object.keys(selectedEntry.metadata).length > 0 && (
-                <View style={styles.modalSection}>
-                  <Text style={styles.modalLabel}>Metadata</Text>
-                  <Text style={styles.modalValue}>
-                    {JSON.stringify(selectedEntry.metadata, null, 2)}
-                  </Text>
-                </View>
-              )}
-            </ScrollView>
-
-            <TouchableOpacity
-              style={styles.closeButton}
-              onPress={() => setSelectedEntry(null)}
-            >
-              <Text style={styles.closeButtonText}>Close</Text>
-            </TouchableOpacity>
+                  <Badge label={meta.label} tone={meta.tone} />
+                </Card>
+              );
+            })}
+            {entries.length >= 300 ? (
+              <AppText variant="caption" color={Colors.textTertiary} align="center">
+                Showing the latest 300 entries. Choose a shorter range to see older detail.
+              </AppText>
+            ) : null}
           </View>
-        </View>
-      )}
+        )}
+      </Screen>
+
+      <Sheet
+        visible={!!selected}
+        onClose={() => setSelected(null)}
+        eyebrow="Audit entry"
+        title={selected ? describe(selected) : ''}
+        subtitle={selected ? formatDateTime(selected.timestamp) : undefined}
+      >
+        {selected ? (
+          <>
+            <View>
+              <InfoRow label="Action" value={<Badge label={metaFor(selected.action).label} tone={metaFor(selected.action).tone} />} />
+              <InfoRow label="Guard" value={nameOf(selected.userId)} />
+              {selected.reviewerId ? (
+                <InfoRow
+                  label="By"
+                  value={`${nameOf(selected.reviewerId)}${selected.reviewerRole ? ` · ${roleLabel(selected.reviewerRole)}` : ''}`}
+                />
+              ) : null}
+              {selected.previousStatus || selected.newStatus ? (
+                <InfoRow label="Status" value={`${selected.previousStatus ?? '—'} → ${selected.newStatus ?? '—'}`} />
+              ) : null}
+            </View>
+            {selected.notes ? <Notice tone="info" title="Note" message={selected.notes} /> : null}
+            <View style={styles.ids}>
+              <AppText variant="overline">Guard ID</AppText>
+              <AppText variant="footnote" selectable>
+                {selected.userId}
+              </AppText>
+              <AppText variant="overline" style={styles.idGap}>
+                Document
+              </AppText>
+              <AppText variant="footnote" selectable>
+                {selected.documentId}
+              </AppText>
+            </View>
+          </>
+        ) : null}
+      </Sheet>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  root: {
     flex: 1,
     backgroundColor: Colors.background,
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingBottom: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-  },
-  backButton: {
-    width: 40,
-    height: 40,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  headerContent: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  headerSpacer: {
-    width: 40,
-  },
-  title: {
-    fontSize: 20,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-    marginBottom: 2,
-  },
-  subtitle: {
-    fontSize: 12,
-    color: Colors.textSecondary,
-  },
-  searchContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    backgroundColor: Colors.surface,
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    margin: 16,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  searchInput: {
-    flex: 1,
-    fontSize: 16,
-    color: Colors.textPrimary,
   },
   content: {
+    paddingTop: Space.xl,
+  },
+  header: {
+    gap: Space.sm,
+    marginBottom: Space.lg,
+  },
+  search: {
+    marginTop: Space.md,
+  },
+  summary: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Space.sm,
+    marginTop: Space.md,
+  },
+  block: {
+    marginTop: Space.md,
+  },
+  list: {
+    gap: Space.md,
+  },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Space.md,
+  },
+  icon: {
+    width: 40,
+    height: 40,
+    borderRadius: Radius.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  ids: {
+    gap: Space.xs,
+    padding: Space.md,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.surfaceLight,
+  },
+  idGap: {
+    marginTop: Space.sm,
+  },
+  flex: {
     flex: 1,
-  },
-  scrollContent: {
-    padding: 16,
-  },
-  loadingContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 80,
-  },
-  loadingText: {
-    fontSize: 16,
-    color: Colors.textSecondary,
-    marginTop: 16,
-  },
-  emptyState: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 80,
-  },
-  emptyText: {
-    fontSize: 18,
-    fontWeight: '600' as const,
-    color: Colors.textPrimary,
-    marginTop: 16,
-  },
-  emptySubtext: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-    marginTop: 8,
-    textAlign: 'center' as const,
-  },
-  auditCard: {
-    backgroundColor: Colors.surface,
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  auditHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  actionBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 8,
-  },
-  actionText: {
-    fontSize: 12,
-    fontWeight: '700' as const,
-  },
-  timestamp: {
-    fontSize: 12,
-    color: Colors.textTertiary,
-  },
-  auditDetails: {
-    gap: 8,
-  },
-  detailRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  detailLabel: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-    width: 80,
-  },
-  detailValue: {
-    flex: 1,
-    fontSize: 14,
-    color: Colors.textPrimary,
-    fontWeight: '600' as const,
-  },
-  notesContainer: {
-    marginTop: 8,
-    padding: 12,
-    backgroundColor: Colors.background,
-    borderRadius: 8,
-  },
-  notesLabel: {
-    fontSize: 12,
-    color: Colors.textSecondary,
-    marginBottom: 4,
-  },
-  notesText: {
-    fontSize: 14,
-    color: Colors.textPrimary,
-    lineHeight: 20,
-  },
-  modalOverlay: {
-    position: 'absolute' as const,
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
-  },
-  modal: {
-    backgroundColor: Colors.background,
-    borderRadius: 24,
-    padding: 24,
-    width: '100%',
-    maxWidth: 500,
-    maxHeight: '80%',
-  },
-  modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 20,
-  },
-  modalTitle: {
-    fontSize: 20,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-  },
-  modalContent: {
-    maxHeight: 400,
-  },
-  modalSection: {
-    marginBottom: 16,
-  },
-  modalLabel: {
-    fontSize: 12,
-    color: Colors.textSecondary,
-    marginBottom: 4,
-    textTransform: 'uppercase' as const,
-  },
-  modalValue: {
-    fontSize: 14,
-    color: Colors.textPrimary,
-    lineHeight: 20,
-  },
-  closeButton: {
-    backgroundColor: Colors.gold,
-    borderRadius: 12,
-    padding: 16,
-    alignItems: 'center',
-    marginTop: 16,
-  },
-  closeButtonText: {
-    fontSize: 16,
-    fontWeight: '700' as const,
-    color: Colors.background,
   },
 });
 
-// Wrap with error boundary for admin KYC audit protection
-export default withErrorBoundary(AdminKYCAuditScreen, {
-  fallbackMessage: "KYC audit screen encountered an error. Please try again.",
+export default withErrorBoundary(AdminKYCAuditRoute, {
+  fallbackMessage: 'KYC audit screen encountered an error. Please try again.',
 });
-
