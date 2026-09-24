@@ -107,7 +107,7 @@ export default function ProfileScreen() {
             </AppText>
           ) : null}
           <View style={styles.badges}>
-            <Badge label={roleLabel(role)} tone="gold" />
+            <Badge label={roleLabel(role)} tone="accent" />
             {isGuard ? <Badge label={kyc.label} tone={kyc.tone} icon={ShieldCheck} /> : null}
           </View>
         </View>
@@ -156,7 +156,7 @@ export default function ProfileScreen() {
           title="Reset password"
           subtitle={profile?.email ? `Email a reset link to ${profile.email}` : undefined}
           onPress={handleResetPassword}
-          trailing={sendingReset ? <ActivityIndicator size="small" color={Colors.gold} /> : undefined}
+          trailing={sendingReset ? <ActivityIndicator size="small" color={Colors.accent} /> : undefined}
           showChevron={!sendingReset}
         />
       </ListGroup>
@@ -175,7 +175,7 @@ export default function ProfileScreen() {
           title="Export my data"
           subtitle="A copy of your profile, bookings and messages (JSON)"
           onPress={handleExport}
-          trailing={exporting ? <ActivityIndicator size="small" color={Colors.gold} /> : undefined}
+          trailing={exporting ? <ActivityIndicator size="small" color={Colors.accent} /> : undefined}
           showChevron={!exporting}
         />
       </ListGroup>
@@ -297,13 +297,13 @@ function ProtectorProfileSection({ guard }: { guard: GuardProfile }) {
           showChevron={false}
           trailing={
             savingAvailability ? (
-              <ActivityIndicator size="small" color={Colors.gold} />
+              <ActivityIndicator size="small" color={Colors.accent} />
             ) : (
               <Switch
                 value={available}
                 onValueChange={toggleAvailability}
-                trackColor={{ false: Colors.borderStrong, true: Colors.goldDark }}
-                thumbColor={available ? Colors.goldLight : Colors.textSecondary}
+                trackColor={{ false: Colors.borderStrong, true: Colors.accentDark }}
+                thumbColor={available ? Colors.accentLight : Colors.textSecondary}
                 ios_backgroundColor={Colors.borderStrong}
                 accessibilityLabel="Available for new jobs"
               />

@@ -365,7 +365,7 @@ function CompanyGuardsScreen() {
   };
 
   return (
-    <Screen glow keyboard refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.gold} />}>
+    <Screen glow keyboard refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.accent} />}>
       <ScreenHeader
         eyebrow="Company · Team"
         title="Guards"
@@ -373,7 +373,7 @@ function CompanyGuardsScreen() {
         right={
           <View style={styles.headerActions}>
             <IconButton icon={Upload} onPress={pickCSV} accessibilityLabel="Import guards from a CSV file" />
-            <IconButton icon={UserPlus} tone="gold" onPress={openAdd} accessibilityLabel="Add a guard" />
+            <IconButton icon={UserPlus} tone="accent" onPress={openAdd} accessibilityLabel="Add a guard" />
           </View>
         }
       />
@@ -582,7 +582,7 @@ function CompanyGuardsScreen() {
       >
         {importFile ? (
           <View style={styles.fileRow}>
-            <FileSpreadsheet size={20} color={Colors.gold} />
+            <FileSpreadsheet size={20} color={Colors.accent} />
             <View style={styles.flex}>
               <AppText variant="bodyMedium" numberOfLines={1}>
                 {importFile.name}

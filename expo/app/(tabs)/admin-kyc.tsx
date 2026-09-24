@@ -214,7 +214,7 @@ function AdminKYCScreen() {
   const selectedStatus = (selected?.kycStatus ?? 'pending') as Tab;
 
   return (
-    <Screen glow refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.gold} />}>
+    <Screen glow refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.accent} />}>
       <ScreenHeader
         eyebrow="Admin · Verification"
         title="Guard verification"

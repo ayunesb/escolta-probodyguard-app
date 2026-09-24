@@ -35,7 +35,7 @@ function RoleOption({ option, selected, onPress }: { option: (typeof ROLES)[numb
       style={[styles.roleOption, selected ? styles.roleOptionSelected : null]}
     >
       <View style={[styles.roleIcon, selected ? styles.roleIconSelected : null]}>
-        <Icon size={18} color={selected ? Colors.textOnGold : Colors.gold} strokeWidth={ICON_STROKE} />
+        <Icon size={18} color={selected ? Colors.textOnAccent : Colors.accent} strokeWidth={ICON_STROKE} />
       </View>
       <View style={styles.roleText}>
         <AppText variant="headline">{option.title}</AppText>
@@ -58,7 +58,7 @@ function CheckRow({ checked, onToggle, children, label }: { checked: boolean; on
       style={styles.checkRow}
     >
       <View style={[styles.checkbox, checked ? styles.checkboxOn : null]}>
-        {checked ? <Check size={14} color={Colors.textOnGold} strokeWidth={2.5} /> : null}
+        {checked ? <Check size={14} color={Colors.textOnAccent} strokeWidth={2.5} /> : null}
       </View>
       <View style={styles.checkText}>{children}</View>
     </PressableScale>
@@ -229,7 +229,7 @@ export default function SignUpScreen() {
           <CheckRow checked={consents.privacy} onToggle={() => toggle('privacy')} label="Accept the Privacy Policy">
             <AppText variant="callout" color={Colors.textPrimary}>
               I accept the{' '}
-              <AppText variant="callout" color={Colors.gold} onPress={() => router.push('/privacy-policy' as never)} accessibilityRole="link">
+              <AppText variant="callout" color={Colors.accent} onPress={() => router.push('/privacy-policy' as never)} accessibilityRole="link">
                 Privacy Policy
               </AppText>{' '}
               <AppText variant="callout" color={Colors.textTertiary}>(required)</AppText>
@@ -301,7 +301,7 @@ const styles = StyleSheet.create({
     borderColor: Colors.border,
   },
   roleOptionSelected: {
-    borderColor: Colors.goldLine,
+    borderColor: Colors.accentLine,
     backgroundColor: Colors.surfaceLight,
   },
   roleIcon: {
@@ -310,10 +310,10 @@ const styles = StyleSheet.create({
     borderRadius: Radius.sm,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: Colors.goldSoft,
+    backgroundColor: Colors.accentSoft,
   },
   roleIconSelected: {
-    backgroundColor: Colors.gold,
+    backgroundColor: Colors.accent,
   },
   roleText: {
     flex: 1,
@@ -329,13 +329,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   radioOn: {
-    borderColor: Colors.gold,
+    borderColor: Colors.accent,
   },
   radioDot: {
     width: 10,
     height: 10,
     borderRadius: 5,
-    backgroundColor: Colors.gold,
+    backgroundColor: Colors.accent,
   },
   fields: {
     gap: Space.lg,
@@ -367,8 +367,8 @@ const styles = StyleSheet.create({
     marginTop: 1,
   },
   checkboxOn: {
-    backgroundColor: Colors.gold,
-    borderColor: Colors.gold,
+    backgroundColor: Colors.accent,
+    borderColor: Colors.accent,
   },
   checkText: {
     flex: 1,

@@ -21,7 +21,7 @@ export default function NotFoundScreen() {
       <Screen glow scroll={false}>
         <View style={styles.content} testID="not-found-container">
           <BrandMark size={64} />
-          <AppText variant="overline" color={Colors.gold} style={styles.code}>
+          <AppText variant="overline" color={Colors.accent} style={styles.code}>
             Error 404
           </AppText>
           <AppText variant="title1" align="center" accessibilityRole="header">

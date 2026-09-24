@@ -192,7 +192,7 @@ export default function KYCDocumentUpload({
     <Card style={styles.card}>
       <View style={styles.header}>
         <View style={styles.leadIcon}>
-          <LeadIcon size={18} color={Colors.gold} strokeWidth={ICON_STROKE} />
+          <LeadIcon size={18} color={Colors.accent} strokeWidth={ICON_STROKE} />
         </View>
         <View style={styles.headerText}>
           <AppText variant="headline">{label}</AppText>
@@ -302,7 +302,7 @@ const styles = StyleSheet.create({
     width: 34,
     height: 34,
     borderRadius: Radius.sm,
-    backgroundColor: Colors.goldSoft,
+    backgroundColor: Colors.accentSoft,
     alignItems: 'center',
     justifyContent: 'center',
   },

@@ -132,7 +132,7 @@ function AdminKYCAuditScreen() {
         padTop={false}
         keyboard
         contentStyle={styles.content}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.gold} />}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.accent} />}
       >
         <View style={styles.header}>
           <AppText variant="title2">Audit trail</AppText>

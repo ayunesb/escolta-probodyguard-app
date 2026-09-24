@@ -7,7 +7,7 @@ import { AppText } from './AppText';
 
 // Emblema: escudo de trazo fino con un segundo escudo interior y una
 // cerradura. Vectorial, asi que se ve nitido en cualquier densidad.
-export function BrandMark({ size = 56, color = Colors.gold }: { size?: number; color?: string }) {
+export function BrandMark({ size = 56, color = Colors.accent }: { size?: number; color?: string }) {
   return (
     <Svg width={size} height={size} viewBox="0 0 64 64" fill="none" accessibilityLabel="Escolta Pro">
       <Path
@@ -42,7 +42,7 @@ export function Wordmark({ size = 'md', style }: { size?: 'sm' | 'md' | 'lg'; st
         <AppText style={{ fontFamily: Fonts.displayHeavy, fontSize: 18 * scale, lineHeight: 21 * scale, letterSpacing: 3.2 * scale, color: Colors.textPrimary }}>
           ESCOLTA PRO
         </AppText>
-        <AppText variant="overline" color={Colors.gold} style={{ fontSize: 8.5 * scale, letterSpacing: 2.6 * scale, marginTop: 3 }}>
+        <AppText variant="overline" color={Colors.accent} style={{ fontSize: 8.5 * scale, letterSpacing: 2.6 * scale, marginTop: 3 }}>
           Executive protection
         </AppText>
       </View>

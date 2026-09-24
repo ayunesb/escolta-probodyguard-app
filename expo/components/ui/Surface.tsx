@@ -13,7 +13,7 @@ export interface CardProps {
   onPress?: () => void;
   padded?: boolean;
   // 'raised' para lo que debe destacar (resumen de pago, trabajo nuevo)
-  tone?: 'default' | 'raised' | 'gold';
+  tone?: 'default' | 'raised' | 'accent' | 'gold';
   style?: StyleProp<ViewStyle>;
   accessibilityLabel?: string;
   accessibilityHint?: string;
@@ -23,7 +23,7 @@ export function Card({ children, onPress, padded = true, tone = 'default', style
   const cardStyle = [
     styles.card,
     tone === 'raised' ? styles.cardRaised : null,
-    tone === 'gold' ? styles.cardGold : null,
+    tone === 'accent' || tone === 'gold' ? styles.cardAccent : null,
     padded ? styles.padded : null,
     style,
   ];
@@ -37,7 +37,7 @@ export function Card({ children, onPress, padded = true, tone = 'default', style
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
       accessibilityHint={accessibilityHint}
-      hoverStyle={{ borderColor: tone === 'gold' ? Colors.gold : Colors.borderStrong }}
+      hoverStyle={{ borderColor: tone === 'accent' || tone === 'gold' ? Colors.accent : Colors.accentLine }}
       style={cardStyle}
     >
       {children}
@@ -59,11 +59,13 @@ export function SectionTitle({ title, action, style }: { title: string; action?:
   );
 }
 
-export type Tone = 'neutral' | 'gold' | 'success' | 'warning' | 'error' | 'info';
+export type Tone = 'neutral' | 'accent' | 'gold' | 'success' | 'warning' | 'error' | 'info';
 
 const TONES: Record<Tone, { fg: string; bg: string }> = {
   neutral: { fg: Colors.textSecondary, bg: Colors.surfaceLight },
-  gold: { fg: Colors.goldLight, bg: Colors.goldSoft },
+  accent: { fg: Colors.accentLight, bg: Colors.accentSoft },
+  // alias antiguo
+  gold: { fg: Colors.accentLight, bg: Colors.accentSoft },
   success: { fg: Colors.success, bg: Colors.successSoft },
   warning: { fg: Colors.warning, bg: Colors.warningSoft },
   error: { fg: Colors.error, bg: Colors.errorSoft },
@@ -85,7 +87,7 @@ export function Badge({ label, tone = 'neutral', icon: Icon, style }: { label: s
 const STATUS: Record<BookingStatus, { label: string; tone: Tone }> = {
   pending: { label: 'Pending', tone: 'warning' },
   confirmed: { label: 'Confirmed', tone: 'info' },
-  accepted: { label: 'Accepted', tone: 'gold' },
+  accepted: { label: 'Accepted', tone: 'accent' },
   rejected: { label: 'Declined', tone: 'error' },
   en_route: { label: 'En route', tone: 'info' },
   active: { label: 'In progress', tone: 'success' },
@@ -115,7 +117,7 @@ export function EmptyState({ icon: Icon, title, message, actionLabel, onAction, 
     <View style={[styles.empty, style]}>
       <View style={styles.emptyRing}>
         <View style={styles.emptyInner}>
-          <Icon size={26} color={Colors.gold} strokeWidth={1.5} />
+          <Icon size={26} color={Colors.accent} strokeWidth={1.5} />
         </View>
       </View>
       <AppText variant="title3" align="center">
@@ -169,18 +171,21 @@ export function SkeletonCard({ lines = 2, media = false }: { lines?: number; med
 }
 
 const styles = StyleSheet.create({
+  // Vidrio esmerilado: relleno translucido sobre el fondo con resplandor y
+  // un borde claro de 1px que simula el canto del vidrio.
   card: {
-    backgroundColor: Colors.surface,
+    backgroundColor: Colors.glass,
     borderRadius: Radius.lg,
     borderWidth: 1,
-    borderColor: Colors.border,
+    borderColor: Colors.glassBorder,
   },
   cardRaised: {
-    backgroundColor: Colors.surfaceLight,
-    borderColor: Colors.borderStrong,
+    backgroundColor: Colors.glassStrong,
+    borderColor: 'rgba(200, 216, 255, 0.18)',
   },
-  cardGold: {
-    borderColor: Colors.goldLine,
+  cardAccent: {
+    borderColor: Colors.accentLine,
+    backgroundColor: 'rgba(127, 168, 255, 0.07)',
   },
   padded: {
     padding: Space.lg,
@@ -201,9 +206,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     alignSelf: 'flex-start',
     gap: 4,
-    paddingHorizontal: 8,
+    paddingHorizontal: 10,
     paddingVertical: 4,
-    borderRadius: Radius.xs,
+    borderRadius: Radius.pill,
   },
   badgeText: {
     fontSize: 11.5,
@@ -219,7 +224,7 @@ const styles = StyleSheet.create({
     height: 76,
     borderRadius: 38,
     borderWidth: 1,
-    borderColor: Colors.goldLine,
+    borderColor: Colors.accentLine,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: Space.xl,
@@ -228,7 +233,7 @@ const styles = StyleSheet.create({
     width: 60,
     height: 60,
     borderRadius: 30,
-    backgroundColor: Colors.goldSoft,
+    backgroundColor: Colors.accentSoft,
     alignItems: 'center',
     justifyContent: 'center',
   },

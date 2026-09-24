@@ -198,7 +198,7 @@ function AdminRefundsScreen() {
         padTop={false}
         keyboard
         contentStyle={styles.content}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.gold} />}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.accent} />}
       >
         <View style={styles.header}>
           <AppText variant="title2">Refunds</AppText>
@@ -260,7 +260,7 @@ function AdminRefundsScreen() {
                         <AppText variant="headline" style={styles.flex} numberOfLines={1}>
                           {client ? fullName(client) : 'Client'}
                         </AppText>
-                        <AppText variant="numeric" color={Colors.goldLight}>
+                        <AppText variant="numeric" color={Colors.accentLight}>
                           {formatMXN(b.totalAmount)}
                         </AppText>
                       </View>

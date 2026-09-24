@@ -200,7 +200,7 @@ function AdminUsersScreen() {
   };
 
   return (
-    <Screen glow keyboard refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.gold} />}>
+    <Screen glow keyboard refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.accent} />}>
       <ScreenHeader
         eyebrow="Admin · Accounts"
         title="Members"

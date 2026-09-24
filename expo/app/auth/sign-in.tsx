@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Stack, useRouter } from 'expo-router';
 import {
   Fingerprint,
@@ -20,7 +21,8 @@ import { USING_EMULATORS } from '@/lib/firebase';
 import { DEV_ACCOUNTS, DEV_PASSWORD, DevRole } from '@/constants/devAccounts';
 import Colors from '@/constants/colors';
 import { Fonts, ICON_STROKE, Radius, Space } from '@/constants/design';
-import { AppText, BrandMark, Button, Card, Input, PressableScale, Screen } from '@/components/ui';
+import { AppText, BackgroundVideo, BrandMark, Button, Card, Input, PressableScale, Scrim } from '@/components/ui';
+import { BrandVideo } from '@/constants/brandMedia';
 
 const ROLE_ICONS: Record<DevRole, LucideIcon> = {
   client: Shield,
@@ -52,8 +54,8 @@ function TestModePanel({ busyRole, onPick }: { busyRole: DevRole | null; onPick:
   return (
     <Card style={styles.testPanel}>
       <View style={styles.testHeader}>
-        <FlaskConical size={15} color={Colors.gold} strokeWidth={ICON_STROKE} />
-        <AppText variant="overline" color={Colors.gold}>
+        <FlaskConical size={15} color={Colors.accent} strokeWidth={ICON_STROKE} />
+        <AppText variant="overline" color={Colors.accent}>
           Test mode · local emulator
         </AppText>
       </View>
@@ -74,11 +76,11 @@ function TestModePanel({ busyRole, onPick }: { busyRole: DevRole | null; onPick:
               haptic="light"
               accessibilityRole="button"
               accessibilityLabel={`Sign in as test ${acct.label}`}
-              hoverStyle={{ borderColor: Colors.goldLine, backgroundColor: Colors.surfaceLight }}
+              hoverStyle={{ borderColor: Colors.accentLine, backgroundColor: Colors.surfaceLight }}
               style={[styles.roleTile, busy ? styles.roleTileBusy : null, busyRole && !busy ? styles.roleTileDim : null]}
             >
               <View style={styles.roleIcon}>
-                <Icon size={17} color={Colors.gold} strokeWidth={ICON_STROKE} />
+                <Icon size={17} color={Colors.accent} strokeWidth={ICON_STROKE} />
               </View>
               <AppText variant="headline">{busy ? 'Signing in…' : acct.label}</AppText>
               <AppText variant="caption" color={Colors.textTertiary} numberOfLines={2}>
@@ -106,6 +108,10 @@ export default function SignInScreen() {
   const [showResendVerification, setShowResendVerification] = useState(false);
   const [biometricReady, setBiometricReady] = useState(false);
   const [busyRole, setBusyRole] = useState<DevRole | null>(null);
+  const insets = useSafeAreaInsets();
+  const { width, height } = useWindowDimensions();
+  const isWide = width >= 900;
+  const mediaHeight = Math.max(420, Math.round(height * 0.58));
 
   // Quien enruta despues del acceso: en cuanto AuthContext tiene usuario,
   // esta pantalla manda a "/" e index.tsx hace el reparto por rol.
@@ -221,143 +227,213 @@ export default function SignInScreen() {
 
   const message = error || authError;
 
-  return (
-    <Screen glow keyboard padBottom contentStyle={styles.content}>
-      <Stack.Screen options={{ headerShown: false }} />
-
-      <View style={styles.brandRow}>
-        <BrandMark size={40} />
-        <View>
-          <AppText style={styles.brandName}>ESCOLTA PRO</AppText>
-          <AppText variant="overline" color={Colors.gold} style={styles.brandTag}>
-            Executive protection
+  const form = (
+    <View style={styles.form}>
+      <Input
+        label="Email"
+        icon={Mail}
+        value={email}
+        onChangeText={(text) => {
+          setEmail(text.trim());
+          if (fieldErrors.email) setFieldErrors((f) => ({ ...f, email: undefined }));
+        }}
+        placeholder="you@company.com"
+        keyboardType="email-address"
+        autoCapitalize="none"
+        autoCorrect={false}
+        autoComplete="email"
+        textContentType="username"
+        returnKeyType="next"
+        error={fieldErrors.email}
+      />
+      <View>
+        <Input
+          label="Password"
+          icon={Lock}
+          value={password}
+          onChangeText={(text) => {
+            setPassword(text);
+            if (fieldErrors.password) setFieldErrors((f) => ({ ...f, password: undefined }));
+          }}
+          placeholder="Your password"
+          secureTextEntry
+          autoCapitalize="none"
+          autoComplete="current-password"
+          textContentType="password"
+          returnKeyType="go"
+          onSubmitEditing={handleSignIn}
+          error={fieldErrors.password}
+        />
+        <PressableScale onPress={handleForgotPassword} scaleTo={0.97} style={styles.forgot} accessibilityRole="button" accessibilityLabel="Forgot password">
+          <AppText variant="footnote" color={Colors.accentLight}>
+            Forgot password?
           </AppText>
-        </View>
+        </PressableScale>
       </View>
 
-      <View style={styles.hero}>
-        <AppText variant="display" accessibilityRole="header">
-          Discreet protection,{'\n'}
-          <AppText variant="display" style={styles.heroItalic}>
-            on your schedule.
-          </AppText>
+      {message ? <Notice tone="error" message={message} /> : null}
+      {success ? <Notice tone="success" message={success} /> : null}
+
+      {showResendVerification ? (
+        <Button title="Resend verification email" variant="outline" icon={Mail} onPress={handleResendVerification} disabled={isLoading} />
+      ) : null}
+
+      <Button title="Sign in" size="lg" onPress={handleSignIn} loading={isLoading} disabled={!!busyRole} />
+
+      {biometricReady ? (
+        <Button title="Sign in with biometrics" variant="secondary" icon={Fingerprint} onPress={handleBiometricSignIn} disabled={isLoading} />
+      ) : null}
+
+      <View style={styles.dividerRow}>
+        <View style={styles.dividerLine} />
+        <AppText variant="caption" color={Colors.textTertiary}>
+          New to Escolta Pro?
         </AppText>
-        <AppText variant="callout" style={styles.heroSub}>
-          Vetted close-protection professionals, booked in minutes and tracked in real time.
-        </AppText>
+        <View style={styles.dividerLine} />
       </View>
+      <Button title="Create an account" variant="secondary" onPress={() => router.push('/auth/sign-up')} />
 
       {USING_EMULATORS ? <TestModePanel busyRole={busyRole} onPick={handleQuickLogin} /> : null}
 
-      <View style={styles.form}>
-        <Input
-          label="Email"
-          icon={Mail}
-          value={email}
-          onChangeText={(text) => {
-            setEmail(text.trim());
-            if (fieldErrors.email) setFieldErrors((f) => ({ ...f, email: undefined }));
-          }}
-          placeholder="you@company.com"
-          keyboardType="email-address"
-          autoCapitalize="none"
-          autoCorrect={false}
-          autoComplete="email"
-          textContentType="username"
-          returnKeyType="next"
-          error={fieldErrors.email}
-        />
-        <View>
-          <Input
-            label="Password"
-            icon={Lock}
-            value={password}
-            onChangeText={(text) => {
-              setPassword(text);
-              if (fieldErrors.password) setFieldErrors((f) => ({ ...f, password: undefined }));
-            }}
-            placeholder="Your password"
-            secureTextEntry
-            autoCapitalize="none"
-            autoComplete="current-password"
-            textContentType="password"
-            returnKeyType="go"
-            onSubmitEditing={handleSignIn}
-            error={fieldErrors.password}
-          />
-          <PressableScale onPress={handleForgotPassword} scaleTo={0.97} style={styles.forgot} accessibilityRole="button" accessibilityLabel="Forgot password">
-            <AppText variant="footnote" color={Colors.gold}>
-              Forgot password?
-            </AppText>
-          </PressableScale>
-        </View>
-
-        {message ? <Notice tone="error" message={message} /> : null}
-        {success ? <Notice tone="success" message={success} /> : null}
-
-        {showResendVerification ? (
-          <Button title="Resend verification email" variant="outline" icon={Mail} onPress={handleResendVerification} disabled={isLoading} />
-        ) : null}
-
-        <Button title="Sign in" size="lg" onPress={handleSignIn} loading={isLoading} disabled={!!busyRole} />
-
-        {biometricReady ? (
-          <Button title="Sign in with biometrics" variant="secondary" icon={Fingerprint} onPress={handleBiometricSignIn} disabled={isLoading} />
-        ) : null}
-      </View>
-
-      <View style={styles.footer}>
-        <View style={styles.dividerRow}>
-          <View style={styles.dividerLine} />
-          <AppText variant="caption" color={Colors.textTertiary}>
-            New to Escolta Pro?
-          </AppText>
-          <View style={styles.dividerLine} />
-        </View>
-        <Button title="Create an account" variant="secondary" onPress={() => router.push('/auth/sign-up')} />
-      </View>
-
       {__DEV__ && !!process.env.EXPO_PUBLIC_DEMO_EMAIL && !USING_EMULATORS ? (
-        <AppText variant="caption" color={Colors.textTertiary} align="center" style={styles.devNote}>
+        <AppText variant="caption" color={Colors.textTertiary} align="center">
           Dev build: account prefilled from .env ({process.env.EXPO_PUBLIC_DEMO_EMAIL})
         </AppText>
       ) : null}
-    </Screen>
+    </View>
+  );
+
+  const brand = (
+    <View style={styles.brandRow}>
+      <BrandMark size={34} color={Colors.textPrimary} />
+      <View>
+        <AppText style={styles.brandName}>ESCOLTA PRO</AppText>
+        <AppText variant="overline" color={Colors.accentLight} style={styles.brandTag}>
+          Executive protection
+        </AppText>
+      </View>
+    </View>
+  );
+
+  const headline = (
+    <View>
+      <AppText variant="display" color={Colors.white} accessibilityRole="header">
+        Discreet protection,{'\n'}
+        <AppText variant="display" style={styles.heroAccent}>
+          on your schedule.
+        </AppText>
+      </AppText>
+      <AppText variant="callout" color={Colors.textSecondary} style={styles.heroSub}>
+        Vetted close-protection professionals, booked in minutes and tracked in real time.
+      </AppText>
+    </View>
+  );
+
+  // Escritorio (web ancho): video a la izquierda a toda altura, formulario a
+  // la derecha. Telefono: video arriba y el formulario sube en una hoja de vidrio.
+  if (isWide) {
+    return (
+      <View style={styles.root}>
+        <Stack.Screen options={{ headerShown: false }} />
+        <View style={styles.wideRow}>
+          <View style={styles.wideMedia}>
+            <BackgroundVideo source={BrandVideo.loginLoop} poster={BrandVideo.loginPoster} />
+            <Scrim from="top" strength={0.95} start={0.3} />
+            <View style={[styles.wideMediaInner, { paddingTop: insets.top + Space.xxxl }]}>
+              {brand}
+              {headline}
+            </View>
+          </View>
+          <ScrollView style={styles.wideFormCol} contentContainerStyle={styles.wideFormContent} keyboardShouldPersistTaps="handled">
+            <AppText variant="title1" style={styles.formTitle}>
+              Welcome back
+            </AppText>
+            {form}
+          </ScrollView>
+        </View>
+      </View>
+    );
+  }
+
+  return (
+    <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <Stack.Screen options={{ headerShown: false }} />
+      <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} bounces={false}>
+        <View style={[styles.media, { height: mediaHeight }]}>
+          <BackgroundVideo source={BrandVideo.loginLoop} poster={BrandVideo.loginPoster} />
+          <Scrim from="top" strength={1} start={0.25} />
+          <Scrim from="bottom" strength={0.55} start={0.75} />
+          <View style={[styles.mediaTop, { paddingTop: insets.top + Space.lg }]}>{brand}</View>
+          <View style={styles.mediaBottom}>{headline}</View>
+        </View>
+        <View style={[styles.sheet, { paddingBottom: insets.bottom + Space.xxxl }]}>
+          <View style={styles.sheetInner}>{form}</View>
+        </View>
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  content: {
-    justifyContent: 'center',
-    paddingTop: Space.xxxl,
+  root: {
+    flex: 1,
+    backgroundColor: Colors.background,
+  },
+  scroll: {
+    flexGrow: 1,
+  },
+  media: {
+    overflow: 'hidden',
+    justifyContent: 'space-between',
+  },
+  mediaTop: {
+    paddingHorizontal: Space.gutter,
+  },
+  mediaBottom: {
+    paddingHorizontal: Space.gutter,
+    paddingBottom: Space.huge,
+  },
+  sheet: {
+    flexGrow: 1,
+    marginTop: -Space.xxxl,
+    paddingTop: Space.xxl,
+    paddingHorizontal: Space.gutter,
+    borderTopLeftRadius: Radius.xl,
+    borderTopRightRadius: Radius.xl,
+    backgroundColor: 'rgba(10, 16, 30, 0.92)',
+    borderTopWidth: 1,
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    borderColor: Colors.glassBorder,
+  },
+  sheetInner: {
+    width: '100%',
+    maxWidth: 480,
+    alignSelf: 'center',
   },
   brandRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Space.md,
-    marginBottom: Space.huge,
   },
   brandName: {
     fontFamily: Fonts.displayHeavy,
-    fontSize: 17,
-    lineHeight: 20,
-    letterSpacing: 3.2,
+    fontSize: 15,
+    lineHeight: 18,
+    letterSpacing: 3,
     color: Colors.textPrimary,
   },
   brandTag: {
-    fontSize: 8.5,
-    letterSpacing: 2.6,
+    fontSize: 8,
+    letterSpacing: 2.4,
     marginTop: 3,
   },
-  hero: {
-    marginBottom: Space.xxxl,
-  },
-  heroItalic: {
+  heroAccent: {
     fontFamily: Fonts.displayLight,
-    color: Colors.goldLight,
+    color: Colors.accentLight,
   },
   heroSub: {
-    marginTop: Space.lg,
+    marginTop: Space.md,
     maxWidth: 340,
   },
   form: {
@@ -378,26 +454,51 @@ const styles = StyleSheet.create({
   noticeText: {
     flex: 1,
   },
-  footer: {
-    marginTop: Space.xxxl,
-    gap: Space.lg,
-  },
   dividerRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Space.md,
+    marginTop: Space.sm,
   },
   dividerLine: {
     flex: 1,
     height: StyleSheet.hairlineWidth,
-    backgroundColor: Colors.borderStrong,
+    backgroundColor: Colors.glassBorder,
   },
-  devNote: {
-    marginTop: Space.xl,
+  // Escritorio
+  wideRow: {
+    flex: 1,
+    flexDirection: 'row',
+  },
+  wideMedia: {
+    flex: 1.15,
+    overflow: 'hidden',
+  },
+  wideMediaInner: {
+    flex: 1,
+    justifyContent: 'space-between',
+    padding: Space.huge,
+  },
+  wideFormCol: {
+    flex: 1,
+    borderLeftWidth: 1,
+    borderLeftColor: Colors.glassBorder,
+  },
+  wideFormContent: {
+    flexGrow: 1,
+    justifyContent: 'center',
+    width: '100%',
+    maxWidth: 440,
+    alignSelf: 'center',
+    paddingVertical: Space.huge,
+    paddingHorizontal: Space.xxl,
+  },
+  formTitle: {
+    marginBottom: Space.xl,
   },
   testPanel: {
-    marginBottom: Space.xxxl,
-    borderColor: Colors.goldLine,
+    marginTop: Space.lg,
+    borderColor: Colors.accentLine,
     borderStyle: 'dashed',
   },
   testHeader: {
@@ -420,12 +521,12 @@ const styles = StyleSheet.create({
     gap: 3,
     padding: Space.md,
     borderRadius: Radius.md,
-    backgroundColor: Colors.background,
+    backgroundColor: Colors.glass,
     borderWidth: 1,
-    borderColor: Colors.border,
+    borderColor: Colors.glassBorder,
   },
   roleTileBusy: {
-    borderColor: Colors.gold,
+    borderColor: Colors.accent,
   },
   roleTileDim: {
     opacity: 0.45,
@@ -434,7 +535,7 @@ const styles = StyleSheet.create({
     width: 30,
     height: 30,
     borderRadius: Radius.sm,
-    backgroundColor: Colors.goldSoft,
+    backgroundColor: Colors.accentSoft,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: Space.xs,

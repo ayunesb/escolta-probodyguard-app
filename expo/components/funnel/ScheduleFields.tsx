@@ -94,7 +94,7 @@ export function ScheduleFields({ value, onChange, error }: ScheduleFieldsProps) 
         <FieldShell
           label="Date"
           icon={Calendar}
-          borderColor={picker === 'date' ? Colors.goldLine : borderColor}
+          borderColor={picker === 'date' ? Colors.accentLine : borderColor}
           onPress={() => setPicker(picker === 'date' ? null : 'date')}
           accessibilityLabel={`Booking date, ${formatDateLong(value)}`}
         >
@@ -105,7 +105,7 @@ export function ScheduleFields({ value, onChange, error }: ScheduleFieldsProps) 
         <FieldShell
           label="Start time"
           icon={Clock}
-          borderColor={picker === 'time' ? Colors.goldLine : borderColor}
+          borderColor={picker === 'time' ? Colors.accentLine : borderColor}
           onPress={() => setPicker(picker === 'time' ? null : 'time')}
           accessibilityLabel={`Start time, ${formatTime(value)}`}
         >
@@ -126,7 +126,7 @@ export function ScheduleFields({ value, onChange, error }: ScheduleFieldsProps) 
             onChange={handleNative(picker)}
             themeVariant="dark"
             textColor={Colors.textPrimary}
-            accentColor={Colors.gold}
+            accentColor={Colors.accent}
           />
           {Platform.OS === 'ios' ? (
             <Button title="Done" variant="ghost" size="sm" fullWidth={false} onPress={() => setPicker(null)} style={styles.done} />

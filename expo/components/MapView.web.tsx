@@ -145,7 +145,7 @@ function injectMapStyles() {
 
 const DEFAULT_PIN_HTML =
   `<div style="position:absolute;transform:translate(-50%,-50%);width:18px;height:18px;border-radius:9px;` +
-  `background:${Colors.gold};border:3px solid ${Colors.background};box-shadow:0 0 0 1px ${Colors.goldLine}"></div>`;
+  `background:${Colors.accent};border:3px solid ${Colors.background};box-shadow:0 0 0 1px ${Colors.accentLine}"></div>`;
 const HOST_HTML = '<div class="escolta-marker-host" style="position:absolute;transform:translate(-50%,-50%)"></div>';
 
 const MapViewImpl = forwardRef<MapViewHandle, MapViewOwnProps>(function MapView(
@@ -359,7 +359,7 @@ export function Polyline({ coordinates, strokeColor, strokeWidth, lineDashPatter
     const latlngs = JSON.parse(pointsKey) as [number, number][];
     if (latlngs.length < 2 || !ctx.map.getPane('overlayPane')) return;
     const line = ctx.L.polyline(latlngs, {
-      color: strokeColor ?? Colors.gold,
+      color: strokeColor ?? Colors.accent,
       weight: strokeWidth ?? 3,
       opacity: 0.9,
       dashArray: dashKey || undefined,

@@ -25,15 +25,18 @@ export interface ButtonProps {
   testID?: string;
 }
 
-const HEIGHT: Record<ButtonSize, number> = { sm: 38, md: 50, lg: 56 };
+const HEIGHT: Record<ButtonSize, number> = { sm: 38, md: 52, lg: 58 };
 const ICON: Record<ButtonSize, number> = { sm: 16, md: 18, lg: 19 };
 
+// Principal: pastilla blanca con texto medianoche (la accion mas importante
+// de la pantalla, una sola). Secundario: vidrio esmerilado. Contorno y
+// fantasma en azul hielo.
 const TONE: Record<ButtonVariant, { bg: string; fg: string; border: string; hover: string }> = {
-  primary: { bg: Colors.gold, fg: Colors.textOnGold, border: Colors.gold, hover: Colors.goldLight },
-  secondary: { bg: Colors.surfaceLight, fg: Colors.textPrimary, border: Colors.borderStrong, hover: Colors.elevated },
-  outline: { bg: 'transparent', fg: Colors.gold, border: Colors.goldLine, hover: Colors.goldSoft },
-  ghost: { bg: 'transparent', fg: Colors.gold, border: 'transparent', hover: Colors.goldSoft },
-  danger: { bg: Colors.errorSoft, fg: Colors.error, border: 'rgba(224, 86, 79, 0.28)', hover: 'rgba(224, 86, 79, 0.2)' },
+  primary: { bg: Colors.textPrimary, fg: Colors.textOnAccent, border: Colors.textPrimary, hover: Colors.white },
+  secondary: { bg: Colors.glassStrong, fg: Colors.textPrimary, border: Colors.glassBorder, hover: 'rgba(160, 188, 255, 0.16)' },
+  outline: { bg: 'transparent', fg: Colors.accentLight, border: Colors.accentLine, hover: Colors.accentSoft },
+  ghost: { bg: 'transparent', fg: Colors.accentLight, border: 'transparent', hover: Colors.accentSoft },
+  danger: { bg: Colors.errorSoft, fg: Colors.error, border: 'rgba(255, 107, 107, 0.3)', hover: 'rgba(255, 107, 107, 0.2)' },
 };
 
 export function Button({
@@ -69,13 +72,12 @@ export function Button({
         styles.base,
         {
           height: HEIGHT[size],
-          paddingHorizontal: size === 'sm' ? Space.md : Space.xl,
+          paddingHorizontal: size === 'sm' ? Space.lg : Space.xxl,
           backgroundColor: tone.bg,
           borderColor: tone.border,
-          borderRadius: size === 'sm' ? Radius.sm : Radius.md,
         },
         fullWidth ? styles.fullWidth : styles.inline,
-        variant === 'primary' && !inactive ? Shadow.gold : null,
+        variant === 'primary' && !inactive ? Shadow.accent : null,
         inactive ? styles.inactive : null,
         style,
       ]}
@@ -103,6 +105,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
+    borderRadius: Radius.pill,
   },
   fullWidth: {
     alignSelf: 'stretch',
@@ -119,6 +122,6 @@ const styles = StyleSheet.create({
     fontSize: 13.5,
   },
   inactive: {
-    opacity: 0.5,
+    opacity: 0.45,
   },
 });

@@ -140,7 +140,7 @@ function PrivacySettingsScreen() {
             title="Export my data"
             subtitle="Download a copy of your profile, bookings and messages"
             onPress={handleExport}
-            trailing={exporting ? <ActivityIndicator size="small" color={Colors.gold} /> : undefined}
+            trailing={exporting ? <ActivityIndicator size="small" color={Colors.accent} /> : undefined}
             showChevron={!exporting}
           />
           <ListRow icon={FileText} title="Privacy policy" subtitle="What we collect and why" onPress={() => router.push('/privacy-policy')} />
@@ -169,8 +169,8 @@ function PrivacySettingsScreen() {
                   value={marketing}
                   onValueChange={toggleMarketing}
                   disabled={savingMarketing}
-                  trackColor={{ false: Colors.borderStrong, true: Colors.goldDark }}
-                  thumbColor={marketing ? Colors.goldLight : Colors.textSecondary}
+                  trackColor={{ false: Colors.borderStrong, true: Colors.accentDark }}
+                  thumbColor={marketing ? Colors.accentLight : Colors.textSecondary}
                   ios_backgroundColor={Colors.borderStrong}
                   accessibilityLabel="News and offers emails"
                 />

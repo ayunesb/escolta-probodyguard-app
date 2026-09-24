@@ -31,7 +31,7 @@ export function ErrorFallbackView({
   return (
     <View style={styles.container} accessibilityRole="alert">
       <View style={styles.content}>
-        <BrandMark size={52} color={Colors.goldDark} />
+        <BrandMark size={52} color={Colors.accentDark} />
         <AppText variant="title2" align="center" style={styles.title}>
           {title}
         </AppText>

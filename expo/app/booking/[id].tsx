@@ -39,6 +39,7 @@ import {
   SkeletonCard,
   StatusBadge,
 } from '@/components/ui';
+import { GlassShield } from '@/components/ui/Media';
 import { useAuth } from '@/contexts/AuthContext';
 import { useGuardLocationPublisher } from '@/contexts/LocationTrackingContext';
 import { bookingService, isLiveStatus, _shouldShowGuardLocationByRule } from '@/services/bookingService';
@@ -63,7 +64,7 @@ import type { Booking } from '@/types';
 
 type Viewer = 'client' | 'guard' | 'observer';
 type ModalKind = 'reject' | 'cancel' | 'complete' | null;
-type Tone = 'default' | 'gold' | 'error';
+type Tone = 'default' | 'accent' | 'error';
 
 interface StatusCopy {
   icon: LucideIcon;
@@ -100,7 +101,7 @@ function statusCopy(b: Booking, viewer: Viewer, protectorName: string | null): S
         : { icon: CreditCard, title: 'Awaiting payment', tone: 'default' };
     case 'confirmed':
       return viewer === 'guard'
-        ? { icon: Hourglass, title: 'New request', message: 'Review the details, then accept or decline.', tone: 'gold' }
+        ? { icon: Hourglass, title: 'New request', message: 'Review the details, then accept or decline.', tone: 'accent' }
         : { icon: Hourglass, title: `Waiting for ${name} to accept`, message: 'Your booking is paid. You will see the answer here as soon as they respond.', tone: 'default' };
     case 'accepted':
       return viewer === 'guard'
@@ -266,7 +267,7 @@ export default function BookingDetailScreen() {
 
   const copy = statusCopy(booking, viewer, guardDisplayName(guard));
   const StatusIcon = copy.icon;
-  const statusColor = copy.tone === 'error' ? Colors.error : copy.tone === 'gold' ? Colors.gold : Colors.textSecondary;
+  const statusColor = copy.tone === 'error' ? Colors.error : copy.tone === 'accent' ? Colors.accentLight : Colors.textSecondary;
   const showChat = viewer !== 'observer' && !!booking.guardId && CHAT_STATUSES.has(booking.status) && !!user;
   const canChat = CHAT_WRITABLE.has(booking.status);
   const canCancel =
@@ -361,7 +362,7 @@ export default function BookingDetailScreen() {
         >
           <View style={styles.column}>
             {/* Cabecera */}
-            <AppText variant="overline" color={Colors.gold}>
+            <AppText variant="overline" color={Colors.accent}>
               {bookingService.getBookingTypeLabel(booking.bookingType)} · #{shortId(booking.id)}
             </AppText>
             <AppText variant="title1" style={styles.title} accessibilityRole="header" accessibilityLabel={formatLongDate(booking)}>
@@ -372,7 +373,7 @@ export default function BookingDetailScreen() {
             </AppText>
 
             {/* Estado */}
-            <Card tone={copy.tone === 'gold' ? 'gold' : 'default'} style={styles.statusCard}>
+            <Card tone={copy.tone === 'accent' ? 'accent' : 'default'} style={styles.statusCard}>
               <View style={styles.statusRow}>
                 <View style={[styles.statusIcon, copy.tone === 'error' ? styles.statusIconError : null]}>
                   <StatusIcon size={18} color={statusColor} strokeWidth={ICON_STROKE} />
@@ -390,42 +391,47 @@ export default function BookingDetailScreen() {
 
             {/* Codigo de inicio: el cliente se lo dicta al escolta */}
             {showStartCode ? (
-              <Card tone="gold" style={styles.block}>
-                <View style={styles.codeHeader}>
-                  <AppText variant="overline" color={Colors.gold}>
-                    Start code
-                  </AppText>
-                  {codeState === 'ready' ? (
-                    <IconButton
-                      icon={copied ? Check : Copy}
-                      tone="gold"
-                      size={36}
-                      onPress={copyCode}
-                      accessibilityLabel={copied ? 'Start code copied' : 'Copy start code'}
-                    />
-                  ) : null}
-                </View>
-                {codeState === 'ready' && startCode ? (
-                  <AppText
-                    variant="numericLarge"
-                    color={Colors.goldLight}
-                    style={styles.code}
-                    numberOfLines={1}
-                    adjustsFontSizeToFit
-                    selectable
-                    accessibilityLabel={`Start code ${startCode.split('').join(' ')}`}
-                  >
-                    {startCode}
-                  </AppText>
-                ) : codeState === 'error' ? (
-                  <View style={styles.codeError}>
-                    <AppText variant="callout">{"Your code couldn't be loaded."}</AppText>
-                    <Button title="Try again" variant="ghost" size="sm" fullWidth={false} onPress={loadStartCode} />
+              <Card tone="accent" style={styles.block}>
+                <View style={styles.codeRow}>
+                  <View style={styles.codeMain}>
+                    <View style={styles.codeHeader}>
+                      <AppText variant="overline" color={Colors.accent}>
+                        Start code
+                      </AppText>
+                      {codeState === 'ready' ? (
+                        <IconButton
+                          icon={copied ? Check : Copy}
+                          tone="accent"
+                          size={36}
+                          onPress={copyCode}
+                          accessibilityLabel={copied ? 'Start code copied' : 'Copy start code'}
+                        />
+                      ) : null}
+                    </View>
+                    {codeState === 'ready' && startCode ? (
+                      <AppText
+                        variant="numericLarge"
+                        color={Colors.accentLight}
+                        style={styles.code}
+                        numberOfLines={1}
+                        adjustsFontSizeToFit
+                        selectable
+                        accessibilityLabel={`Start code ${startCode.split('').join(' ')}`}
+                      >
+                        {startCode}
+                      </AppText>
+                    ) : codeState === 'error' ? (
+                      <View style={styles.codeError}>
+                        <AppText variant="callout">{"Your code couldn't be loaded."}</AppText>
+                        <Button title="Try again" variant="ghost" size="sm" fullWidth={false} onPress={loadStartCode} />
+                      </View>
+                    ) : (
+                      <Skeleton width={180} height={36} style={styles.code} />
+                    )}
+                    <AppText variant="footnote">Share this code with your protector when you meet.</AppText>
                   </View>
-                ) : (
-                  <Skeleton width={180} height={36} style={styles.code} />
-                )}
-                <AppText variant="footnote">Share this code with your protector when you meet.</AppText>
+                  <GlassShield size={58} style={styles.codeShield} />
+                </View>
               </Card>
             ) : null}
 
@@ -687,6 +693,16 @@ const styles = StyleSheet.create({
   },
   block: {
     marginTop: Space.md,
+  },
+  codeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  codeMain: {
+    flex: 1,
+  },
+  codeShield: {
+    marginRight: -Space.md,
   },
   codeHeader: {
     flexDirection: 'row',

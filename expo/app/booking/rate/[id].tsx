@@ -182,14 +182,14 @@ export default function RateBookingScreen() {
           <>
             <View style={styles.center}>
               <Avatar name={name ?? undefined} uri={guard?.photos?.[0]} size={72} verified={guard?.kycStatus === 'approved'} />
-              <AppText variant="overline" color={Colors.gold} style={styles.eyebrow}>
+              <AppText variant="overline" color={Colors.accent} style={styles.eyebrow}>
                 {booking ? formatLongDate(booking) : ''}
               </AppText>
               <AppText variant="title2" align="center" accessibilityRole="header">
                 {name ? `How did ${name} do?` : 'How was your protection?'}
               </AppText>
               <StarRating value={overall} onChange={(v) => { setOverall(v); setFormError(null); }} size={38} label="Overall rating" style={styles.overall} />
-              <AppText variant="callout" color={overall ? Colors.goldLight : Colors.textTertiary} style={styles.verdict}>
+              <AppText variant="callout" color={overall ? Colors.accentLight : Colors.textTertiary} style={styles.verdict}>
                 {overall ? VERDICT[overall] : 'Tap a star to rate'}
               </AppText>
             </View>

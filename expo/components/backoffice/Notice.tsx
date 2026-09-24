@@ -13,7 +13,7 @@ const TONES: Record<NoticeTone, { fg: string; bg: string; border: string; icon: 
   success: { fg: Colors.success, bg: Colors.successSoft, border: Colors.border, icon: CircleCheck },
   warning: { fg: Colors.warning, bg: Colors.warningSoft, border: Colors.border, icon: TriangleAlert },
   error: { fg: Colors.error, bg: Colors.errorSoft, border: Colors.border, icon: CircleAlert },
-  gold: { fg: Colors.gold, bg: Colors.goldSoft, border: Colors.goldLine, icon: Info },
+  gold: { fg: Colors.accent, bg: Colors.accentSoft, border: Colors.accentLine, icon: Info },
 };
 
 export interface NoticeProps {

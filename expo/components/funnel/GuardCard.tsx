@@ -2,11 +2,25 @@ import React from 'react';
 import { StyleSheet, View } from 'react-native';
 import { Award, Languages, MapPin, Star } from 'lucide-react-native';
 import Colors from '@/constants/colors';
-import { ICON_STROKE, Space } from '@/constants/design';
+import { ICON_STROKE, Radius, Space } from '@/constants/design';
 import { AppText, Avatar, Badge, Card } from '@/components/ui';
 import type { Guard } from '@/types';
 import { formatMXN } from '@/utils/pricing';
 import { formatDistance, guardDisplayName, hasRating, isVerified, languageName } from './format';
+
+/** Screen-reader summary of a protector, shared by the row and photo cards. */
+export function guardA11yLabel(guard: Guard, opts: { distanceKm?: number; showRate?: boolean } = {}): string {
+  const { distanceKm, showRate = true } = opts;
+  return [
+    guardDisplayName(guard),
+    isVerified(guard) ? 'verified' : null,
+    hasRating(guard) ? `rated ${guard.rating.toFixed(1)} from ${guard.completedJobs} jobs` : 'new protector',
+    showRate && guard.hourlyRate > 0 ? `${formatMXN(guard.hourlyRate)} per hour` : null,
+    typeof distanceKm === 'number' ? formatDistance(distanceKm) : null,
+  ]
+    .filter(Boolean)
+    .join(', ');
+}
 
 export interface GuardCardProps {
   guard: Guard;
@@ -18,47 +32,37 @@ export interface GuardCardProps {
   accessibilityHint?: string;
 }
 
-// One protector in the roster: portrait, display-face name, honest record,
-// languages, and the hourly rate as the only gold on the card.
+// One protector as a compact glass row: portrait, name, honest record,
+// languages, and the hourly rate as the only ice-blue figure on the card.
 export function GuardCard({ guard, onPress, distanceKm, showRate = true, accessibilityHint }: GuardCardProps) {
   const name = guardDisplayName(guard);
   const rated = hasRating(guard);
   const languages = guard.languages.map(languageName);
   const certs = guard.certifications;
 
-  const a11y = [
-    name,
-    isVerified(guard) ? 'verified' : null,
-    rated ? `rated ${guard.rating.toFixed(1)} from ${guard.completedJobs} jobs` : 'new protector',
-    showRate && guard.hourlyRate > 0 ? `${formatMXN(guard.hourlyRate)} per hour` : null,
-    typeof distanceKm === 'number' ? formatDistance(distanceKm) : null,
-  ]
-    .filter(Boolean)
-    .join(', ');
-
   return (
     <Card
       onPress={onPress}
-      accessibilityLabel={a11y}
+      accessibilityLabel={guardA11yLabel(guard, { distanceKm, showRate })}
       accessibilityHint={accessibilityHint ?? 'Opens the profile to book protection'}
       style={styles.card}
     >
       <View style={styles.row}>
-        <Avatar name={`${guard.firstName} ${guard.lastName}`} uri={guard.photos[0]} size={64} verified={isVerified(guard)} />
+        <Avatar name={`${guard.firstName} ${guard.lastName}`} uri={guard.photos[0]} size={68} verified={isVerified(guard)} />
 
         <View style={styles.body}>
-          <AppText variant="title2" numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
+          <AppText variant="title3" numberOfLines={1}>
             {name}
           </AppText>
 
           <View style={styles.metaRow}>
             {rated ? (
               <>
-                <Star size={13} color={Colors.gold} fill={Colors.gold} strokeWidth={ICON_STROKE} />
-                <AppText variant="caption" color={Colors.textPrimary} tabular>
+                <Star size={13} color={Colors.accent} fill={Colors.accent} strokeWidth={ICON_STROKE} />
+                <AppText variant="footnote" color={Colors.textPrimary} tabular>
                   {guard.rating.toFixed(1)}
                 </AppText>
-                <AppText variant="caption" color={Colors.textTertiary}>
+                <AppText variant="footnote" color={Colors.textTertiary}>
                   · {guard.completedJobs} {guard.completedJobs === 1 ? 'job' : 'jobs'}
                 </AppText>
               </>
@@ -89,7 +93,7 @@ export function GuardCard({ guard, onPress, distanceKm, showRate = true, accessi
 
         {showRate && guard.hourlyRate > 0 ? (
           <View style={styles.rate}>
-            <AppText variant="numeric" color={Colors.goldLight}>
+            <AppText variant="numeric" color={Colors.accentLight}>
               {formatMXN(guard.hourlyRate)}
             </AppText>
             <AppText variant="caption" color={Colors.textTertiary}>
@@ -101,7 +105,7 @@ export function GuardCard({ guard, onPress, distanceKm, showRate = true, accessi
 
       {certs.length > 0 ? (
         <View style={styles.certs}>
-          <Award size={14} color={Colors.textTertiary} strokeWidth={ICON_STROKE} />
+          <Award size={14} color={Colors.accent} strokeWidth={ICON_STROKE} />
           <AppText variant="footnote" numberOfLines={1} style={styles.shrink}>
             {certs[0]}
             {certs.length > 1 ? `  +${certs.length - 1} more` : ''}
@@ -115,6 +119,7 @@ export function GuardCard({ guard, onPress, distanceKm, showRate = true, accessi
 const styles = StyleSheet.create({
   card: {
     marginBottom: Space.md,
+    padding: Space.md,
   },
   row: {
     flexDirection: 'row',
@@ -144,8 +149,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: Space.sm,
     marginTop: Space.md,
-    paddingTop: Space.md,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: Colors.border,
+    paddingVertical: Space.sm,
+    paddingHorizontal: Space.md,
+    borderRadius: Radius.sm,
+    backgroundColor: Colors.glass,
+    borderWidth: 1,
+    borderColor: Colors.glassBorder,
   },
 });

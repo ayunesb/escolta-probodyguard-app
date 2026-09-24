@@ -51,7 +51,7 @@ export default function StripePaymentForm({ clientSecret, payLabel, returnUrl, o
           appearance: {
             theme: 'night',
             variables: {
-              colorPrimary: Colors.gold,
+              colorPrimary: Colors.accent,
               colorBackground: Colors.surfaceLight,
               colorText: Colors.textPrimary,
               colorTextSecondary: Colors.textSecondary,

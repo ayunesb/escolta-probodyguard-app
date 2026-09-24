@@ -35,7 +35,7 @@ export const Input = forwardRef<TextInput, InputProps>(function Input(
   const [revealed, setRevealed] = useState(false);
   const isSecret = !!secureTextEntry;
 
-  const borderColor = error ? Colors.error : focused ? Colors.goldLine : Colors.border;
+  const borderColor = error ? Colors.error : focused ? Colors.accentLine : Colors.glassBorder;
 
   return (
     <View style={[styles.container, containerStyle]}>
@@ -48,14 +48,14 @@ export const Input = forwardRef<TextInput, InputProps>(function Input(
         style={[
           styles.field,
           multiline ? styles.fieldMultiline : null,
-          { borderColor, backgroundColor: focused ? Colors.surfaceLight : Colors.surface },
+          { borderColor, backgroundColor: focused ? Colors.glassStrong : Colors.glass },
           !editable ? styles.disabled : null,
         ]}
       >
         {Icon ? (
           <Icon
             size={18}
-            color={focused ? Colors.gold : Colors.textTertiary}
+            color={focused ? Colors.accent : Colors.textTertiary}
             strokeWidth={ICON_STROKE}
             style={multiline ? styles.iconTop : undefined}
           />
@@ -67,8 +67,8 @@ export const Input = forwardRef<TextInput, InputProps>(function Input(
           multiline={multiline}
           secureTextEntry={isSecret && !revealed}
           placeholderTextColor={Colors.textTertiary}
-          selectionColor={Colors.gold}
-          cursorColor={Colors.gold}
+          selectionColor={Colors.accent}
+          cursorColor={Colors.accent}
           onFocus={(e) => {
             setFocused(true);
             onFocus?.(e);
@@ -119,7 +119,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.1,
   },
   field: {
-    minHeight: 52,
+    minHeight: 54,
     flexDirection: 'row',
     alignItems: 'center',
     gap: Space.md,

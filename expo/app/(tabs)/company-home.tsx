@@ -16,7 +16,9 @@ import {
   SkeletonCard,
   StatTile,
   StatusBadge,
+  PhotoCard,
 } from '@/components/ui';
+import { BrandImages } from '@/constants/brandMedia';
 import { ACTIVE_STATUSES, Notice, RoleGate, formatDate, fullName, money, plural, shortId, todayEyebrow } from '@/components/backoffice';
 import { useAuth } from '@/contexts/AuthContext';
 import { bookingService } from '@/services/bookingService';
@@ -114,11 +116,20 @@ function CompanyHomeScreen() {
   const loading = guards === null || bookings === null;
 
   return (
-    <Screen glow refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.gold} />}>
+    <Screen glow refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.accent} />}>
       <ScreenHeader
         eyebrow={todayEyebrow()}
         title={company?.companyName || 'Your company'}
         subtitle="Your team, their jobs and their earnings."
+      />
+
+      <PhotoCard
+        image={BrandImages.cityAerial}
+        eyebrow="Your operation"
+        title="Your roster, on call across the city"
+        caption="Availability, jobs and earnings for every protector."
+        height={190}
+        style={{ marginBottom: Space.xl }}
       />
 
       {guardsError ? (
@@ -200,7 +211,7 @@ function CompanyHomeScreen() {
           })}
           {guards.length > 6 ? (
             <Card onPress={() => router.push('/(tabs)/company-guards')} accessibilityLabel="See all guards" style={styles.row}>
-              <UserPlus size={18} color={Colors.gold} />
+              <UserPlus size={18} color={Colors.accent} />
               <AppText variant="bodyMedium" style={styles.flex}>
                 See all {guards.length} guards
               </AppText>
@@ -239,7 +250,7 @@ function CompanyHomeScreen() {
                     {b.duration ? ` · ${b.duration} h` : ''}
                   </AppText>
                   <View style={styles.amount}>
-                    <AppText variant="numeric" color={Colors.goldLight}>
+                    <AppText variant="numeric" color={Colors.accentLight}>
                       {formatMXN(b.guardPayout)}
                     </AppText>
                     <AppText variant="caption" color={Colors.textTertiary}>

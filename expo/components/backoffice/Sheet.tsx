@@ -55,7 +55,7 @@ export function Sheet({ visible, onClose, title, eyebrow, subtitle, children, fo
           <View style={styles.header}>
             <View style={styles.headerText}>
               {eyebrow ? (
-                <AppText variant="overline" color={Colors.gold}>
+                <AppText variant="overline" color={Colors.accent}>
                   {eyebrow}
                 </AppText>
               ) : null}

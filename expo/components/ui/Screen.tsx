@@ -18,19 +18,25 @@ import { MAX_CONTENT_WIDTH, Space } from '@/constants/design';
 import { AppText } from './AppText';
 import { IconButton } from './Controls';
 
-// Resplandor dorado muy tenue arriba de la pantalla. Da profundidad sin ruido.
-export function AmbientGlow({ height = 420, intensity = 0.14 }: { height?: number; intensity?: number }) {
+// Atmosfera "Midnight": dos fuentes de luz fria (arriba a la derecha y un
+// eco abajo a la izquierda) sobre el azul medianoche. Da profundidad sin ruido.
+export function AmbientGlow({ height = 520, intensity = 0.34 }: { height?: number; intensity?: number }) {
   return (
     <View pointerEvents="none" style={[StyleSheet.absoluteFill, { height }]}>
       <Svg width="100%" height="100%">
         <Defs>
-          <RadialGradient id="glow" cx="50%" cy="0%" rx="75%" ry="70%" fx="50%" fy="0%">
-            <Stop offset="0" stopColor={Colors.gold} stopOpacity={intensity} />
-            <Stop offset="0.55" stopColor={Colors.gold} stopOpacity={intensity * 0.25} />
-            <Stop offset="1" stopColor={Colors.gold} stopOpacity={0} />
+          <RadialGradient id="glowA" cx="85%" cy="0%" rx="80%" ry="75%" fx="85%" fy="0%">
+            <Stop offset="0" stopColor="#3B6FE0" stopOpacity={intensity} />
+            <Stop offset="0.5" stopColor="#1E3F8F" stopOpacity={intensity * 0.35} />
+            <Stop offset="1" stopColor="#0B1630" stopOpacity={0} />
+          </RadialGradient>
+          <RadialGradient id="glowB" cx="0%" cy="70%" rx="60%" ry="45%" fx="0%" fy="70%">
+            <Stop offset="0" stopColor="#2A4FB0" stopOpacity={intensity * 0.35} />
+            <Stop offset="1" stopColor="#0B1630" stopOpacity={0} />
           </RadialGradient>
         </Defs>
-        <Rect x="0" y="0" width="100%" height="100%" fill="url(#glow)" />
+        <Rect x="0" y="0" width="100%" height="100%" fill="url(#glowA)" />
+        <Rect x="0" y="0" width="100%" height="100%" fill="url(#glowB)" />
       </Svg>
     </View>
   );
@@ -55,7 +61,7 @@ export interface ScreenProps {
 export function Screen({
   children,
   scroll = true,
-  glow = false,
+  glow = true,
   padTop = true,
   padBottom = false,
   keyboard = false,
@@ -126,7 +132,7 @@ export function ScreenHeader({ title, eyebrow, subtitle, right, style }: ScreenH
     <View style={[styles.header, style]}>
       <View style={styles.headerText}>
         {eyebrow ? (
-          <AppText variant="overline" color={Colors.gold} style={styles.eyebrow}>
+          <AppText variant="overline" color={Colors.accent} style={styles.eyebrow}>
             {eyebrow}
           </AppText>
         ) : null}
@@ -221,9 +227,9 @@ const styles = StyleSheet.create({
     zIndex: 10,
   },
   navBarSolid: {
-    backgroundColor: Colors.background,
+    backgroundColor: 'rgba(5, 8, 15, 0.94)',
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: Colors.border,
+    borderBottomColor: Colors.glassBorder,
   },
   navRow: {
     flexDirection: 'row',
@@ -243,8 +249,8 @@ const styles = StyleSheet.create({
   actionBar: {
     paddingTop: Space.md,
     paddingHorizontal: Space.gutter,
-    backgroundColor: Colors.background,
+    backgroundColor: 'rgba(5, 8, 15, 0.96)',
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: Colors.border,
+    borderTopColor: Colors.glassBorder,
   },
 });

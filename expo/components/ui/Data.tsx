@@ -39,14 +39,14 @@ export function Avatar({ name, uri, size = 48, verified, style }: AvatarProps) {
             accessibilityIgnoresInvertColors
           />
         ) : (
-          <AppText style={{ fontFamily: Fonts.display, fontSize: size * 0.34, lineHeight: size * 0.42, letterSpacing: 0.5, color: Colors.goldLight }}>
+          <AppText style={{ fontFamily: Fonts.display, fontSize: size * 0.34, lineHeight: size * 0.42, letterSpacing: 0.5, color: Colors.accentLight }}>
             {initialsOf(name)}
           </AppText>
         )}
       </View>
       {verified ? (
         <View style={[styles.verified, { right: -3, bottom: -3 }]}>
-          <BadgeCheck size={Math.max(14, size * 0.3)} color={Colors.gold} fill={Colors.background} strokeWidth={2} />
+          <BadgeCheck size={Math.max(14, size * 0.3)} color={Colors.accent} fill={Colors.background} strokeWidth={2} />
         </View>
       ) : null}
     </View>
@@ -72,7 +72,7 @@ export function ListRow({ title, subtitle, icon: Icon, value, onPress, destructi
     <>
       {Icon ? (
         <View style={[styles.rowIcon, destructive ? styles.rowIconDanger : null]}>
-          <Icon size={17} color={destructive ? Colors.error : Colors.gold} strokeWidth={ICON_STROKE} />
+          <Icon size={17} color={destructive ? Colors.error : Colors.accent} strokeWidth={ICON_STROKE} />
         </View>
       ) : null}
       <View style={styles.rowText}>
@@ -150,11 +150,11 @@ export function StatTile({ label, value, hint, icon: Icon, accent, style }: Stat
         <AppText variant="overline" numberOfLines={2} style={styles.statLabel}>
           {label}
         </AppText>
-        {Icon ? <Icon size={15} color={accent ? Colors.gold : Colors.textTertiary} strokeWidth={ICON_STROKE} /> : null}
+        {Icon ? <Icon size={15} color={accent ? Colors.accent : Colors.textTertiary} strokeWidth={ICON_STROKE} /> : null}
       </View>
       <AppText
         variant="numericLarge"
-        color={accent ? Colors.goldLight : Colors.textPrimary}
+        color={accent ? Colors.accentLight : Colors.textPrimary}
         numberOfLines={1}
         adjustsFontSizeToFit
         style={valueSize(value)}
@@ -181,7 +181,7 @@ export function InfoRow({ label, value, icon: Icon, emphasis, style }: { label: 
         </AppText>
       </View>
       {typeof value === 'string' || typeof value === 'number' ? (
-        <AppText variant={emphasis ? 'headline' : 'bodyMedium'} tabular numberOfLines={2} style={styles.infoValue} color={emphasis ? Colors.goldLight : Colors.textPrimary}>
+        <AppText variant={emphasis ? 'headline' : 'bodyMedium'} tabular numberOfLines={2} style={styles.infoValue} color={emphasis ? Colors.accentLight : Colors.textPrimary}>
           {value}
         </AppText>
       ) : (
@@ -198,7 +198,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: Colors.elevated,
     borderWidth: 1,
-    borderColor: Colors.borderStrong,
+    borderColor: Colors.glassBorder,
   },
   verified: {
     position: 'absolute',
@@ -215,7 +215,7 @@ const styles = StyleSheet.create({
     width: 34,
     height: 34,
     borderRadius: Radius.sm,
-    backgroundColor: Colors.goldSoft,
+    backgroundColor: Colors.accentSoft,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -230,15 +230,15 @@ const styles = StyleSheet.create({
     maxWidth: '45%',
   },
   group: {
-    backgroundColor: Colors.surface,
+    backgroundColor: Colors.glass,
     borderRadius: Radius.lg,
     borderWidth: 1,
-    borderColor: Colors.border,
+    borderColor: Colors.glassBorder,
     overflow: 'hidden',
   },
   groupDivider: {
     height: StyleSheet.hairlineWidth,
-    backgroundColor: Colors.borderStrong,
+    backgroundColor: Colors.glassBorder,
     marginLeft: Space.lg + 34 + Space.md,
   },
   stat: {
@@ -246,10 +246,10 @@ const styles = StyleSheet.create({
     minWidth: 140,
     padding: Space.lg,
     gap: Space.sm,
-    backgroundColor: Colors.surface,
+    backgroundColor: Colors.glass,
     borderRadius: Radius.lg,
     borderWidth: 1,
-    borderColor: Colors.border,
+    borderColor: Colors.glassBorder,
   },
   statHead: {
     flexDirection: 'row',

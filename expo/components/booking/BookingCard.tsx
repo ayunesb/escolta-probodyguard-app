@@ -98,12 +98,12 @@ export function BookingCard({
         <View style={styles.footer}>
           <View>
             <AppText variant="overline">{amount.label}</AppText>
-            <AppText variant="numeric" color={Colors.goldLight} style={styles.amount}>
+            <AppText variant="numeric" color={Colors.accentLight} style={styles.amount}>
               {amount.value}
             </AppText>
           </View>
           {needsGuardResponse ? (
-            <Badge label="Needs your response" tone="gold" />
+            <Badge label="Needs your response" tone="accent" />
           ) : typeof booking.rating === 'number' ? (
             <StarRating value={booking.rating} size={14} label="Client rating" />
           ) : null}

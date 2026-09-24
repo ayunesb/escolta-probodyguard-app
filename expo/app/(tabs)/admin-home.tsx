@@ -32,7 +32,9 @@ import {
   SkeletonCard,
   StatTile,
   StatusBadge,
+  PhotoCard,
 } from '@/components/ui';
+import { BrandImages } from '@/constants/brandMedia';
 import {
   ACTIVE_STATUSES,
   EmergencyAlertRow,
@@ -244,7 +246,7 @@ function AdminHomeScreen() {
   const loading = bookings === null && !loadError;
 
   return (
-    <Screen glow refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.gold} />}>
+    <Screen glow refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.accent} />}>
       <ScreenHeader
         eyebrow={todayEyebrow()}
         title="Operations"
@@ -257,6 +259,15 @@ function AdminHomeScreen() {
             accessibilityLabel="Export bookings ledger as CSV"
           />
         }
+      />
+
+      <PhotoCard
+        image={BrandImages.opsRoom}
+        eyebrow="Command center"
+        title="Every detail, one view"
+        caption="Bookings, verification and alerts across the platform."
+        height={190}
+        style={{ marginBottom: Space.xl }}
       />
 
       {notice ? <Notice tone={notice.tone} message={notice.message} onDismiss={() => setNotice(null)} style={styles.block} /> : null}
@@ -341,8 +352,8 @@ function AdminHomeScreen() {
       ) : null}
 
       {guards && guards.pending > 0 ? (
-        <Card tone="gold" onPress={() => router.push('/(tabs)/admin-kyc')} accessibilityLabel="Review pending verifications" style={styles.kycCard}>
-          <ShieldCheck size={20} color={Colors.gold} />
+        <Card tone="accent" onPress={() => router.push('/(tabs)/admin-kyc')} accessibilityLabel="Review pending verifications" style={styles.kycCard}>
+          <ShieldCheck size={20} color={Colors.accent} />
           <View style={styles.flex}>
             <AppText variant="headline">{plural(guards.pending, 'guard')} waiting for verification</AppText>
             <AppText variant="footnote">Review documents before they can accept bookings.</AppText>
@@ -460,7 +471,7 @@ function AdminHomeScreen() {
                     {b.duration ? ` · ${b.duration} h` : ''}
                   </AppText>
                   {isPaid(b) ? <Badge label="Paid" tone="success" /> : null}
-                  <AppText variant="numeric" color={Colors.goldLight}>
+                  <AppText variant="numeric" color={Colors.accentLight}>
                     {formatMXN(b.totalAmount)}
                   </AppText>
                 </View>

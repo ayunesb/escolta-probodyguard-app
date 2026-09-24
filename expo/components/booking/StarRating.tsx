@@ -26,8 +26,8 @@ export function StarRating({ value, onChange, size = 28, label, style }: StarRat
         const icon = (
           <Star
             size={size}
-            color={filled ? Colors.gold : Colors.textTertiary}
-            fill={filled ? Colors.gold : 'transparent'}
+            color={filled ? Colors.accent : Colors.textTertiary}
+            fill={filled ? Colors.accent : 'transparent'}
             strokeWidth={1.5}
           />
         );

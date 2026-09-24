@@ -50,11 +50,11 @@ const TABS_BY_ROLE: Record<UserRole, TabSpec[]> = {
 
 const ALL_TABS: TabName[] = ["home", "bookings", "profile", "company-home", "company-guards", "admin-home", "admin-kyc", "admin-users"];
 
+// Icono con pastilla detras cuando esta activo (como las referencias premium).
 function TabIcon({ icon: Icon, focused, color }: { icon: LucideIcon; focused: boolean; color: string }) {
   return (
-    <View style={styles.iconWrap}>
-      <View style={[styles.indicator, focused ? styles.indicatorOn : null]} />
-      <Icon size={22} color={color} strokeWidth={focused ? 2 : 1.6} />
+    <View style={[styles.iconWrap, focused ? styles.iconWrapOn : null]}>
+      <Icon size={20} color={focused ? Colors.textOnAccent : color} strokeWidth={focused ? 2 : 1.6} />
     </View>
   );
 }
@@ -70,31 +70,45 @@ export default function TabLayout() {
   if (!visible) return <Redirect href="/auth/sign-in" />;
 
   const hidden = ALL_TABS.filter((name) => !visible.some((t) => t.name === name));
-  const bottom = Math.max(insets.bottom, Platform.OS === "web" ? 10 : 8);
+  // Dock flotante: pastilla de vidrio separada de los bordes. Las pantallas
+  // reservan su alto abajo (sceneStyle) para que nada quede tapado.
+  const dockBottom = Math.max(insets.bottom, 12);
+  const dockHeight = 72;
 
   return (
     <Tabs
       screenOptions={{
         headerShown: false,
-        tabBarActiveTintColor: Colors.gold,
+        tabBarActiveTintColor: Colors.textPrimary,
         tabBarInactiveTintColor: Colors.textTertiary,
         tabBarStyle: {
-          backgroundColor: Colors.background,
-          borderTopColor: Colors.border,
-          borderTopWidth: StyleSheet.hairlineWidth,
-          height: 64 + bottom,
+          position: "absolute",
+          left: 16,
+          right: 16,
+          bottom: dockBottom,
+          height: dockHeight,
           paddingTop: 8,
-          paddingBottom: bottom,
+          paddingBottom: 11,
+          borderRadius: 36,
+          borderTopWidth: 1,
+          borderWidth: 1,
+          borderColor: Colors.glassBorder,
+          borderTopColor: Colors.glassBorder,
+          backgroundColor: "rgba(14, 21, 38, 0.92)",
           elevation: 0,
+          ...(Platform.OS === "web"
+            ? ({ backdropFilter: "blur(18px)", WebkitBackdropFilter: "blur(18px)", boxShadow: "0 18px 40px rgba(0, 4, 16, 0.55)" } as object)
+            : { shadowColor: "#000410", shadowOpacity: 0.5, shadowRadius: 20, shadowOffset: { width: 0, height: 12 } }),
         },
+        tabBarItemStyle: { borderRadius: 24 },
         tabBarLabelStyle: {
           fontFamily: Fonts.medium,
-          fontSize: 11,
-          lineHeight: 14,
+          fontSize: 10.5,
+          lineHeight: 15,
           letterSpacing: 0.2,
           marginTop: 3,
         },
-        sceneStyle: { backgroundColor: Colors.background },
+        sceneStyle: { backgroundColor: Colors.background, paddingBottom: dockHeight + dockBottom + 8 },
       }}
     >
       {visible.map((tab) => (
@@ -121,18 +135,13 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.background,
   },
   iconWrap: {
+    width: 44,
+    height: 28,
+    borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
   },
-  indicator: {
-    position: "absolute",
-    top: -9,
-    width: 18,
-    height: 2,
-    borderRadius: 1,
-    backgroundColor: "transparent",
-  },
-  indicatorOn: {
-    backgroundColor: Colors.gold,
+  iconWrapOn: {
+    backgroundColor: Colors.textPrimary,
   },
 });

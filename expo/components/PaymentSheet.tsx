@@ -328,7 +328,7 @@ export default function PaymentSheet({ visible, bookingId, userId, onPaid, onCan
                   showChevron={false}
                   trailing={
                     selectedCard === card.token ? (
-                      <Check size={18} color={Colors.gold} strokeWidth={2} />
+                      <Check size={18} color={Colors.accent} strokeWidth={2} />
                     ) : null
                   }
                 />
@@ -415,7 +415,7 @@ export default function PaymentSheet({ visible, bookingId, userId, onPaid, onCan
           <View style={styles.grabber} />
           <View style={styles.header}>
             <View style={styles.flex}>
-              <AppText variant="overline" color={Colors.gold}>
+              <AppText variant="overline" color={Colors.accent}>
                 Secure checkout
               </AppText>
               <AppText variant="title2" accessibilityRole="header" style={styles.title}>

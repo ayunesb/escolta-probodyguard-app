@@ -11,7 +11,7 @@ export interface IconButtonProps {
   onPress?: () => void;
   accessibilityLabel: string;
   size?: number;
-  tone?: 'default' | 'gold' | 'danger';
+  tone?: 'default' | 'accent' | 'gold' | 'danger';
   // Punto de aviso (notificaciones sin leer, etc.)
   dot?: boolean;
   disabled?: boolean;
@@ -28,7 +28,7 @@ export function IconButton({
   disabled,
   style,
 }: IconButtonProps) {
-  const fg = tone === 'gold' ? Colors.gold : tone === 'danger' ? Colors.error : Colors.textPrimary;
+  const fg = tone === 'accent' || tone === 'gold' ? Colors.accentLight : tone === 'danger' ? Colors.error : Colors.textPrimary;
   return (
     <PressableScale
       onPress={onPress}
@@ -63,7 +63,7 @@ export interface ChipProps {
 
 // Filtro seleccionable.
 export function Chip({ label, selected, onPress, icon: Icon, count, style }: ChipProps) {
-  const fg = selected ? Colors.goldLight : Colors.textSecondary;
+  const fg = selected ? Colors.textOnAccent : Colors.textSecondary;
   return (
     <PressableScale
       onPress={onPress}
@@ -72,7 +72,7 @@ export function Chip({ label, selected, onPress, icon: Icon, count, style }: Chi
       accessibilityRole="button"
       accessibilityState={{ selected: !!selected }}
       accessibilityLabel={label}
-      hoverStyle={selected ? undefined : { borderColor: Colors.borderStrong }}
+      hoverStyle={selected ? undefined : { borderColor: Colors.accentLine }}
       style={[styles.chip, selected ? styles.chipSelected : null, style]}
     >
       {Icon ? <Icon size={15} color={fg} strokeWidth={ICON_STROKE} /> : null}
@@ -80,7 +80,7 @@ export function Chip({ label, selected, onPress, icon: Icon, count, style }: Chi
         {label}
       </AppText>
       {typeof count === 'number' ? (
-        <AppText variant="caption" color={selected ? Colors.gold : Colors.textTertiary} tabular>
+        <AppText variant="caption" color={selected ? Colors.textOnAccent : Colors.textTertiary} tabular>
           {count}
         </AppText>
       ) : null}
@@ -113,10 +113,10 @@ export function SegmentedControl<T extends string>({ options, value, onChange, s
             style={[styles.segment, active ? styles.segmentActive : null]}
           >
             {Icon ? (
-              <Icon size={16} color={active ? Colors.textPrimary : Colors.textTertiary} strokeWidth={ICON_STROKE} />
+              <Icon size={16} color={active ? Colors.textOnAccent : Colors.textTertiary} strokeWidth={ICON_STROKE} />
             ) : null}
             {opt.label ? (
-              <AppText variant="caption" color={active ? Colors.textPrimary : Colors.textTertiary}>
+              <AppText variant="caption" color={active ? Colors.textOnAccent : Colors.textTertiary}>
                 {opt.label}
               </AppText>
             ) : null}
@@ -131,9 +131,9 @@ const styles = StyleSheet.create({
   iconButton: {
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: Colors.surface,
+    backgroundColor: Colors.glassStrong,
     borderWidth: 1,
-    borderColor: Colors.border,
+    borderColor: Colors.glassBorder,
   },
   dot: {
     position: 'absolute',
@@ -142,7 +142,7 @@ const styles = StyleSheet.create({
     width: 7,
     height: 7,
     borderRadius: 4,
-    backgroundColor: Colors.gold,
+    backgroundColor: Colors.accent,
     borderWidth: 1.5,
     borderColor: Colors.surface,
   },
@@ -156,25 +156,26 @@ const styles = StyleSheet.create({
     height: 36,
     paddingHorizontal: 14,
     borderRadius: Radius.pill,
-    backgroundColor: Colors.surface,
+    backgroundColor: Colors.glass,
     borderWidth: 1,
-    borderColor: Colors.border,
+    borderColor: Colors.glassBorder,
   },
+  // Seleccionado: pastilla blanca, como la accion principal
   chipSelected: {
-    backgroundColor: Colors.goldSoft,
-    borderColor: Colors.goldLine,
+    backgroundColor: Colors.textPrimary,
+    borderColor: Colors.textPrimary,
   },
   chipText: {
     fontSize: 13,
   },
   segmented: {
     flexDirection: 'row',
-    padding: 3,
+    padding: 4,
     gap: 2,
-    borderRadius: Radius.sm + 2,
-    backgroundColor: Colors.surface,
+    borderRadius: Radius.pill,
+    backgroundColor: Colors.glass,
     borderWidth: 1,
-    borderColor: Colors.border,
+    borderColor: Colors.glassBorder,
   },
   segment: {
     flexDirection: 'row',
@@ -182,13 +183,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 6,
     minWidth: 38,
-    height: 32,
-    paddingHorizontal: Space.md,
-    borderRadius: Radius.sm - 2,
+    height: 34,
+    paddingHorizontal: Space.lg,
+    borderRadius: Radius.pill,
   },
   segmentActive: {
-    backgroundColor: Colors.elevated,
-    borderWidth: 1,
-    borderColor: Colors.borderStrong,
+    backgroundColor: Colors.textPrimary,
   },
 });

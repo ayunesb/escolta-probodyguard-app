@@ -23,3 +23,6 @@ export type { Tone } from './Surface';
 export { Avatar, ListRow, ListGroup, StatTile, InfoRow } from './Data';
 export { BrandMark, Wordmark } from './Brand';
 export { AlertHost } from './AlertHost';
+export { Scrim, PhotoCard, GlassShield } from './Media';
+export type { PhotoCardProps } from './Media';
+export { BackgroundVideo } from './BackgroundVideo';

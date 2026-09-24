@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { FlatList, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { FlatList, Image, RefreshControl, ScrollView, StyleProp, StyleSheet, useWindowDimensions, View, ViewStyle } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import {
   AlertTriangle,
+  ArrowDown,
   ChevronRight,
   Clock,
   List,
@@ -18,23 +19,28 @@ import { guardService, hasCompleteProfile, hasCoordinates } from '@/services/gua
 import { bookingService } from '@/services/bookingService';
 import type { Booking, Guard } from '@/types';
 import Colors from '@/constants/colors';
-import { ICON_STROKE, Radius, Shadow, Space } from '@/constants/design';
+import { Fonts, ICON_STROKE, MAX_CONTENT_WIDTH, Radius, Shadow, Space } from '@/constants/design';
+import { BrandImages, SERVICE_MOMENTS } from '@/constants/brandMedia';
 import {
   AppText,
   Avatar,
   Badge,
+  BrandMark,
+  Button,
   Card,
   Chip,
   Divider,
   EmptyState,
+  PhotoCard,
   Screen,
   ScreenHeader,
-  SectionTitle,
+  Scrim,
   SegmentedControl,
+  Skeleton,
   SkeletonCard,
 } from '@/components/ui';
 import MapView, { Marker, PROVIDER_DEFAULT } from '@/components/MapView';
-import { GuardCard } from '@/components/funnel/GuardCard';
+import { GuardPhotoCard } from '@/components/funnel/GuardPhotoCard';
 import {
   bookingStart,
   describeBookingOptions,
@@ -54,7 +60,7 @@ export default function HomeScreen() {
   return (
     <>
       <Stack.Screen options={{ headerShown: false }} />
-      {user?.role === 'guard' ? <GuardJobsHome guardId={user.id} /> : <ClientRosterHome />}
+      {user?.role === 'guard' ? <GuardJobsHome guardId={user.id} /> : <ClientRosterHome firstName={user?.firstName} />}
     </>
   );
 }
@@ -75,7 +81,20 @@ const byRecommendation = (a: Guard, b: Guard) =>
   b.completedJobs - a.completedJobs ||
   guardDisplayName(a).localeCompare(guardDisplayName(b));
 
-function ClientRosterHome() {
+// hero-door.jpg is 4:5 and the protector's face sits ~25% down the frame.
+const HERO_ASPECT = 960 / 1200;
+const HERO_FACE_Y = 0.25;
+const MOMENT_WIDTH = 220;
+const MOMENT_HEIGHT = 280;
+
+function greetingFor(date = new Date()): string {
+  const h = date.getHours();
+  if (h >= 5 && h < 12) return 'Good morning';
+  if (h >= 12 && h < 19) return 'Good afternoon';
+  return 'Good evening';
+}
+
+function ClientRosterHome({ firstName }: { firstName?: string }) {
   const router = useRouter();
   // Never prompts here: distances appear only if location was already allowed.
   const currentLocation = useSilentDeviceLocation();
@@ -85,6 +104,14 @@ function ClientRosterHome() {
   const [viewMode, setViewMode] = useState<'list' | 'map'>('list');
   const [focus, setFocus] = useState<Focus>('all');
   const [language, setLanguage] = useState<string | null>(null);
+  const listRef = useRef<FlatList<Guard>>(null);
+  const rosterY = useRef(0);
+
+  // Sizes derive from the content column once, so every photo has a fixed frame.
+  const { width: windowWidth } = useWindowDimensions();
+  const contentWidth = Math.min(windowWidth, MAX_CONTENT_WIDTH) - Space.gutter * 2;
+  const heroHeight = contentWidth >= 440 ? 380 : 340;
+  const cardHeight = Math.round(Math.min(440, Math.max(340, contentWidth * 1.08)));
 
   const load = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
@@ -139,18 +166,46 @@ function ClientRosterHome() {
     return list;
   }, [guards, language, focus, distances]);
 
-  const openGuard = (id: string) => router.push(`/guard/${id}`);
+  const openGuard = useCallback((id: string) => router.push(`/guard/${id}`), [router]);
   const clearFilters = () => {
     setFocus('all');
     setLanguage(null);
   };
 
-  const header = (
-    <View>
-      <ScreenHeader
-        eyebrow={todayEyebrow()}
-        title="Book protection"
-        subtitle="Vetted close-protection professionals, ready when you are."
+  // "Find a protector": glide down to the roster heading.
+  const scrollToRoster = useCallback(() => {
+    listRef.current?.scrollToOffset({ offset: Math.max(0, rosterY.current - Space.sm), animated: true });
+  }, []);
+
+  const name = firstName?.trim();
+  const greeting = (
+    <View style={styles.greetingRow}>
+      <AppText variant="title3" color={Colors.textSecondary} numberOfLines={1} style={styles.flex}>
+        {greetingFor()}
+        {name ? ', ' : ''}
+        {name ? (
+          <AppText variant="title3" color={Colors.textPrimary}>
+            {name}
+          </AppText>
+        ) : null}
+      </AppText>
+      <BrandMark size={28} />
+    </View>
+  );
+
+  const rosterEyebrow =
+    state === 'ready' && guards.length > 0 ? `${visible.length} ${visible.length === 1 ? 'protector' : 'protectors'}` : 'Protectors';
+
+  const rosterHead = (
+    <View
+      onLayout={(e) => {
+        rosterY.current = e.nativeEvent.layout.y;
+      }}
+    >
+      <SectionHeading
+        eyebrow={rosterEyebrow}
+        title="Available now"
+        style={viewMode === 'map' ? styles.headingCompact : undefined}
         right={
           <SegmentedControl
             value={viewMode}
@@ -163,7 +218,7 @@ function ClientRosterHome() {
         }
       />
       {state === 'ready' && guards.length > 0 ? (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips} style={styles.chipsScroll}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips} style={styles.bleed}>
           <Chip label="All" count={guards.length} selected={focus === 'all' && !language} onPress={clearFilters} />
           <Chip label="Top rated" icon={Star} selected={focus === 'top'} onPress={() => setFocus(focus === 'top' ? 'all' : 'top')} />
           {distances.size > 0 ? (
@@ -183,18 +238,46 @@ function ClientRosterHome() {
             : null}
         </ScrollView>
       ) : null}
-      {state === 'ready' && guards.length > 0 && viewMode === 'list' ? (
-        <SectionTitle title={`${visible.length} ${visible.length === 1 ? 'protector' : 'protectors'} available`} />
-      ) : null}
+    </View>
+  );
+
+  const header = (
+    <View>
+      {greeting}
+      <HeroCard width={contentWidth} height={heroHeight} onFind={scrollToRoster} />
+
+      <SectionHeading eyebrow="Protection" title="For every moment" />
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        snapToInterval={MOMENT_WIDTH + Space.md}
+        snapToAlignment="start"
+        decelerationRate="fast"
+        contentContainerStyle={styles.moments}
+        style={styles.bleed}
+      >
+        {SERVICE_MOMENTS.map((moment) => (
+          <PhotoCard
+            key={moment.key}
+            image={moment.image}
+            title={moment.title}
+            caption={moment.caption}
+            width={MOMENT_WIDTH}
+            height={MOMENT_HEIGHT}
+            accessibilityLabel={`${moment.title}. ${moment.caption}`}
+          />
+        ))}
+      </ScrollView>
+
+      {rosterHead}
     </View>
   );
 
   const statusView =
     state === 'loading' ? (
-      <View style={styles.skeletons}>
-        <SkeletonCard media />
-        <SkeletonCard media />
-        <SkeletonCard media />
+      <View accessibilityLabel="Loading protectors">
+        <Skeleton height={cardHeight} radius={Radius.lg} style={styles.skeletonCard} />
+        <Skeleton height={cardHeight} radius={Radius.lg} style={styles.skeletonCard} />
       </View>
     ) : state === 'error' ? (
       <EmptyState
@@ -222,10 +305,20 @@ function ClientRosterHome() {
       />
     );
 
+  const renderGuard = useCallback(
+    ({ item }: { item: Guard }) => (
+      <GuardPhotoCard guard={item} distanceKm={distances.get(item.id)} width={contentWidth} height={cardHeight} onPress={openGuard} />
+    ),
+    [distances, contentWidth, cardHeight, openGuard]
+  );
+
   if (viewMode === 'map' && state === 'ready' && guards.length > 0) {
     return (
       <Screen scroll={false} glow>
-        <View style={styles.gutter}>{header}</View>
+        <View style={styles.gutter}>
+          {greeting}
+          {rosterHead}
+        </View>
         <RosterMap guards={visible} clientLocation={currentLocation} distances={distances} onOpen={openGuard} />
       </Screen>
     );
@@ -234,18 +327,88 @@ function ClientRosterHome() {
   return (
     <Screen scroll={false} glow>
       <FlatList
+        ref={listRef}
         data={state === 'ready' ? visible : []}
         keyExtractor={(g) => g.id}
-        renderItem={({ item }) => (
-          <GuardCard guard={item} distanceKm={distances.get(item.id)} onPress={() => openGuard(item.id)} />
-        )}
+        renderItem={renderGuard}
         ListHeaderComponent={header}
         ListEmptyComponent={statusView}
         contentContainerStyle={styles.listContent}
         showsVerticalScrollIndicator={false}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => load(true)} tintColor={Colors.gold} colors={[Colors.gold]} />}
+        initialNumToRender={3}
+        maxToRenderPerBatch={4}
+        windowSize={7}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => load(true)} tintColor={Colors.accent} colors={[Colors.accent]} />}
       />
     </Screen>
+  );
+}
+
+// Opening photograph. The image is laid out at its own 4:5 ratio and shifted
+// so the protector's face stays in the clear top band at any column width;
+// the copy and the white pill sit on the scrim below it.
+function HeroCard({ width, height, onFind }: { width: number; height: number; onFind: () => void }) {
+  const imageHeight = width / HERO_ASPECT;
+  const faceTarget = height * 0.17;
+  const top = Math.min(0, Math.max(height - imageHeight, faceTarget - HERO_FACE_Y * imageHeight));
+  return (
+    <View style={[styles.hero, { height }]}>
+      <Image
+        source={BrandImages.heroDoor}
+        style={[styles.heroImage, { top, height: imageHeight }]}
+        resizeMode="cover"
+        accessibilityIgnoresInvertColors
+      />
+      <Scrim start={0.3} strength={0.96} />
+      <View style={styles.heroBody}>
+        <AppText variant="overline" color={Colors.accentLight}>
+          {todayEyebrow()}
+        </AppText>
+        <AppText variant="display" color={Colors.white} accessibilityRole="header" style={styles.heroTitle}>
+          Protection,{'\n'}
+          <AppText variant="display" color={Colors.accentLight} style={styles.heroAccent}>
+            on demand.
+          </AppText>
+        </AppText>
+        <AppText variant="callout" color={Colors.textSecondary} numberOfLines={2}>
+          Vetted protectors, ready when you are.
+        </AppText>
+        <Button
+          title="Find a protector"
+          iconRight={ArrowDown}
+          fullWidth={false}
+          onPress={onFind}
+          accessibilityHint="Scrolls to the protectors available now"
+          style={styles.heroButton}
+        />
+      </View>
+    </View>
+  );
+}
+
+function SectionHeading({
+  eyebrow,
+  title,
+  right,
+  style,
+}: {
+  eyebrow: string;
+  title: string;
+  right?: React.ReactNode;
+  style?: StyleProp<ViewStyle>;
+}) {
+  return (
+    <View style={[styles.sectionHeading, style]}>
+      <View style={styles.flex}>
+        <AppText variant="overline" color={Colors.accent}>
+          {eyebrow}
+        </AppText>
+        <AppText variant="title2" accessibilityRole="header" numberOfLines={1} style={styles.sectionTitle}>
+          {title}
+        </AppText>
+      </View>
+      {right}
+    </View>
   );
 }
 
@@ -328,7 +491,7 @@ function RosterMap({
                       {distances.has(item.id) ? `${distances.get(item.id)!.toFixed(1)} km` : item.languages.map(languageName).join(' · ')}
                     </AppText>
                   </View>
-                  <AppText variant="numeric" color={Colors.goldLight}>
+                  <AppText variant="numeric" color={Colors.accentLight}>
                     {formatMXN(item.hourlyRate)}
                   </AppText>
                 </View>
@@ -454,7 +617,7 @@ function GuardJobsHome({ guardId }: { guardId: string }) {
             <View style={styles.jobFoot}>
               <View>
                 <AppText variant="overline">Your payout</AppText>
-                <AppText variant="numeric" color={Colors.goldLight} style={styles.payout}>
+                <AppText variant="numeric" color={Colors.accentLight} style={styles.payout}>
                   {formatMXN(booking.guardPayout)}
                 </AppText>
               </View>
@@ -484,21 +647,80 @@ const styles = StyleSheet.create({
     paddingBottom: Space.huge,
     flexGrow: 1,
   },
-  chipsScroll: {
+  // Horizontal rails run edge to edge of the column.
+  bleed: {
     marginHorizontal: -Space.gutter,
     flexGrow: 0,
   },
   chips: {
     gap: Space.sm,
     paddingHorizontal: Space.gutter,
+    paddingBottom: Space.lg,
   },
   skeletons: {
     marginTop: Space.lg,
   },
+  skeletonCard: {
+    marginBottom: Space.lg,
+  },
+  // ---- client home
+  greetingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Space.md,
+    marginBottom: Space.lg,
+  },
+  hero: {
+    overflow: 'hidden',
+    borderRadius: Radius.lg,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.glassBorder,
+    justifyContent: 'flex-end',
+    ...Shadow.md,
+  },
+  // Explicit width: on web an absolutely-positioned bundled image without one
+  // falls back to its intrinsic pixel size instead of the card's width.
+  heroImage: {
+    position: 'absolute',
+    left: 0,
+    width: '100%',
+  },
+  heroBody: {
+    padding: Space.xl,
+    gap: Space.sm,
+  },
+  heroTitle: {
+    marginTop: Space.xs,
+  },
+  heroAccent: {
+    fontFamily: Fonts.displayLight,
+  },
+  heroButton: {
+    marginTop: Space.sm,
+  },
+  sectionHeading: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    gap: Space.lg,
+    marginTop: Space.xxxl,
+    marginBottom: Space.lg,
+  },
+  headingCompact: {
+    marginTop: Space.xs,
+  },
+  sectionTitle: {
+    marginTop: Space.xs,
+  },
+  moments: {
+    gap: Space.md,
+    paddingHorizontal: Space.gutter,
+  },
   // ---- map
   mapWrap: {
     flex: 1,
-    marginTop: Space.lg,
+    marginTop: Space.xs,
     overflow: 'hidden',
     borderTopLeftRadius: Radius.xl,
     borderTopRightRadius: Radius.xl,
@@ -512,7 +734,7 @@ const styles = StyleSheet.create({
     borderRadius: Radius.sm,
     backgroundColor: Colors.background,
     borderWidth: 1.5,
-    borderColor: Colors.gold,
+    borderColor: Colors.accent,
     ...Shadow.md,
   },
   mapOverlay: {

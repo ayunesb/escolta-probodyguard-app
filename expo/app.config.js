@@ -21,7 +21,7 @@ export default {
     splash: {
       image: './assets/splash.png',
       resizeMode: 'contain',
-      backgroundColor: '#0A0A0A'
+      backgroundColor: '#05080F'
     },
     assetBundlePatterns: ['**/*'],
     ios: {
@@ -49,7 +49,7 @@ export default {
     android: {
       adaptiveIcon: {
         foregroundImage: './assets/adaptive-icon.png',
-        backgroundColor: '#0A0A0A'
+        backgroundColor: '#05080F'
       },
       package: 'com.escolta.pro',
       ...(hayAndroid ? { googleServicesFile: archivoAndroid } : {}),
@@ -68,8 +68,8 @@ export default {
       name: 'Escolta Pro',
       shortName: 'Escolta Pro',
       description: 'Vetted close-protection professionals, booked in minutes and tracked in real time.',
-      themeColor: '#0A0A09',
-      backgroundColor: '#0A0A09',
+      themeColor: '#05080F',
+      backgroundColor: '#05080F',
       favicon: './assets/favicon.png',
       bundler: 'metro',
       config: {

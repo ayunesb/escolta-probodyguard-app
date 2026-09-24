@@ -226,7 +226,7 @@ const styles = StyleSheet.create({
     width: 5,
     height: 5,
     borderRadius: 3,
-    backgroundColor: Colors.gold,
+    backgroundColor: Colors.accent,
     marginTop: 9,
   },
   bulletText: {

@@ -105,7 +105,7 @@ function GuardReassignmentScreen() {
         ) : (
           <>
             <View style={styles.header}>
-              <AppText variant="overline" color={Colors.gold}>
+              <AppText variant="overline" color={Colors.accent}>
                 Booking {shortId(booking.id)}
               </AppText>
               <AppText variant="title2">

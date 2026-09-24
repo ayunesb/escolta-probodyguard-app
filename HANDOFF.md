@@ -83,10 +83,19 @@ The sign-in screen shows a **Test mode** panel with Client, Protector, Company a
 in development builds with `EXPO_PUBLIC_USE_EMULATORS=1`, and runs against a `demo-` Firebase project
 that cannot reach the real one. Details: `expo/scripts/emulator/README.md`.
 
-## Design system
+## Design system — "Midnight & Ice"
 
 `expo/DESIGN.md` — tokens, typefaces (Encode Sans Expanded for display, Geist for UI), components in
 `expo/components/ui`, and screen recipes. New screens should be built from it.
+
+- Midnight-navy atmosphere with blue glows, frosted-glass surfaces, white pill primary buttons,
+  ice-blue accent, a floating glass tab dock.
+- Photography and video generated for the brand (Higgsfield): `expo/assets/brand/img` (hero, service
+  moments, vehicles, ops room, city, 3D glass shield) and `expo/assets/brand/video/login-loop.mp4`
+  (7-second seamless B-roll behind the sign-in screen). 2K originals are kept locally in
+  `expo/assets/brand/raw/` (gitignored). Demo guard portraits for test mode: `expo/public/demo/guards`.
+- **Native builds**: the sign-in video uses `expo-video`, a native module — the next iOS/Android dev
+  build (EAS) must be rebuilt to include it. Web needs nothing.
 
 ## Verification done
 

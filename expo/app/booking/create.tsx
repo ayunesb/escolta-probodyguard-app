@@ -3,7 +3,6 @@ import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import {
   AlertTriangle,
-  Car,
   CreditCard,
   Flag,
   Hourglass,
@@ -50,6 +49,7 @@ import PaymentSheet, { type PaymentOutcome } from '@/components/PaymentSheet';
 import { PriceReceipt } from '@/components/funnel/PriceReceipt';
 import { StepperRow } from '@/components/funnel/StepperRow';
 import { ScheduleFields } from '@/components/funnel/ScheduleFields';
+import { VehiclePicker } from '@/components/funnel/VehiclePicker';
 import { geocodeAddress, getDeviceCoords, type Coords } from '@/components/funnel/deviceLocation';
 import {
   DRESS_CODE_LABELS,
@@ -443,7 +443,7 @@ export default function CreateBookingScreen() {
     return frame(
       <View style={styles.phase}>
         <View style={styles.phaseRing}>
-          <ShieldCheck size={28} color={Colors.gold} strokeWidth={1.5} />
+          <ShieldCheck size={28} color={Colors.accent} strokeWidth={1.5} />
         </View>
         <AppText variant="title2" align="center">
           Confirming your booking
@@ -451,7 +451,7 @@ export default function CreateBookingScreen() {
         <AppText variant="callout" align="center" style={styles.phaseText}>
           Payment received. We’re securing your protector — this takes a few seconds.
         </AppText>
-        <ActivityIndicator color={Colors.gold} style={styles.phaseSpinner} />
+        <ActivityIndicator color={Colors.accent} style={styles.phaseSpinner} />
       </View>,
       undefined,
       true
@@ -474,7 +474,7 @@ export default function CreateBookingScreen() {
     return frame(
       <View style={styles.phase}>
         <View style={styles.phaseRing}>
-          <ShieldAlert size={28} color={Colors.gold} strokeWidth={1.5} />
+          <ShieldAlert size={28} color={Colors.accent} strokeWidth={1.5} />
         </View>
         <AppText variant="title2" align="center">
           Payment received
@@ -551,7 +551,7 @@ export default function CreateBookingScreen() {
       <View style={styles.actionRow}>
         <View style={styles.totalBlock}>
           <AppText variant="overline">Total</AppText>
-          <AppText variant="numeric" color={Colors.goldLight} style={styles.total} accessibilityLabel={`Total ${formatMXN(quote.total)}`}>
+          <AppText variant="numeric" color={Colors.accentLight} style={styles.total} accessibilityLabel={`Total ${formatMXN(quote.total)}`}>
             {formatMXN(quote.total)}
           </AppText>
         </View>
@@ -577,16 +577,19 @@ export default function CreateBookingScreen() {
   return frame(
     <>
       {/* Who */}
-      <Card style={styles.guardCard}>
-        <Avatar name={`${guard.firstName} ${guard.lastName}`} uri={guard.photos[0]} size={52} verified={isVerified(guard)} />
+      <Card tone="raised" style={styles.guardCard}>
+        <Avatar name={`${guard.firstName} ${guard.lastName}`} uri={guard.photos[0]} size={64} verified={isVerified(guard)} />
         <View style={styles.flex}>
+          <AppText variant="overline" color={Colors.accent}>
+            Your protector
+          </AppText>
           <AppText variant="title2" numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8} style={styles.guardName}>
             {guardDisplayName(guard)}
           </AppText>
           <View style={styles.inline}>
             {hasRating(guard) ? (
               <>
-                <Star size={12} color={Colors.gold} fill={Colors.gold} strokeWidth={ICON_STROKE} />
+                <Star size={12} color={Colors.accent} fill={Colors.accent} strokeWidth={ICON_STROKE} />
                 <AppText variant="caption" color={Colors.textPrimary} tabular>
                   {guard.rating.toFixed(1)}
                 </AppText>
@@ -620,18 +623,7 @@ export default function CreateBookingScreen() {
       </AppText>
 
       <SectionTitle title="Vehicle" />
-      <SegmentedControl<VehicleType>
-        value={vehicleType}
-        onChange={setVehicleType}
-        options={[
-          { value: 'standard', label: 'Standard', icon: Car },
-          { value: 'armored', label: `Armored · +${pct(PRICING.ARMORED_VEHICLE_MULTIPLIER)}`, icon: Shield },
-        ]}
-        style={styles.segmented}
-      />
-      <AppText variant="footnote" color={Colors.textTertiary} style={styles.caption}>
-        {vehicleType === 'armored' ? 'Ballistic-rated vehicle with a trained driver.' : 'Executive sedan or SUV.'}
-      </AppText>
+      <VehiclePicker value={vehicleType} onChange={setVehicleType} />
 
       <SectionTitle title="Dress code" />
       <View style={styles.wrap}>
@@ -862,8 +854,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: Space.lg,
+    padding: Space.md,
+    paddingRight: Space.lg,
   },
   guardName: {
+    marginTop: 2,
     marginBottom: 2,
   },
   segmented: {
@@ -945,8 +940,8 @@ const styles = StyleSheet.create({
     height: 76,
     borderRadius: 38,
     borderWidth: 1,
-    borderColor: Colors.goldLine,
-    backgroundColor: Colors.goldSoft,
+    borderColor: Colors.accentLine,
+    backgroundColor: Colors.accentSoft,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: Space.xl,

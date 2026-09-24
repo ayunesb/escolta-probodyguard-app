@@ -191,7 +191,7 @@ export default function TrackingScreen() {
         statusText = viewer === 'guard' ? 'Waiting for your first location fix…' : `Waiting for ${name ?? 'your protector'}’s location…`;
       } else {
         statusIcon = Navigation;
-        statusTone = Colors.gold;
+        statusTone = Colors.accent;
         statusText = viewer === 'guard' ? 'Heading to the pickup.' : `${name ?? 'Your protector'} is heading to the pickup.`;
       }
       break;
@@ -251,13 +251,13 @@ export default function TrackingScreen() {
             >
               <View style={[styles.guardHalo, stale ? styles.guardHaloStale : null]}>
                 <View style={styles.guardPin}>
-                  <Shield size={18} color={Colors.gold} strokeWidth={ICON_STROKE} />
+                  <Shield size={18} color={Colors.accent} strokeWidth={ICON_STROKE} />
                 </View>
               </View>
             </Marker>
           ) : null}
           {guardPoint && pickup && heading ? (
-            <Polyline coordinates={[guardPoint, pickup]} strokeColor={Colors.gold} strokeWidth={3} lineDashPattern={[8, 8]} />
+            <Polyline coordinates={[guardPoint, pickup]} strokeColor={Colors.accent} strokeWidth={3} lineDashPattern={[8, 8]} />
           ) : null}
         </MapView>
 
@@ -280,7 +280,7 @@ export default function TrackingScreen() {
             <View style={styles.headerRow}>
               {viewer === 'guard' ? (
                 <View style={styles.pickupBadge}>
-                  <MapPin size={20} color={Colors.gold} strokeWidth={ICON_STROKE} />
+                  <MapPin size={20} color={Colors.accent} strokeWidth={ICON_STROKE} />
                 </View>
               ) : (
                 <Avatar name={name ?? undefined} uri={guard?.photos?.[0]} size={48} verified={guard?.kycStatus === 'approved'} />
@@ -436,9 +436,9 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 14,
-    backgroundColor: Colors.goldSoft,
+    backgroundColor: Colors.accentSoft,
     borderWidth: 1,
-    borderColor: Colors.goldLine,
+    borderColor: Colors.accentLine,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -495,7 +495,7 @@ const styles = StyleSheet.create({
     width: 60,
     height: 60,
     borderRadius: 30,
-    backgroundColor: Colors.goldSoft,
+    backgroundColor: Colors.accentSoft,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -508,7 +508,7 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     backgroundColor: Colors.background,
     borderWidth: 2,
-    borderColor: Colors.gold,
+    borderColor: Colors.accent,
     alignItems: 'center',
     justifyContent: 'center',
   },

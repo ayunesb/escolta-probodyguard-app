@@ -1,51 +1,59 @@
-// Paleta de Escolta Pro.
+// Paleta de Escolta Pro — "Midnight & Ice".
 //
-// Neutros de piedra calida (no grises frios) y un solo acento: oro champan.
-// Las claves de siempre se quedan en hex de 6 digitos a proposito: hay
-// pantallas que les concatenan un alfa (`Colors.gold + '20'`), y un rgba ahi
-// produce un color invalido. Las claves nuevas con transparencia ya vienen
-// resueltas (goldSoft, hairline...) y NO se les concatena nada.
+// Azul medianoche casi negro con luz fria y un solo acento: azul hielo. La
+// accion principal es una pastilla blanca (como las referencias de producto
+// premium), no un boton de color. Superficies de vidrio esmerilado sobre un
+// fondo con resplandores azules.
+//
+// Las claves en hex de 6 digitos aceptan un sufijo de alfa concatenado
+// (`Colors.accent + '20'`). Las que ya traen transparencia (…Soft, …Line,
+// glass*, hairline, overlay) NO se concatenan.
 const Colors = {
   // Superficies, de la mas profunda a la mas elevada
-  background: '#0A0A09',
-  surface: '#141412',
-  surfaceLight: '#1C1B19',
-  elevated: '#23221F',
+  background: '#05080F',
+  surface: '#0C1220',
+  surfaceLight: '#121A2C',
+  elevated: '#18223A',
 
-  // Acento
-  gold: '#C9A45C',
-  goldDark: '#A6843F',
-  goldLight: '#E2C58C',
+  // Acento: azul hielo
+  accent: '#7FA8FF',
+  accentDark: '#5C86E0',
+  accentLight: '#B9CFFF',
+
+  // Accion principal: pastilla blanca con texto medianoche
+  white: '#FFFFFF',
+  textOnAccent: '#07101F',
 
   // Texto
-  white: '#FFFFFF',
-  textPrimary: '#F4F1EA',
-  textSecondary: '#A19D94',
-  textTertiary: '#6F6B64',
-  textOnGold: '#16130D',
+  textPrimary: '#F2F5FA',
+  textSecondary: '#97A3BA',
+  textTertiary: '#5D6A82',
 
   // Lineas
-  border: '#282723',
-  borderStrong: '#3A3833',
+  border: '#1A2336',
+  borderStrong: '#26314A',
 
-  // Estados (apagados para no competir con el oro)
-  success: '#4DAA7F',
-  error: '#E0564F',
-  warning: '#E08A3C',
-  info: '#7C9CD6',
+  // Estados
+  success: '#46D3A0',
+  error: '#FF6B6B',
+  warning: '#F3B55A',
+  info: '#7FA8FF',
 
   // Con transparencia ya aplicada: no concatenar
-  overlay: 'rgba(0, 0, 0, 0.72)',
-  hairline: 'rgba(244, 241, 234, 0.07)',
-  goldSoft: 'rgba(201, 164, 92, 0.12)',
-  goldLine: 'rgba(201, 164, 92, 0.32)',
-  successSoft: 'rgba(77, 170, 127, 0.12)',
-  errorSoft: 'rgba(224, 86, 79, 0.12)',
-  warningSoft: 'rgba(224, 138, 60, 0.12)',
-  infoSoft: 'rgba(124, 156, 214, 0.12)',
+  overlay: 'rgba(3, 6, 12, 0.72)',
+  hairline: 'rgba(214, 226, 255, 0.08)',
+  accentSoft: 'rgba(127, 168, 255, 0.14)',
+  accentLine: 'rgba(127, 168, 255, 0.38)',
+  glass: 'rgba(160, 188, 255, 0.055)',
+  glassStrong: 'rgba(160, 188, 255, 0.10)',
+  glassBorder: 'rgba(200, 216, 255, 0.12)',
+  successSoft: 'rgba(70, 211, 160, 0.13)',
+  errorSoft: 'rgba(255, 107, 107, 0.13)',
+  warningSoft: 'rgba(243, 181, 90, 0.13)',
+  infoSoft: 'rgba(127, 168, 255, 0.13)',
 
-  // Alias que una pantalla ya usaba sin que existiera (quedaba undefined)
-  primary: '#C9A45C',
+  // Alias que una pantalla ya usaba sin que existiera
+  primary: '#7FA8FF',
 };
 
 export default Colors;

@@ -29,7 +29,8 @@ type Range = '30' | '90' | 'all';
 
 const TONE_COLOR: Record<Tone, string> = {
   neutral: Colors.textSecondary,
-  gold: Colors.gold,
+  accent: Colors.accent,
+  gold: Colors.accent,
   success: Colors.success,
   warning: Colors.warning,
   error: Colors.error,
@@ -172,7 +173,7 @@ function AdminAnalyticsScreen() {
       <Screen
         padTop={false}
         contentStyle={styles.content}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.gold} />}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.accent} />}
       >
         <View style={styles.header}>
           <AppText variant="title2">Platform analytics</AppText>

@@ -175,7 +175,7 @@ export default function PanicButton({ userId, bookingId, size = 'medium', onAler
           </>
         ) : phase === 'sending' ? (
           <View style={styles.status} accessibilityLiveRegion="polite">
-            <ActivityIndicator color={Colors.gold} />
+            <ActivityIndicator color={Colors.accent} />
             <AppText variant="bodyMedium">Alerting Escolta Pro operations…</AppText>
           </View>
         ) : phase === 'sent' ? (

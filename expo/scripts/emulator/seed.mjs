@@ -1,4 +1,5 @@
 // Siembra el EMULADOR LOCAL con datos de prueba realistas para los 4 roles.
+// Retratos de demostracion: public/demo/guards (servidos por la web de desarrollo).
 //
 //   npm run emulators:seed      (con los emuladores ya corriendo)
 //
@@ -107,7 +108,7 @@ const profiles = {
     completedJobs: 37,
     languages: ['es', 'en'],
     certifications: ['Close protection (SIA)', 'First aid & trauma', 'Defensive driving'],
-    photos: ['https://randomuser.me/api/portraits/men/32.jpg'],
+    photos: ['/demo/guards/diego.jpg'],
     latitude: 20.6275,
     longitude: -87.0739,
     phone: '+52 984 118 4502',
@@ -122,7 +123,7 @@ const extraGuards = [
       bio: 'Executive protection specialist, trilingual. Advance work, secure transport and event coverage.',
       hourlyRate: 520, rating: 4.8, completedJobs: 52, languages: ['es', 'en', 'fr'],
       certifications: ['Executive protection (ICP)', 'Tactical medicine'],
-      photos: ['https://randomuser.me/api/portraits/women/44.jpg'],
+      photos: ['/demo/guards/mariana.jpg'],
       latitude: 20.6342, longitude: -87.0668, phone: '+52 984 220 1983',
     },
   },
@@ -132,7 +133,7 @@ const extraGuards = [
       bio: 'Armored vehicle operator and protection driver. Airport and cross-city transfers.',
       hourlyRate: 380, rating: 4.7, completedJobs: 24, languages: ['es'],
       certifications: ['Evasive driving', 'Armored vehicle operation'],
-      photos: ['https://randomuser.me/api/portraits/men/75.jpg'],
+      photos: ['/demo/guards/tomas.jpg'],
       latitude: 20.6211, longitude: -87.0801, phone: '+52 984 331 0442',
     },
   },
@@ -141,6 +142,7 @@ const extraGuards = [
     extra: {
       bio: 'New to the Sentinela roster. Verification in progress.',
       hourlyRate: 350, languages: ['es', 'en'], kycStatus: 'pending', availability: false,
+      photos: ['/demo/guards/ivan.jpg'],
     },
   },
 ];

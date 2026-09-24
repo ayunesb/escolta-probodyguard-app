@@ -4,10 +4,10 @@
 // autocompletado de codigos del sistema.
 import React, { useEffect, useRef, useState } from 'react';
 import { KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, TextInput, View } from 'react-native';
-import { KeyRound } from 'lucide-react-native';
 import Colors from '@/constants/colors';
-import { Fonts, ICON_STROKE, Radius, Shadow, Space } from '@/constants/design';
+import { Fonts, Radius, Shadow, Space } from '@/constants/design';
 import { AppText, Button } from '@/components/ui';
+import { GlassShield } from '@/components/ui/Media';
 
 const LENGTH = 6;
 
@@ -73,10 +73,8 @@ export default function StartCodeInput({ visible, onSubmit, onCancel, clientName
         <View style={styles.overlay}>
           <Pressable style={StyleSheet.absoluteFill} onPress={cancel} accessibilityLabel="Close start code entry" />
           <View style={styles.sheet} accessibilityViewIsModal>
-            <View style={styles.iconRing}>
-              <KeyRound size={22} color={Colors.gold} strokeWidth={ICON_STROKE} />
-            </View>
-            <AppText variant="title2" accessibilityRole="header">
+            <GlassShield size={78} style={styles.shield} />
+            <AppText variant="title2" align="center" accessibilityRole="header">
               Enter start code
             </AppText>
             <AppText variant="callout" style={styles.subtitle}>
@@ -183,16 +181,10 @@ const styles = StyleSheet.create({
     padding: Space.xxl,
     ...Shadow.lg,
   },
-  iconRing: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    borderWidth: 1,
-    borderColor: Colors.goldLine,
-    backgroundColor: Colors.goldSoft,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: Space.lg,
+  shield: {
+    alignSelf: 'center',
+    marginTop: -Space.lg,
+    marginBottom: -Space.xs,
   },
   subtitle: {
     marginTop: Space.sm,
@@ -218,7 +210,7 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surfaceLight,
   },
   cellActive: {
-    borderColor: Colors.goldLine,
+    borderColor: Colors.accentLine,
   },
   cellError: {
     borderColor: Colors.error,

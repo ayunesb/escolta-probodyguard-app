@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Image, ScrollView, StyleSheet, View } from 'react-native';
+import { Image, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   AlertTriangle,
   Award,
   BadgeCheck,
   CalendarCheck,
+  ChevronLeft,
   Clock,
   Languages,
   MessageCircle,
@@ -21,24 +23,25 @@ import type { LucideIcon } from 'lucide-react-native';
 import { guardService, hasCompleteProfile } from '@/services/guardService';
 import type { Guard } from '@/types';
 import Colors from '@/constants/colors';
-import { ICON_STROKE, Radius, Space } from '@/constants/design';
+import { ICON_STROKE, MAX_CONTENT_WIDTH, Radius, Space } from '@/constants/design';
 import {
   ActionBar,
   AppText,
-  Avatar,
   Badge,
   Button,
   Card,
   EmptyState,
+  IconButton,
   InfoRow,
   ListGroup,
   ListRow,
-  NavBar,
   Screen,
+  Scrim,
   SectionTitle,
   Skeleton,
   StatTile,
 } from '@/components/ui';
+import { GuardPortrait } from '@/components/funnel/GuardPortrait';
 import { guardDisplayName, hasRating, isVerified, languageName } from '@/components/funnel/format';
 import { formatMXN } from '@/utils/pricing';
 
@@ -47,8 +50,14 @@ type LoadState = 'loading' | 'ready' | 'missing' | 'error';
 export default function GuardDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const { width: windowWidth } = useWindowDimensions();
   const [guard, setGuard] = useState<Guard | null>(null);
   const [state, setState] = useState<LoadState>('loading');
+
+  // The portrait runs edge to edge of the (max 560 + gutters) column.
+  const heroWidth = Math.min(windowWidth, MAX_CONTENT_WIDTH + Space.gutter * 2);
+  const heroHeight = Math.round(Math.min(520, Math.max(420, heroWidth * 1.17)));
 
   const load = useCallback(async () => {
     if (!id) {
@@ -69,11 +78,28 @@ export default function GuardDetailScreen() {
     load();
   }, [load]);
 
-  const shell = (content: React.ReactNode, footer?: React.ReactNode) => (
+  // Same behaviour as NavBar's back button.
+  const goBack = () => {
+    if (router.canGoBack()) router.back();
+    else router.replace('/');
+  };
+
+  // No NavBar: the portrait owns the top of the screen and a floating glass
+  // back button stays pinned above it (and above everything while scrolling).
+  const shell = (content: React.ReactNode, footer?: React.ReactNode, withHero = false) => (
     <View style={styles.root}>
       <Stack.Screen options={{ headerShown: false }} />
-      <NavBar title="Protector" />
-      <Screen padTop={false} contentStyle={styles.content} footer={footer}>
+      {/* First in the tree so it is first in focus order; zIndex keeps it on top. */}
+      <View pointerEvents="box-none" style={[styles.floating, { top: insets.top + Space.sm }]}>
+        <View pointerEvents="box-none" style={styles.floatingColumn}>
+          <IconButton icon={ChevronLeft} onPress={goBack} accessibilityLabel="Go back" size={42} style={styles.backButton} />
+        </View>
+      </View>
+      <Screen
+        padTop={false}
+        contentStyle={withHero ? null : { paddingTop: insets.top + Space.huge + Space.xxl }}
+        footer={footer}
+      >
         {content}
       </Screen>
     </View>
@@ -81,15 +107,18 @@ export default function GuardDetailScreen() {
 
   if (state === 'loading') {
     return shell(
-      <View style={styles.hero} accessibilityLabel="Loading profile">
-        <Skeleton width={112} height={112} radius={34} />
-        <Skeleton width="55%" height={30} style={styles.skeletonGap} />
-        <Skeleton width="35%" height={14} />
+      <View accessibilityLabel="Loading profile">
+        <Skeleton height={heroHeight} radius={0} style={styles.heroSkeleton} />
         <View style={styles.statsRow}>
           <Skeleton height={96} radius={Radius.lg} style={styles.flex} />
           <Skeleton height={96} radius={Radius.lg} style={styles.flex} />
         </View>
-      </View>
+        <Skeleton width="30%" height={11} style={styles.skeletonGap} />
+        <Skeleton height={14} style={styles.skeletonLine} />
+        <Skeleton width="70%" height={14} style={styles.skeletonLine} />
+      </View>,
+      undefined,
+      true
     );
   }
 
@@ -138,7 +167,7 @@ export default function GuardDetailScreen() {
         <View style={styles.priceBlock}>
           <AppText variant="overline">Hourly rate</AppText>
           {priced ? (
-            <AppText variant="numeric" color={Colors.goldLight} style={styles.price}>
+            <AppText variant="numeric" color={Colors.accentLight} style={styles.price}>
               {formatMXN(guard.hourlyRate)}
             </AppText>
           ) : (
@@ -167,22 +196,40 @@ export default function GuardDetailScreen() {
 
   return shell(
     <>
-      {/* Hero: the dossier cover */}
-      <View style={styles.hero}>
-        <Avatar name={`${guard.firstName} ${guard.lastName}`} uri={guard.photos[0]} size={112} verified={verified} />
-        <AppText variant="overline" color={Colors.gold} style={styles.eyebrow}>
-          {guard.isFreelancer ? 'Independent protector' : 'Agency protector'}
-        </AppText>
-        <AppText variant="display" align="center" accessibilityRole="header" numberOfLines={2} adjustsFontSizeToFit minimumFontScale={0.75}>
-          {name}
-        </AppText>
-        <View style={styles.badges}>
-          {verified ? <Badge label="Identity verified" tone="success" icon={BadgeCheck} /> : null}
-          <Badge
-            label={guard.availability ? 'Available' : 'Not taking bookings'}
-            tone={guard.availability ? 'success' : 'neutral'}
-            icon={CalendarCheck}
-          />
+      {/* Hero: the portrait, full bleed, name and standing laid over it */}
+      <View style={[styles.hero, { height: heroHeight }]}>
+        <GuardPortrait
+          uri={guard.photos[0]}
+          name={`${guard.firstName} ${guard.lastName}`}
+          width={heroWidth}
+          height={heroHeight}
+          initialsSize={Math.round(heroHeight * 0.26)}
+        />
+        {/* Top shade keeps the status bar and back button legible on bright photos. */}
+        <Scrim from="bottom" start={0.35} strength={0.75} style={styles.topShade} />
+        <Scrim start={0.42} strength={0.97} />
+        <View style={styles.heroBody}>
+          <AppText variant="overline" color={Colors.accentLight}>
+            {guard.isFreelancer ? 'Independent protector' : 'Agency protector'}
+          </AppText>
+          <AppText
+            variant="display"
+            color={Colors.white}
+            accessibilityRole="header"
+            numberOfLines={2}
+            adjustsFontSizeToFit
+            minimumFontScale={0.75}
+          >
+            {name}
+          </AppText>
+          <View style={styles.badges}>
+            {verified ? <Badge label="Identity verified" tone="success" icon={BadgeCheck} /> : null}
+            <Badge
+              label={guard.availability ? 'Available' : 'Not taking bookings'}
+              tone={guard.availability ? 'success' : 'neutral'}
+              icon={CalendarCheck}
+            />
+          </View>
         </View>
       </View>
 
@@ -275,7 +322,8 @@ export default function GuardDetailScreen() {
         </>
       ) : null}
     </>,
-    footer
+    footer,
+    true
   );
 }
 
@@ -303,33 +351,67 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: Colors.background,
   },
-  content: {
-    paddingTop: Space.xxl,
-  },
   flex: {
     flex: 1,
   },
+  // ---- floating back button (over the portrait, pinned while scrolling)
+  floating: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    paddingHorizontal: Space.lg,
+    zIndex: 10,
+  },
+  floatingColumn: {
+    width: '100%',
+    maxWidth: MAX_CONTENT_WIDTH + Space.gutter * 2,
+    alignSelf: 'center',
+    flexDirection: 'row',
+  },
+  // Dark glass so it reads over any photo and over text once scrolled.
+  backButton: {
+    backgroundColor: Colors.overlay,
+    borderColor: Colors.glassBorder,
+  },
+  // ---- hero
   hero: {
-    alignItems: 'center',
+    marginHorizontal: -Space.gutter,
+    overflow: 'hidden',
+    justifyContent: 'flex-end',
+    backgroundColor: Colors.surface,
+    borderBottomLeftRadius: Radius.xl,
+    borderBottomRightRadius: Radius.xl,
+  },
+  heroSkeleton: {
+    marginHorizontal: -Space.gutter,
+    borderBottomLeftRadius: Radius.xl,
+    borderBottomRightRadius: Radius.xl,
+  },
+  topShade: {
+    bottom: 'auto',
+    height: 170,
+  },
+  heroBody: {
+    paddingHorizontal: Space.gutter + Space.xs,
+    paddingBottom: Space.xxl,
     gap: Space.sm,
   },
   skeletonGap: {
-    marginTop: Space.lg,
+    marginTop: Space.xxl,
   },
-  eyebrow: {
-    marginTop: Space.lg,
+  skeletonLine: {
+    marginTop: Space.md,
   },
   badges: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    justifyContent: 'center',
     gap: Space.sm,
-    marginTop: Space.sm,
+    marginTop: Space.xs,
   },
   statsRow: {
     flexDirection: 'row',
     gap: Space.md,
-    marginTop: Space.xxl,
+    marginTop: Space.xl,
     alignSelf: 'stretch',
   },
   gallery: {
@@ -353,12 +435,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: Space.sm,
-    paddingHorizontal: Space.md,
+    paddingHorizontal: Space.md + 2,
     height: 36,
     borderRadius: Radius.pill,
     borderWidth: 1,
-    borderColor: Colors.border,
-    backgroundColor: Colors.surface,
+    borderColor: Colors.glassBorder,
+    backgroundColor: Colors.glass,
   },
   ratingRow: {
     flexDirection: 'row',
@@ -382,7 +464,7 @@ const styles = StyleSheet.create({
   fill: {
     height: 4,
     borderRadius: 2,
-    backgroundColor: Colors.textSecondary,
+    backgroundColor: Colors.accent,
   },
   ratingValue: {
     minWidth: 30,

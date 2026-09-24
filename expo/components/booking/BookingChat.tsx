@@ -150,7 +150,7 @@ export function BookingChat({ bookingId, clientId, guardId, user, canSend, count
           trailing={
             <IconButton
               icon={Send}
-              tone="gold"
+              tone="accent"
               size={36}
               onPress={send}
               disabled={!draft.trim() || sending}
@@ -187,8 +187,8 @@ const styles = StyleSheet.create({
   },
   bubbleOwn: {
     alignSelf: 'flex-end',
-    backgroundColor: Colors.goldSoft,
-    borderColor: Colors.goldLine,
+    backgroundColor: Colors.accentSoft,
+    borderColor: Colors.accentLine,
     borderBottomRightRadius: Radius.xs,
   },
   bubbleOther: {

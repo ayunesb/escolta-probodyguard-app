@@ -83,22 +83,23 @@ export const Space = {
   gutter: 20,
 } as const;
 
-// Radios: mas cerrados por dentro, mas suaves en contenedores.
+// Radios: mas cerrados por dentro, mas suaves en contenedores. Los botones y
+// filtros son pastillas completas.
 export const Radius = {
-  xs: 6,
-  sm: 10,
-  md: 14,
-  lg: 18,
-  xl: 24,
+  xs: 8,
+  sm: 12,
+  md: 16,
+  lg: 24,
+  xl: 30,
   pill: 999,
 } as const;
 
-// Sombras tenidas del fondo (negro calido), una sola fuente de luz desde arriba.
+// Sombras tenidas de azul medianoche, una sola fuente de luz desde arriba.
 const shadow = (y: number, blur: number, opacity: number, elevation: number): ViewStyle =>
   Platform.select<ViewStyle>({
-    web: { boxShadow: `0px ${y}px ${blur}px rgba(4, 3, 2, ${opacity})` } as ViewStyle,
+    web: { boxShadow: `0px ${y}px ${blur}px rgba(0, 4, 16, ${opacity})` } as ViewStyle,
     default: {
-      shadowColor: '#040302',
+      shadowColor: '#000410',
       shadowOffset: { width: 0, height: y },
       shadowOpacity: opacity,
       shadowRadius: blur / 2,
@@ -107,17 +108,17 @@ const shadow = (y: number, blur: number, opacity: number, elevation: number): Vi
   });
 
 export const Shadow = {
-  sm: shadow(2, 8, 0.35, 2),
-  md: shadow(8, 24, 0.45, 6),
-  lg: shadow(18, 48, 0.55, 12),
-  // Brillo del boton dorado
-  gold: Platform.select<ViewStyle>({
-    web: { boxShadow: '0px 8px 24px rgba(201, 164, 92, 0.22)' } as ViewStyle,
+  sm: shadow(2, 10, 0.4, 2),
+  md: shadow(10, 30, 0.5, 6),
+  lg: shadow(22, 60, 0.6, 12),
+  // Halo frio de la pastilla blanca principal
+  accent: Platform.select<ViewStyle>({
+    web: { boxShadow: '0px 10px 30px rgba(150, 185, 255, 0.22)' } as ViewStyle,
     default: {
-      shadowColor: Colors.gold,
-      shadowOffset: { width: 0, height: 8 },
+      shadowColor: '#96B9FF',
+      shadowOffset: { width: 0, height: 10 },
       shadowOpacity: 0.22,
-      shadowRadius: 12,
+      shadowRadius: 15,
       elevation: 6,
     },
   }),
