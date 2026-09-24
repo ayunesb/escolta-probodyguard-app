@@ -802,6 +802,7 @@ export const bookingService = {
         bookingId,
         clientId: current.clientId,
         rating,
+        ...(breakdown ? { ratingBreakdown: breakdown } : {}),
         review,
         createdAt: new Date().toISOString(),
       });

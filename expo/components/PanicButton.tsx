@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { ActivityIndicator, Alert, Linking, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import { PUBLIC_DEMO } from '@/constants/demo';
-import i18n from '@/i18n';
+import { openContact } from '@/utils/openContact';
 import { useTranslation } from 'react-i18next';
 import { CircleCheck, CircleAlert, HeartPulse, LifeBuoy, PhoneCall, ShieldAlert, Siren, TriangleAlert } from 'lucide-react-native';
 import type { LucideIcon } from 'lucide-react-native';
@@ -31,16 +31,15 @@ const OPTIONS: { type: EmergencyType; icon: LucideIcon }[] = [
 type Phase = 'choose' | 'sending' | 'sent' | 'failed';
 
 async function call911() {
-  if (PUBLIC_DEMO) { Alert.alert('Demo', i18n.t('auth:publicDemo.unavailable')); return; }
   try {
-    await Linking.openURL('tel:911');
+    await openContact('tel:911');
   } catch (error) {
     logger.error('[PanicButton] Could not open the dialer', error);
   }
 }
 
 export default function PanicButton({ userId, bookingId, size = 'medium', onAlertTriggered }: PanicButtonProps) {
-  const { t } = useTranslation(['booking', 'common']);
+  const { t } = useTranslation(['booking', 'common', 'auth']);
   const [visible, setVisible] = useState(false);
   const [phase, setPhase] = useState<Phase>('choose');
   const [lastType, setLastType] = useState<EmergencyType>('panic');
@@ -59,8 +58,7 @@ export default function PanicButton({ userId, bookingId, size = 'medium', onAler
   };
 
   const send = async (type: EmergencyType) => {
-    if (PUBLIC_DEMO) { Alert.alert('Demo', i18n.t('auth:publicDemo.unavailable')); return; }
-    setLastType(type);
+      setLastType(type);
     setPhase('sending');
     setError(null);
     const result = await emergencyService.triggerPanicButton(userId, bookingId, type);
@@ -187,7 +185,7 @@ export default function PanicButton({ userId, bookingId, size = 'medium', onAler
                 locationShared ? t('booking:panic.locationShared') : t('booking:panic.locationNotShared')
               }
             />
-            <AppText variant="footnote">{t('booking:panic.notEmergencyServices')}</AppText>
+            <AppText variant="footnote">{PUBLIC_DEMO ? t('auth:publicDemo.alertSent') : t('booking:panic.notEmergencyServices')}</AppText>
           </View>
         ) : (
           <View style={styles.statusBlock} accessibilityLiveRegion="assertive">

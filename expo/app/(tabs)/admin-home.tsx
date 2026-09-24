@@ -1,5 +1,6 @@
+import { openContact } from '@/utils/openContact';
 import { useCallback, useMemo, useState } from 'react';
-import { Linking, RefreshControl, StyleSheet, View } from 'react-native';
+import { RefreshControl, StyleSheet, View } from 'react-native';
 import { Stack, useFocusEffect, useRouter } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import {
@@ -145,7 +146,7 @@ function AdminHomeScreen() {
     // Nombres solo de lo que se muestra (reservas recientes, rechazadas, alertas).
     const shown = [
       ...loaded.slice(0, 8),
-      ...loaded.filter((b) => b.status === 'rejected' && isPaid(b)).slice(0, 5),
+      ...loaded.filter((b) => b.status === 'rejected' && isPaid(b) && b.paymentStatus !== 'refunded').slice(0, 5),
     ];
     const ids = [...shown.flatMap((b) => [b.clientId, b.guardId]), ...activeAlerts.map((a) => a.userId)];
     setPeople(await userService.getUsersByIds(ids));
@@ -166,7 +167,7 @@ function AdminHomeScreen() {
   const stats = useMemo(() => {
     const list = bookings ?? [];
     const completed = list.filter((b) => b.status === 'completed');
-    const cancelledPaid = list.filter((b) => b.status === 'cancelled' && isPaid(b));
+    const cancelledPaid = list.filter((b) => b.status === 'cancelled' && isPaid(b) && b.paymentStatus !== 'refunded');
     return {
       total: list.length,
       inProgress: list.filter((b) => ACTIVE_STATUSES.includes(b.status)).length,
@@ -174,8 +175,8 @@ function AdminHomeScreen() {
       completed: completed.length,
       gross: completed.reduce((s, b) => s + money(b.totalAmount), 0),
       platform: completed.reduce((s, b) => s + money(b.platformCut), 0),
-      declined: list.filter((b) => b.status === 'rejected' && isPaid(b)),
-      refundCandidates: cancelledPaid.length + list.filter((b) => b.status === 'rejected' && isPaid(b)).length,
+      declined: list.filter((b) => b.status === 'rejected' && isPaid(b) && b.paymentStatus !== 'refunded'),
+      refundCandidates: cancelledPaid.length + list.filter((b) => b.status === 'rejected' && isPaid(b) && b.paymentStatus !== 'refunded').length,
     };
   }, [bookings]);
 
@@ -326,7 +327,7 @@ function AdminHomeScreen() {
                         variant="secondary"
                         size="sm"
                         fullWidth={false}
-                        onPress={() => Linking.openURL(`tel:${person.phone}`).catch(() => {})}
+                        onPress={() => openContact(`tel:${person.phone}`).catch(() => {})}
                         accessibilityLabel={t('adminHome.callA11y', { name: fullName(person) })}
                       />
                     ) : null}

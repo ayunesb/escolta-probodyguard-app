@@ -1,6 +1,7 @@
 import { addDoc, collection, doc, getDocs, query, updateDoc, where } from 'firebase/firestore';
 import { get, ref } from 'firebase/database';
 import * as Location from 'expo-location';
+import { PUBLIC_DEMO } from '@/constants/demo';
 import { Platform } from 'react-native';
 import { db as getDbInstance, realtimeDb as getRealtimeDb } from '@/lib/firebase';
 import { logger } from '@/utils/logger';
@@ -74,7 +75,12 @@ class EmergencyService {
     logger.log('[Emergency] Triggering alert', { type, hasBooking: !!bookingId });
 
     // En paralelo con la escritura: nada de esperar al GPS para avisar.
-    const locationPromise = this.getCurrentLocation(LOCATION_TIMEOUT_MS);
+    const locationPromise = PUBLIC_DEMO && bookingId
+      ? get(ref(getRealtimeDb(), `bookings/${bookingId}`)).then(snap => {
+          const b = snap.val();
+          return { latitude: b?.pickupLatitude ?? 20.6269, longitude: b?.pickupLongitude ?? -87.073, accuracy: 8, address: 'Simulated demo location' };
+        })
+      : this.getCurrentLocation(LOCATION_TIMEOUT_MS);
     const partiesPromise = bookingId ? timeout(this.getBookingParties(bookingId), 5000, null) : Promise.resolve(null);
 
     let alertId: string;
@@ -178,6 +184,7 @@ class EmergencyService {
   }
 
   private async readLocation(timeoutMs: number): Promise<EmergencyLocation | null> {
+    if (PUBLIC_DEMO) return { latitude: 20.6269, longitude: -87.073, accuracy: 8, address: 'Simulated demo location' };
     if (Platform.OS === 'web') {
       if (typeof navigator === 'undefined' || !('geolocation' in navigator)) return null;
       return new Promise((resolve) => {

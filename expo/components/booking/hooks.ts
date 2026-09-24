@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useFocusEffect } from 'expo-router';
 import type { Booking, Guard } from '@/types';
 import { bookingService } from '@/services/bookingService';
 import { guardService } from '@/services/guardService';
@@ -68,7 +69,7 @@ export function useGuardProfile(guardId?: string | null): { guard: Guard | null;
   const [guard, setGuard] = useState<Guard | null>(null);
   const [loading, setLoading] = useState<boolean>(!!guardId);
 
-  useEffect(() => {
+  useFocusEffect(useCallback(() => {
     let active = true;
     if (!guardId) {
       setGuard(null);
@@ -90,7 +91,7 @@ export function useGuardProfile(guardId?: string | null): { guard: Guard | null;
     return () => {
       active = false;
     };
-  }, [guardId]);
+  }, [guardId]));
 
   return { guard, loading };
 }

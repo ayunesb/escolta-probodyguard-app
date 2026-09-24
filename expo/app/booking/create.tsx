@@ -1,3 +1,4 @@
+import { PUBLIC_DEMO } from '@/constants/demo';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
@@ -89,7 +90,7 @@ const pct = (multiplier: number) => `${Math.round((multiplier - 1) * 100)}%`;
 const paymentsUnavailable = () => stripeService.isSupportedOnThisPlatform() && !stripeService.isConfigured();
 
 export default function CreateBookingScreen() {
-  const { t } = useTranslation(['funnel', 'common']);
+  const { t } = useTranslation(['funnel', 'common', 'auth']);
   const { guardId } = useLocalSearchParams<{ guardId: string }>();
   const router = useRouter();
   const { user } = useAuth();
@@ -809,7 +810,7 @@ export default function CreateBookingScreen() {
         <PriceReceipt breakdown={quote} duration={duration} protectors={numberOfProtectors} />
       </Card>
       <AppText variant="footnote" color={Colors.textTertiary} style={styles.caption}>
-        {t('create.priceNote')}
+        {PUBLIC_DEMO ? t('auth:publicDemo.paymentHelp') : t('create.priceNote')}
       </AppText>
 
       {paymentsUnavailable() ? <Notice icon={CreditCard} tone="warning" text={t('create.paymentsOff')} /> : null}

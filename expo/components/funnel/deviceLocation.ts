@@ -14,7 +14,7 @@ const valid = (c: { latitude?: number; longitude?: number } | null | undefined):
  * optional niceties like distances. Returns null when unavailable.
  */
 export async function getDeviceCoords({ prompt }: { prompt: boolean }): Promise<Coords | null> {
-  if (PUBLIC_DEMO) return null;
+  if (PUBLIC_DEMO) return { latitude: 20.6269, longitude: -87.073 };
   try {
     const perm = prompt
       ? await Location.requestForegroundPermissionsAsync()
@@ -52,6 +52,14 @@ export function useSilentDeviceLocation(): Coords | null {
 export async function geocodeAddress(address: string): Promise<Coords | null> {
   const query = address.trim();
   if (!query) return null;
+  if (PUBLIC_DEMO) {
+    const q = query.toLowerCase();
+    if (/reforma|polanco|mexico|méxico|cdmx/.test(q)) return { latitude: 19.4319, longitude: -99.1912 };
+    if (/monterrey/.test(q)) return { latitude: 25.6866, longitude: -100.3161 };
+    if (/canc[uú]n/.test(q)) return { latitude: 21.1619, longitude: -86.8515 };
+    if (/tulum/.test(q)) return { latitude: 20.2114, longitude: -87.4654 };
+    return { latitude: 20.6269, longitude: -87.073 };
+  }
   try {
     const results = await Location.geocodeAsync(query);
     const first = results?.find((r) => valid(r));

@@ -1,5 +1,6 @@
+import { openContact } from '@/utils/openContact';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Linking, StyleSheet, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useTranslation } from 'react-i18next';
@@ -402,7 +403,7 @@ export default function TrackingScreen() {
                     icon={Phone}
                     variant="secondary"
                     onPress={() => {
-                      Linking.openURL(`tel:${phone}`).catch(() => {});
+                      openContact(`tel:${phone}`).catch(() => {});
                     }}
                     style={styles.flex}
                     accessibilityLabel={name ? t('booking:tracking.callNamed', { name }) : t('booking:tracking.callProtector')}

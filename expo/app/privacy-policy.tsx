@@ -1,4 +1,5 @@
-import { Linking, StyleSheet, View } from 'react-native';
+import { openContact } from '@/utils/openContact';
+import { StyleSheet, View } from 'react-native';
 import { Stack } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import { Mail } from 'lucide-react-native';
@@ -97,7 +98,7 @@ export default function PrivacyPolicyScreen() {
           title={t('policy.emailButton', { email: PRIVACY_EMAIL })}
           icon={Mail}
           variant="outline"
-          onPress={() => Linking.openURL(`mailto:${PRIVACY_EMAIL}`).catch(() => {})}
+          onPress={() => openContact(`mailto:${PRIVACY_EMAIL}`).catch(() => {})}
           style={styles.contact}
         />
         <AppText variant="caption" color={Colors.textTertiary} align="center" style={styles.footer}>

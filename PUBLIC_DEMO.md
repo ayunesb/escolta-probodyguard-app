@@ -1,46 +1,80 @@
-# Public Escolta Pro demo
+# Escolta Pro functional demo
 
-https://escolta-pro-demo.vercel.app
+[Open the shareable test version](https://escolta-pro-demo.vercel.app).
 
-Anyone can explore the client, protector, company and admin views without an account. English and
-Spanish are available from the language switch. Profiles, ratings, bookings and locations are
-fictional examples. Changes stay in browser memory and reset on a page reload.
+The normal sign-in form remains at the top, with test-role access at the bottom. Choose Client,
+Protector, Company or Admin to explore. English and Spanish are available.
 
-This is an interactive preview, not a live booking service. Payments, emergency calls/alerts,
-account creation, document uploads and cloud functions are disabled. It does not access the live
-Firebase project. The production backend setup in HANDOFF.md is still pending.
+This is a local simulation of the app, with no production backend connection. Each browser gets its
+own fictional data. Bookings, chats, test accounts, uploads and changes persist in IndexedDB through
+refreshes. Tabs in the same browser share data; sign-in sessions are kept per tab. Different people
+opening the public link have independent sandboxes.
 
-## Build and publish
+## Working flows
 
-From `expo/` with Node 22 and dependencies installed:
+- **Booking:** browse and filter verified guards, view profiles, choose protection/vehicle options,
+  team size, duration, local calendar date, hour/minute, pickup, destination and stops. Pin pickup on
+  the map. Dates and overnight end times use local time.
+- **Payment:** choose the successful or declined test card. Retry declines without creating another
+  charge. The local payment handler recomputes the price from the protector's rate and confirms once.
+  Paid bookings appear in the assigned protector's job list and the company/admin views.
+- **Service:** accept, decline, reassign, cancel, go en route, validate the client's six-digit code,
+  follow a simulated moving map marker, send two-way chat, complete and rate the job. Wrong codes
+  cannot start a service. Ratings retain category scores; job counts and dashboards update.
+- **Accounts:** local signup, verification and password-reset flows; company-created guard accounts
+  and CSV import. Open **Demo controls** for verification/reset links instead of checking real email.
+  Sample accounts initially use `EscoltaDev!2026`; newly created accounts use the password you set.
+- **Operations:** edit protector rates, profile and availability; upload, preview and remove local
+  test images; review/approve/reject KYC; inspect the audit trail; search/edit/suspend/reinstate users;
+  review analytics; simulate full refunds of cancelled/declined paid bookings; export CSV/JSON.
+- **Safety:** SOS creates a local admin alert that can be resolved or marked a false alarm. Calls,
+  emails and other contact actions are recorded in the local inbox. Nobody is contacted.
+- **Reset:** Demo controls can switch to any test person or restore the original fixture, clearing
+  test records, files, notifications and local rate-limit counters.
+
+Use fictional information and test files. GPS, geocoding, payments, notifications and document review
+are simulations. Address lookup recognizes demo cities and otherwise supplies the Playa del Carmen
+sample point; the map pin can be placed manually. The demo is not evidence that production payment
+processors, identity checks, email, push notifications or mobile devices have been integrated.
+
+## Isolation and deployment
+
+`expo/constants/demo.ts` gates the web-only simulator. In demo exports, Metro replaces Firebase SDK
+imports with `expo/demo/firebase.js`. Normal exports retain the real SDK and do not open the sandbox
+storage. Runtime code does not send demo activity to Firebase, Stripe or messaging providers.
+
+From `expo/`, with Node 22 and dependencies installed:
 
 ```sh
-npm install --legacy-peer-deps
 npm run build:demo
-vercel link --project escolta-pro-demo
 vercel deploy --prebuilt --prod
 ```
 
-Use the `escolta-pro-demo` Vercel project for the demo. The normal app export is for the separate live
-service; do not use `vercel deploy` without `--prebuilt` for this demo project.
+Deploy only the prebuilt static output to the `escolta-pro-demo` Vercel project. Do not use plain
+`vercel deploy` for this project: the normal application build expects the real backend.
 
-`build:demo` ignores local environment files, strips inherited EXPO_PUBLIC settings, enables the
-web-only demo flag, and produces `.vercel/output` containing static files only. The build-time Metro
-resolver replaces Firebase SDK imports with the in-memory adapter in `expo/demo/`. Without the flag,
-normal builds retain the real SDK. No API functions or secrets are uploaded by the prebuilt deployment.
+The export script ignores environment files, strips inherited `EXPO_PUBLIC_*` settings and generates
+`.vercel/output` with static files only. No server functions or environment files are uploaded.
+CSP permits same-origin assets, local data/blob files and OpenStreetMap tiles, while blocking remote
+backend calls. Browser location, camera, microphone and payment permissions remain disabled.
+Map tiles are the only external data used by the demo. No device GPS is requested.
 
-The exported response headers restrict connections to the same origin and map tiles, deny forms and
-frames, and disable browser location/camera/microphone/payment permissions. Map imagery is fetched
-from OpenStreetMap; the sample marker coordinates are fictional demonstration locations.
+For a real launch, follow the separate backend deployment requirements in `HANDOFF.md`.
 
-## Verified on 24 September 2026
+## Verification - 24 September 2026
 
-- App TypeScript and Cloud Functions compilation pass.
-- Existing 98 tests and 3 new demo-isolation tests pass (101 total).
-- Production demo web export succeeds.
-- Browser checks: all four roles, role switching, English/Spanish, client bookings and tracking.
-- Anonymous HTTP 200 responses on the public root and app routes.
-- Public client entry works with no browser console errors.
-
-The link is for review. For real customers and payments, follow the separate deployment and migration
-requirements in HANDOFF.md.
+- 117 automated tests in 12 suites pass, including real booking-service transitions against the local
+  adapter with network access forbidden. Coverage includes all four roles, wrong credentials,
+  verification and reset links, secondary company auth, payment decline/retry/idempotence, canonical
+  repricing, wrong/right start codes, completion/rating, reassignment, cancellation/refund, queries,
+  timestamps and reset. Calendar cases cover leap years, month/year boundaries and overnight dates.
+- App TypeScript, changed-file ESLint, Cloud Functions compilation, normal web export and demo web
+  export pass. Normal backend credentials and deployments are unchanged.
+- Browser-tested: future-month scheduling, armored booking, payment decline/retry, confirmation,
+  refresh persistence, two-way chat, protector acceptance/en-route, wrong/right start code, tracking,
+  SOS/admin resolution, completion, rating, roster creation/CSV import, local upload persistence,
+  KYC approval/audit trail, rate/profile/availability edits, suspension/reinstatement, analytics,
+  simulated refund and explicit hour/minute selection. Calendar layout checked at 375px width.
+- Public release smoke checks verify the deployed sign-in/test panel, role access, scheduling controls
+  and static route availability. Production services and native device behavior are outside this
+  browser-demo verification.

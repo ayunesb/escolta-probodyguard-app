@@ -223,9 +223,17 @@ export default function SignInScreen() {
   const handleQuickLogin = async (role: DevRole) => {
     resetMessages();
     setBusyRole(role);
-    const result = await signIn(DEV_ACCOUNTS[role].email, DEV_PASSWORD);
-    if (!result.success) {
-      setError(t('testMode.emulatorHint', { error: result.error ?? t('testMode.failed') }));
+    try {
+      if (PUBLIC_DEMO) {
+        const { demoSandbox } = await import('@/demo/firebase');
+        await demoSandbox.switchAccount(role);
+      } else {
+        const result = await signIn(DEV_ACCOUNTS[role].email, DEV_PASSWORD);
+        if (!result.success) setError(t('testMode.emulatorHint', { error: result.error ?? t('testMode.failed') }));
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : t('errors.signInFailedShort'));
+    } finally {
       setBusyRole(null);
     }
   };

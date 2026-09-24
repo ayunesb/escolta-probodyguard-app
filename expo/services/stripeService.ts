@@ -15,7 +15,7 @@ let stripePromise: Promise<Stripe | null> | null = null;
 export const stripeService = {
   /** True when a publishable key is present. The API is same-origin on web. */
   isConfigured(): boolean {
-    return !PUBLIC_DEMO && Boolean(process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY);
+    return PUBLIC_DEMO || Boolean(process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY);
   },
 
   publishableKey(): string {
@@ -32,6 +32,7 @@ export const stripeService = {
 
   /** Loads Stripe.js once per session. */
   load(): Promise<Stripe | null> {
+    if (PUBLIC_DEMO) return Promise.resolve(null);
     if (!stripePromise) {
       stripePromise = import('@stripe/stripe-js')
         .then(({ loadStripe }) => loadStripe(stripeService.publishableKey()))

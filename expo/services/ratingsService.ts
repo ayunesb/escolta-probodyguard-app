@@ -116,10 +116,10 @@ export const ratingsService = {
       };
 
       reviews.forEach((review) => {
-        breakdownSums.professionalism += review.ratingBreakdown.professionalism;
-        breakdownSums.punctuality += review.ratingBreakdown.punctuality;
-        breakdownSums.communication += review.ratingBreakdown.communication;
-        breakdownSums.languageClarity += review.ratingBreakdown.languageClarity;
+        breakdownSums.professionalism += (review.ratingBreakdown?.professionalism ?? review.rating);
+        breakdownSums.punctuality += (review.ratingBreakdown?.punctuality ?? review.rating);
+        breakdownSums.communication += (review.ratingBreakdown?.communication ?? review.rating);
+        breakdownSums.languageClarity += (review.ratingBreakdown?.languageClarity ?? review.rating);
       });
 
       const averageBreakdown: RatingBreakdown = {
@@ -183,10 +183,10 @@ export const ratingsService = {
       };
 
       reviews.forEach((review) => {
-        breakdownSums.professionalism += review.ratingBreakdown.professionalism;
-        breakdownSums.punctuality += review.ratingBreakdown.punctuality;
-        breakdownSums.communication += review.ratingBreakdown.communication;
-        breakdownSums.languageClarity += review.ratingBreakdown.languageClarity;
+        breakdownSums.professionalism += (review.ratingBreakdown?.professionalism ?? review.rating);
+        breakdownSums.punctuality += (review.ratingBreakdown?.punctuality ?? review.rating);
+        breakdownSums.communication += (review.ratingBreakdown?.communication ?? review.rating);
+        breakdownSums.languageClarity += (review.ratingBreakdown?.languageClarity ?? review.rating);
       });
 
       const averageBreakdown: RatingBreakdown = {

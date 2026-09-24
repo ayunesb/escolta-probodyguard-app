@@ -1,14 +1,15 @@
 import React, { useState } from 'react';
-import type { CSSProperties } from 'react';
 import { Platform, StyleSheet, View } from 'react-native';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { Calendar, Clock } from 'lucide-react-native';
 import { useTranslation } from 'react-i18next';
 import type { LucideIcon } from 'lucide-react-native';
 import Colors from '@/constants/colors';
-import { Fonts, ICON_STROKE, Radius, Space } from '@/constants/design';
+import { ICON_STROKE, Radius, Space } from '@/constants/design';
 import { AppText, Button, PressableScale } from '@/components/ui';
-import { formatDateLong, formatTime, toDateInputValue, toTimeInputValue } from './format';
+import { WebTimeField } from './WebTimeField';
+import { WebDateField } from './WebDateField';
+import { formatDateLong, formatTime } from './format';
 
 export interface ScheduleFieldsProps {
   // Local start date + time of the booking.
@@ -17,8 +18,8 @@ export interface ScheduleFieldsProps {
   error?: string | null;
 }
 
-// Native <input type="date|time"> on web (the community picker has no web
-// implementation), platform pickers on iOS/Android. Everything is LOCAL time.
+// Accessible web date/time dialogs and platform pickers on iOS/Android.
+// Everything uses the local calendar date and wall-clock time.
 export function ScheduleFields({ value, onChange, error }: ScheduleFieldsProps) {
   const { t } = useTranslation(['funnel', 'common']);
   const [picker, setPicker] = useState<'date' | 'time' | null>(null);
@@ -36,47 +37,15 @@ export function ScheduleFields({ value, onChange, error }: ScheduleFieldsProps) 
   };
 
   if (Platform.OS === 'web') {
-    const inputStyle: CSSProperties = {
-      flex: 1,
-      minWidth: 0,
-      fontSize: 15.5,
-      fontFamily: Fonts.regular,
-      color: Colors.textPrimary,
-      backgroundColor: 'transparent',
-      border: 'none',
-      outline: 'none',
-      colorScheme: 'dark',
-      padding: '14px 0',
-    };
     return (
       <View>
         <View style={styles.row}>
-          {/* Browser inputs draw their own picker icon, so the shell drops its
-              duplicate one and pads tighter: at 375 px both values used to clip. */}
+          {/* Each web control includes its own icon and accessible dialog. */}
           <FieldShell label={t('schedule.date')} icon={Calendar} borderColor={borderColor} compact>
-            <input
-              type="date"
-              aria-label={t('schedule.dateA11y')}
-              value={toDateInputValue(value)}
-              min={toDateInputValue(new Date())}
-              onChange={(e) => {
-                const [y, m, d] = e.target.value.split('-').map(Number);
-                if (y && m && d) setDatePart(y, m - 1, d);
-              }}
-              style={inputStyle}
-            />
+            <WebDateField value={value} onChange={onChange} />
           </FieldShell>
           <FieldShell label={t('schedule.startTime')} icon={Clock} borderColor={borderColor} compact>
-            <input
-              type="time"
-              aria-label={t('schedule.startTime')}
-              value={toTimeInputValue(value)}
-              onChange={(e) => {
-                const [h, min] = e.target.value.split(':').map(Number);
-                if (!Number.isNaN(h) && !Number.isNaN(min)) setTimePart(h, min);
-              }}
-              style={inputStyle}
-            />
+            <WebTimeField value={value} onChange={onChange} />
           </FieldShell>
         </View>
         <FieldError error={error} />

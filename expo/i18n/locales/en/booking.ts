@@ -129,6 +129,7 @@ const booking = {
     unknownTitle: 'Status unavailable',
   },
   detail: {
+    totalRefunded: "Total refunded",
     rateProtector: 'Rate your protector',
     decline: 'Decline',
     acceptJob: 'Accept job',

@@ -1,3 +1,4 @@
+import { openContact } from '@/utils/openContact';
 import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Linking, Platform, StyleSheet, Switch, View } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
@@ -159,7 +160,7 @@ function PrivacySettingsScreen() {
             title={t('privacySettings.arco.title')}
             subtitle={t('privacySettings.arco.subtitle', { email: PRIVACY_EMAIL })}
             onPress={() =>
-              Linking.openURL(
+              openContact(
                 `mailto:${PRIVACY_EMAIL}?subject=${encodeURIComponent(t('privacySettings.arco.emailSubject'))}`
               ).catch(() => {})
             }

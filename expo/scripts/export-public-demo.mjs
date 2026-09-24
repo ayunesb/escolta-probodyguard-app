@@ -20,7 +20,7 @@ const output = path.join(root, '.vercel/output');
 await rm(output, { recursive: true, force: true });
 await mkdir(output, { recursive: true });
 await cp(dist, path.join(output, 'static'), { recursive: true });
-const csp = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.tile.openstreetmap.org; font-src 'self' data:; media-src 'self' blob:; connect-src 'self' https://*.tile.openstreetmap.org; worker-src 'self' blob:; frame-ancestors 'none'; form-action 'none'; base-uri 'self'";
+const csp = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.tile.openstreetmap.org; font-src 'self' data:; media-src 'self' blob:; connect-src 'self' data: blob: https://*.tile.openstreetmap.org; worker-src 'self' blob:; frame-ancestors 'none'; form-action 'none'; base-uri 'self'";
 await writeFile(path.join(output, 'config.json'), JSON.stringify({ version: 3, routes: [
   { src: '/(.*)', headers: { 'Content-Security-Policy': csp, 'Permissions-Policy': 'geolocation=(), camera=(), microphone=(), payment=()', 'Referrer-Policy': 'strict-origin-when-cross-origin', 'X-Content-Type-Options': 'nosniff', 'X-Robots-Tag': 'noindex, nofollow' }, continue: true },
   { handle: 'filesystem' },

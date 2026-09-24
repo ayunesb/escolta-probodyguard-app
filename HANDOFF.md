@@ -11,7 +11,8 @@ The overhaul was tested against local emulators; it has not been deployed to the
 ## Public preview
 
 [Open the interactive demo](https://escolta-pro-demo.vercel.app). No account is required.
-It uses fictional data in browser memory, separate from the live Firebase backend.
+It uses a persistent, browser-local sandbox with fictional data, separate from the live Firebase backend.
+The public demo now simulates complete bookings, payments, account email flows, tracking and operations.
 See [PUBLIC_DEMO.md](PUBLIC_DEMO.md) for the build commands, scope and verification.
 
 ## Handoff verification - 24 September 2026

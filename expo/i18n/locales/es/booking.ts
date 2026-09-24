@@ -132,6 +132,7 @@ const booking: Translation<typeof en> = {
     unknownTitle: 'Estado no disponible',
   },
   detail: {
+    totalRefunded: "Total reembolsado",
     rateProtector: 'Calificar a su escolta',
     decline: 'Rechazar',
     acceptJob: 'Aceptar servicio',

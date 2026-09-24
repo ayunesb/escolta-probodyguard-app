@@ -653,7 +653,7 @@ export default function BookingDetailScreen() {
                   <InfoRow label={t('booking:detail.processingFee')} value={formatMXN(booking.processingFee)} />
                   <Divider style={styles.divider} />
                   <InfoRow
-                    label={t(booking.status === 'pending' ? 'booking:detail.totalDue' : 'booking:detail.totalPaid')}
+                    label={t(booking.status === 'pending' ? 'booking:detail.totalDue' : booking.paymentStatus === 'refunded' ? 'booking:detail.totalRefunded' : 'booking:detail.totalPaid')}
                     value={formatMXN(booking.totalAmount)}
                     emphasis
                   />
