@@ -4,42 +4,263 @@
       "$guardId": {
         ".read": "auth != null && (auth.uid === $guardId || root.child('users').child(auth.uid).child('role').val() === 'admin')",
         ".write": "auth != null && $guardId === auth.uid",
-        ".indexOn": ["timestamp"]
+        ".indexOn": [
+          "timestamp"
+        ]
       }
     },
     "bookings": {
       ".read": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'admin'",
+      ".indexOn": [
+        "clientId",
+        "guardId",
+        "status",
+        "scheduledDate",
+        "createdAt"
+      ],
       "$bookingId": {
-        ".read": "auth != null && (data.child('clientId').val() === auth.uid || data.child('guardId').val() === auth.uid || root.child('users').child(auth.uid).child('role').val() === 'admin' || (root.child('users').child(auth.uid).child('role').val() === 'company' && root.child('users').child(data.child('guardId').val()).child('companyId').val() === auth.uid))",
-        ".write": "auth != null",
-        ".indexOn": ["clientId", "guardId", "status", "scheduledDateTime"]
+        ".read": "(auth != null && (data.child('clientId').val() === auth.uid || (data.child('guardId').val() === auth.uid && data.child('status').val() !== 'pending') || root.child('users').child(auth.uid).child('role').val() === 'admin' || (root.child('users').child(auth.uid).child('role').val() === 'company' && root.child('users').child(data.child('guardId').val()).child('companyId').val() === auth.uid)))",
+        ".write": "(auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || (!data.exists() && newData.child('clientId').val() === auth.uid && newData.child('status').val() === 'pending' && newData.child('guardId').isString() && newData.child('guardId').val() !== auth.uid && newData.parent().parent().child('bookingSecrets').child($bookingId).child('startCode').isString() && !newData.child('transactionId').exists() && !newData.child('paymentIntentId').exists() && !newData.child('confirmedAt').exists() && !newData.child('startCodeAttempt').exists() && !newData.child('rating').exists()) || (data.exists() && newData.exists() && data.child('clientId').val() === auth.uid && (newData.child('clientId').val() === data.child('clientId').val() && newData.child('createdAt').val() === data.child('createdAt').val() && newData.child('transactionId').val() === data.child('transactionId').val() && newData.child('paymentIntentId').val() === data.child('paymentIntentId').val() && newData.child('confirmedAt').val() === data.child('confirmedAt').val() && (!data.child('rating').exists() || newData.child('rating').val() === data.child('rating').val()) && (!data.child('startCodeAttempt').exists() || newData.child('startCodeAttempt').val() === data.child('startCodeAttempt').val())) && (((data.child('status').val() === 'pending') && (newData.child('status').val() === 'pending') && newData.child('guardId').isString() && newData.child('guardId').val() !== auth.uid) || ((data.child('status').val() === 'pending' || data.child('status').val() === 'confirmed' || data.child('status').val() === 'accepted' || data.child('status').val() === 'rejected') && (newData.child('status').val() === 'cancelled') && newData.child('cancelledBy').val() === 'client' && (newData.child('duration').val() === data.child('duration').val() && newData.child('totalAmount').val() === data.child('totalAmount').val() && newData.child('processingFee').val() === data.child('processingFee').val() && newData.child('platformCut').val() === data.child('platformCut').val() && newData.child('guardPayout').val() === data.child('guardPayout').val() && newData.child('hourlyRate').val() === data.child('hourlyRate').val() && newData.child('vehicleType').val() === data.child('vehicleType').val() && newData.child('protectionType').val() === data.child('protectionType').val() && newData.child('numberOfProtectors').val() === data.child('numberOfProtectors').val()) && newData.child('guardId').val() === data.child('guardId').val()) || ((data.child('status').val() === 'rejected') && (newData.child('status').val() === 'confirmed') && (newData.child('duration').val() === data.child('duration').val() && newData.child('totalAmount').val() === data.child('totalAmount').val() && newData.child('processingFee').val() === data.child('processingFee').val() && newData.child('platformCut').val() === data.child('platformCut').val() && newData.child('guardPayout').val() === data.child('guardPayout').val() && newData.child('hourlyRate').val() === data.child('hourlyRate').val() && newData.child('vehicleType').val() === data.child('vehicleType').val() && newData.child('protectionType').val() === data.child('protectionType').val() && newData.child('numberOfProtectors').val() === data.child('numberOfProtectors').val()) && newData.child('guardId').isString() && newData.child('guardId').val() !== data.child('guardId').val() && newData.child('guardId').val() !== auth.uid && newData.parent().parent().child('guardBookingIndex').child(newData.child('guardId').val()).child($bookingId).val() === true) || ((data.child('status').val() === 'active') && (newData.child('status').val() === 'completed') && (newData.child('duration').val() === data.child('duration').val() && newData.child('totalAmount').val() === data.child('totalAmount').val() && newData.child('processingFee').val() === data.child('processingFee').val() && newData.child('platformCut').val() === data.child('platformCut').val() && newData.child('guardPayout').val() === data.child('guardPayout').val() && newData.child('hourlyRate').val() === data.child('hourlyRate').val() && newData.child('vehicleType').val() === data.child('vehicleType').val() && newData.child('protectionType').val() === data.child('protectionType').val() && newData.child('numberOfProtectors').val() === data.child('numberOfProtectors').val()) && newData.child('guardId').val() === data.child('guardId').val()) || ((data.child('status').val() === 'completed') && (newData.child('status').val() === 'completed') && !data.child('rating').exists() && newData.child('rating').exists() && (newData.child('duration').val() === data.child('duration').val() && newData.child('totalAmount').val() === data.child('totalAmount').val() && newData.child('processingFee').val() === data.child('processingFee').val() && newData.child('platformCut').val() === data.child('platformCut').val() && newData.child('guardPayout').val() === data.child('guardPayout').val() && newData.child('hourlyRate').val() === data.child('hourlyRate').val() && newData.child('vehicleType').val() === data.child('vehicleType').val() && newData.child('protectionType').val() === data.child('protectionType').val() && newData.child('numberOfProtectors').val() === data.child('numberOfProtectors').val()) && newData.child('guardId').val() === data.child('guardId').val()))) || (data.exists() && newData.exists() && data.child('guardId').val() === auth.uid && (newData.child('clientId').val() === data.child('clientId').val() && newData.child('createdAt').val() === data.child('createdAt').val() && newData.child('transactionId').val() === data.child('transactionId').val() && newData.child('paymentIntentId').val() === data.child('paymentIntentId').val() && newData.child('confirmedAt').val() === data.child('confirmedAt').val() && (!data.child('rating').exists() || newData.child('rating').val() === data.child('rating').val()) && (!data.child('startCodeAttempt').exists() || newData.child('startCodeAttempt').val() === data.child('startCodeAttempt').val())) && ((newData.child('duration').val() === data.child('duration').val() && newData.child('totalAmount').val() === data.child('totalAmount').val() && newData.child('processingFee').val() === data.child('processingFee').val() && newData.child('platformCut').val() === data.child('platformCut').val() && newData.child('guardPayout').val() === data.child('guardPayout').val() && newData.child('hourlyRate').val() === data.child('hourlyRate').val() && newData.child('vehicleType').val() === data.child('vehicleType').val() && newData.child('protectionType').val() === data.child('protectionType').val() && newData.child('numberOfProtectors').val() === data.child('numberOfProtectors').val()) && newData.child('guardId').val() === data.child('guardId').val() && (((data.child('status').val() === 'confirmed') && (newData.child('status').val() === 'accepted' || newData.child('status').val() === 'rejected')) || ((data.child('status').val() === 'accepted') && (newData.child('status').val() === 'en_route')) || ((data.child('status').val() === 'accepted' || data.child('status').val() === 'en_route') && (newData.child('status').val() === 'active') && newData.child('startCodeAttempt').isString() && root.child('bookingSecrets').child($bookingId).child('startCode').isString() && newData.child('startCodeAttempt').val() === root.child('bookingSecrets').child($bookingId).child('startCode').val()) || ((data.child('status').val() === 'active') && (newData.child('status').val() === 'completed')) || ((data.child('status').val() === 'accepted' || data.child('status').val() === 'en_route') && (newData.child('status').val() === 'cancelled') && newData.child('cancelledBy').val() === 'guard'))))))",
+        ".validate": "(root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.hasChildren(['clientId', 'guardId', 'status', 'createdAt', 'duration', 'totalAmount', 'processingFee', 'platformCut', 'guardPayout', 'hourlyRate', 'vehicleType', 'protectionType', 'numberOfProtectors']))",
+        "id": {
+          ".validate": "newData.isString() && newData.val() === $bookingId"
+        },
+        "clientId": {
+          ".validate": "(newData.isString() && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || (!data.parent().exists() && newData.val() === auth.uid)))"
+        },
+        "createdAt": {
+          ".validate": "((newData.isString() || newData.isNumber()) && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || !data.parent().exists()))"
+        },
+        "status": {
+          ".validate": "newData.isString() && newData.val().matches(/^(pending|confirmed|accepted|rejected|en_route|active|completed|cancelled)$/)"
+        },
+        "guardId": {
+          ".validate": "(newData.isString() && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || !data.parent().exists() || (data.parent().child('clientId').val() === auth.uid && (data.parent().child('status').val() === 'pending') && (newData.parent().child('status').val() === 'pending')) || (data.parent().child('clientId').val() === auth.uid && (data.parent().child('status').val() === 'rejected') && (newData.parent().child('status').val() === 'confirmed'))))"
+        },
+        "companyId": {
+          ".validate": "(newData.isString() && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || !data.parent().exists() || (data.parent().child('clientId').val() === auth.uid && (data.parent().child('status').val() === 'pending') && (newData.parent().child('status').val() === 'pending')) || (data.parent().child('clientId').val() === auth.uid && (data.parent().child('status').val() === 'rejected') && (newData.parent().child('status').val() === 'confirmed'))))"
+        },
+        "duration": {
+          ".validate": "((newData.isNumber() && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || !data.parent().exists() || (data.parent().child('clientId').val() === auth.uid && (data.parent().child('status').val() === 'pending') && (newData.parent().child('status').val() === 'pending')))) && newData.val() >= 1 && newData.val() <= 24)"
+        },
+        "numberOfProtectors": {
+          ".validate": "((newData.isNumber() && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || !data.parent().exists() || (data.parent().child('clientId').val() === auth.uid && (data.parent().child('status').val() === 'pending') && (newData.parent().child('status').val() === 'pending')))) && newData.val() >= 1 && newData.val() <= 5)"
+        },
+        "vehicleType": {
+          ".validate": "((newData.isString() && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || !data.parent().exists() || (data.parent().child('clientId').val() === auth.uid && (data.parent().child('status').val() === 'pending') && (newData.parent().child('status').val() === 'pending')))) && newData.val().matches(/^(standard|armored)$/))"
+        },
+        "protectionType": {
+          ".validate": "((newData.isString() && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || !data.parent().exists() || (data.parent().child('clientId').val() === auth.uid && (data.parent().child('status').val() === 'pending') && (newData.parent().child('status').val() === 'pending')))) && newData.val().matches(/^(armed|unarmed)$/))"
+        },
+        "hourlyRate": {
+          ".validate": "((newData.isNumber() && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || !data.parent().exists() || (data.parent().child('clientId').val() === auth.uid && (data.parent().child('status').val() === 'pending') && (newData.parent().child('status').val() === 'pending')))) && newData.val() > 0)"
+        },
+        "totalAmount": {
+          ".validate": "((newData.isNumber() && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || !data.parent().exists() || (data.parent().child('clientId').val() === auth.uid && (data.parent().child('status').val() === 'pending') && (newData.parent().child('status').val() === 'pending')))) && newData.val() >= 0)"
+        },
+        "processingFee": {
+          ".validate": "((newData.isNumber() && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || !data.parent().exists() || (data.parent().child('clientId').val() === auth.uid && (data.parent().child('status').val() === 'pending') && (newData.parent().child('status').val() === 'pending')))) && newData.val() >= 0)"
+        },
+        "platformCut": {
+          ".validate": "((newData.isNumber() && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || !data.parent().exists() || (data.parent().child('clientId').val() === auth.uid && (data.parent().child('status').val() === 'pending') && (newData.parent().child('status').val() === 'pending')))) && newData.val() >= 0)"
+        },
+        "guardPayout": {
+          ".validate": "((newData.isNumber() && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || !data.parent().exists() || (data.parent().child('clientId').val() === auth.uid && (data.parent().child('status').val() === 'pending') && (newData.parent().child('status').val() === 'pending')))) && newData.val() >= 0)"
+        },
+        "bookingType": {
+          ".validate": "(newData.isString() && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || !data.parent().exists() || (data.parent().child('clientId').val() === auth.uid && (data.parent().child('status').val() === 'pending') && (newData.parent().child('status').val() === 'pending'))))"
+        },
+        "dressCode": {
+          ".validate": "(newData.isString() && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || !data.parent().exists() || (data.parent().child('clientId').val() === auth.uid && (data.parent().child('status').val() === 'pending') && (newData.parent().child('status').val() === 'pending'))))"
+        },
+        "numberOfProtectees": {
+          ".validate": "(newData.isNumber() && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || !data.parent().exists() || (data.parent().child('clientId').val() === auth.uid && (data.parent().child('status').val() === 'pending') && (newData.parent().child('status').val() === 'pending'))))"
+        },
+        "scheduledDate": {
+          ".validate": "(newData.isString() && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || !data.parent().exists() || (data.parent().child('clientId').val() === auth.uid && (data.parent().child('status').val() === 'pending') && (newData.parent().child('status').val() === 'pending'))))"
+        },
+        "scheduledTime": {
+          ".validate": "(newData.isString() && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || !data.parent().exists() || (data.parent().child('clientId').val() === auth.uid && (data.parent().child('status').val() === 'pending') && (newData.parent().child('status').val() === 'pending'))))"
+        },
+        "pickupAddress": {
+          ".validate": "(newData.isString() && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || !data.parent().exists() || (data.parent().child('clientId').val() === auth.uid && (data.parent().child('status').val() === 'pending') && (newData.parent().child('status').val() === 'pending'))))"
+        },
+        "pickupLatitude": {
+          ".validate": "(newData.isNumber() && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || !data.parent().exists() || (data.parent().child('clientId').val() === auth.uid && (data.parent().child('status').val() === 'pending') && (newData.parent().child('status').val() === 'pending'))))"
+        },
+        "pickupLongitude": {
+          ".validate": "(newData.isNumber() && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || !data.parent().exists() || (data.parent().child('clientId').val() === auth.uid && (data.parent().child('status').val() === 'pending') && (newData.parent().child('status').val() === 'pending'))))"
+        },
+        "pickupCity": {
+          ".validate": "(newData.isString() && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || !data.parent().exists() || (data.parent().child('clientId').val() === auth.uid && (data.parent().child('status').val() === 'pending') && (newData.parent().child('status').val() === 'pending'))))"
+        },
+        "destinationAddress": {
+          ".validate": "(newData.isString() && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || !data.parent().exists() || (data.parent().child('clientId').val() === auth.uid && (data.parent().child('status').val() === 'pending') && (newData.parent().child('status').val() === 'pending'))))"
+        },
+        "destinationLatitude": {
+          ".validate": "(newData.isNumber() && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || !data.parent().exists() || (data.parent().child('clientId').val() === auth.uid && (data.parent().child('status').val() === 'pending') && (newData.parent().child('status').val() === 'pending'))))"
+        },
+        "destinationLongitude": {
+          ".validate": "(newData.isNumber() && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || !data.parent().exists() || (data.parent().child('clientId').val() === auth.uid && (data.parent().child('status').val() === 'pending') && (newData.parent().child('status').val() === 'pending'))))"
+        },
+        "destinationCity": {
+          ".validate": "(newData.isString() && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || !data.parent().exists() || (data.parent().child('clientId').val() === auth.uid && (data.parent().child('status').val() === 'pending') && (newData.parent().child('status').val() === 'pending'))))"
+        },
+        "isScheduled": {
+          ".validate": "(newData.isBoolean() && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || !data.parent().exists() || (data.parent().child('clientId').val() === auth.uid && (data.parent().child('status').val() === 'pending') && (newData.parent().child('status').val() === 'pending'))))"
+        },
+        "isCrossCity": {
+          ".validate": "(newData.isBoolean() && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || !data.parent().exists() || (data.parent().child('clientId').val() === auth.uid && (data.parent().child('status').val() === 'pending') && (newData.parent().child('status').val() === 'pending'))))"
+        },
+        "routeStops": {
+          ".validate": "(root.child('users').child(auth.uid).child('role').val() === 'admin' || !data.parent().exists() || (data.parent().child('clientId').val() === auth.uid && (data.parent().child('status').val() === 'pending') && (newData.parent().child('status').val() === 'pending')))"
+        },
+        "startCode": {
+          ".validate": "false"
+        },
+        "extensionCount": {
+          ".validate": "(newData.isNumber() && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val()))"
+        },
+        "originalDuration": {
+          ".validate": "(newData.isNumber() && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val()))"
+        },
+        "confirmedAt": {
+          ".validate": "((newData.isString() || newData.isNumber()) && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val()))"
+        },
+        "transactionId": {
+          ".validate": "(newData.isString() && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val()))"
+        },
+        "paymentIntentId": {
+          ".validate": "(newData.isString() && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val()))"
+        },
+        "acceptedAt": {
+          ".validate": "((newData.isString() || newData.isNumber()) && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || (data.parent().child('guardId').val() === auth.uid && (data.parent().child('status').val() === 'confirmed') && (newData.parent().child('status').val() === 'accepted'))))"
+        },
+        "rejectedAt": {
+          ".validate": "((newData.isString() || newData.isNumber()) && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || (data.parent().child('guardId').val() === auth.uid && (data.parent().child('status').val() === 'confirmed') && (newData.parent().child('status').val() === 'rejected'))))"
+        },
+        "rejectionReason": {
+          ".validate": "(newData.isString() && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || (data.parent().child('guardId').val() === auth.uid && (data.parent().child('status').val() === 'confirmed') && (newData.parent().child('status').val() === 'rejected'))))"
+        },
+        "estimatedArrivalTime": {
+          ".validate": "((newData.isString() || newData.isNumber()) && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || (data.parent().child('guardId').val() === auth.uid && (data.parent().child('status').val() === 'confirmed' || data.parent().child('status').val() === 'accepted') && (newData.parent().child('status').val() === 'accepted' || newData.parent().child('status').val() === 'en_route'))))"
+        },
+        "startedAt": {
+          ".validate": "((newData.isString() || newData.isNumber()) && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || (data.parent().child('guardId').val() === auth.uid && (data.parent().child('status').val() === 'accepted' || data.parent().child('status').val() === 'en_route') && (newData.parent().child('status').val() === 'active'))))"
+        },
+        "startCodeAttempt": {
+          ".validate": "(newData.isString() && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || (data.parent().child('guardId').val() === auth.uid && (data.parent().child('status').val() === 'accepted' || data.parent().child('status').val() === 'en_route') && (newData.parent().child('status').val() === 'active'))))"
+        },
+        "completedAt": {
+          ".validate": "((newData.isString() || newData.isNumber()) && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || ((data.parent().child('guardId').val() === auth.uid || data.parent().child('clientId').val() === auth.uid) && (data.parent().child('status').val() === 'active') && (newData.parent().child('status').val() === 'completed'))))"
+        },
+        "cancelledAt": {
+          ".validate": "((newData.isString() || newData.isNumber()) && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || ((data.parent().child('guardId').val() === auth.uid || data.parent().child('clientId').val() === auth.uid) && data.parent().child('status').val() !== 'cancelled' && (newData.parent().child('status').val() === 'cancelled'))))"
+        },
+        "cancelledBy": {
+          ".validate": "(newData.isString() && newData.val().matches(/^(client|guard)$/) && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || ((data.parent().child('guardId').val() === auth.uid || data.parent().child('clientId').val() === auth.uid) && data.parent().child('status').val() !== 'cancelled' && (newData.parent().child('status').val() === 'cancelled'))))"
+        },
+        "cancellationReason": {
+          ".validate": "(newData.isString() && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || ((data.parent().child('guardId').val() === auth.uid || data.parent().child('clientId').val() === auth.uid) && data.parent().child('status').val() !== 'cancelled' && (newData.parent().child('status').val() === 'cancelled'))))"
+        },
+        "rating": {
+          ".validate": "(newData.isNumber() && newData.val() >= 1 && newData.val() <= 5 && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || (data.parent().child('clientId').val() === auth.uid && (data.parent().child('status').val() === 'completed') && (newData.parent().child('status').val() === 'completed') && !data.parent().child('rating').exists())))"
+        },
+        "ratingBreakdown": {
+          ".validate": "(root.child('users').child(auth.uid).child('role').val() === 'admin' || (data.parent().child('clientId').val() === auth.uid && (data.parent().child('status').val() === 'completed') && (newData.parent().child('status').val() === 'completed') && !data.parent().child('rating').exists()))"
+        },
+        "review": {
+          ".validate": "(newData.isString() && newData.val().length <= 2000 && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || (data.parent().child('clientId').val() === auth.uid && (data.parent().child('status').val() === 'completed') && (newData.parent().child('status').val() === 'completed') && !data.parent().child('rating').exists())))"
+        },
+        "clientRating": {
+          ".validate": "(root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val())"
+        },
+        "clientReview": {
+          ".validate": "(root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val())"
+        },
+        "$other": {
+          ".validate": "(root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || !data.parent().exists() || (data.parent().child('clientId').val() === auth.uid && (data.parent().child('status').val() === 'pending') && (newData.parent().child('status').val() === 'pending')))"
+        }
+      }
+    },
+    "bookingSecrets": {
+      "$bookingId": {
+        ".read": "auth != null && (root.child('bookings').child($bookingId).child('clientId').val() === auth.uid || root.child('users').child(auth.uid).child('role').val() === 'admin')",
+        ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || (!data.exists() && newData.exists() && newData.parent().parent().child('bookings').child($bookingId).child('clientId').val() === auth.uid && newData.parent().parent().child('bookings').child($bookingId).child('status').val() === 'pending'))",
+        ".validate": "newData.hasChildren(['startCode'])",
+        "startCode": {
+          ".validate": "newData.isString() && newData.val().matches(/^[0-9]{6}$/)"
+        },
+        "$other": {
+          ".validate": "false"
+        }
+      }
+    },
+    "bookingLocations": {
+      "$bookingId": {
+        ".read": "auth != null && (root.child('bookings').child($bookingId).child('clientId').val() === auth.uid || root.child('bookings').child($bookingId).child('guardId').val() === auth.uid || root.child('users').child(auth.uid).child('role').val() === 'admin')",
+        ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || (root.child('bookings').child($bookingId).child('guardId').val() === auth.uid && (!newData.exists() || root.child('bookings').child($bookingId).child('status').val() === 'accepted' || root.child('bookings').child($bookingId).child('status').val() === 'en_route' || root.child('bookings').child($bookingId).child('status').val() === 'active')))",
+        ".validate": "newData.hasChildren(['latitude', 'longitude', 'timestamp'])",
+        "latitude": {
+          ".validate": "newData.isNumber() && newData.val() >= -90 && newData.val() <= 90"
+        },
+        "longitude": {
+          ".validate": "newData.isNumber() && newData.val() >= -180 && newData.val() <= 180"
+        },
+        "heading": {
+          ".validate": "newData.isNumber()"
+        },
+        "speed": {
+          ".validate": "newData.isNumber()"
+        },
+        "accuracy": {
+          ".validate": "newData.isNumber()"
+        },
+        "timestamp": {
+          ".validate": "newData.isNumber() || newData.isString()"
+        },
+        "$other": {
+          ".validate": "false"
+        }
       }
     },
     "guardBookingIndex": {
       "$guardId": {
         ".read": "auth != null && (auth.uid === $guardId || root.child('users').child(auth.uid).child('role').val() === 'admin' || (root.child('users').child(auth.uid).child('role').val() === 'company' && root.child('users').child($guardId).child('companyId').val() === auth.uid))",
-        ".write": "auth != null"
+        "$bookingId": {
+          ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || auth.uid === $guardId || newData.parent().parent().parent().child('bookings').child($bookingId).child('clientId').val() === auth.uid || root.child('bookings').child($bookingId).child('clientId').val() === auth.uid)",
+          ".validate": "newData.val() === true"
+        }
       }
     },
     "clientBookingIndex": {
       "$clientId": {
-        ".read": "auth != null && auth.uid === $clientId",
-        ".write": "auth != null"
+        ".read": "auth != null && (auth.uid === $clientId || root.child('users').child(auth.uid).child('role').val() === 'admin')",
+        "$bookingId": {
+          ".write": "auth != null && (auth.uid === $clientId || root.child('users').child(auth.uid).child('role').val() === 'admin')",
+          ".validate": "newData.val() === true"
+        }
       }
     },
     "users": {
       "$userId": {
         ".read": "auth != null && ($userId === auth.uid || root.child('users').child(auth.uid).child('role').val() === 'admin' || (root.child('users').child(auth.uid).child('role').val() === 'company' && data.child('companyId').val() === auth.uid))",
-        ".write": "auth != null && ($userId === auth.uid || root.child('users').child(auth.uid).child('role').val() === 'admin')",
-        ".indexOn": ["role", "companyId"]
+        ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || (newData.exists() && ($userId === auth.uid || (root.child('users').child(auth.uid).child('role').val() === 'company' && data.child('companyId').val() === auth.uid))))",
+        ".validate": "newData.hasChildren(['role'])",
+        "role": {
+          ".validate": "newData.isString() && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || (!data.exists() && $userId === auth.uid && newData.val().matches(/^(client|guard|company)$/)))"
+        },
+        "companyId": {
+          ".validate": "newData.isString() && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.val() === data.val() || (!data.parent().exists() && $userId === auth.uid && newData.parent().child('role').val() === 'guard' && root.child('users').child(newData.val()).child('role').val() === 'company'))"
+        },
+        "$other": {
+          ".validate": "root.child('users').child(auth.uid).child('role').val() === 'admin'"
+        }
       }
     },
     "chats": {
-      "$chatId": {
-        ".read": "auth != null",
-        ".write": "auth != null",
-        ".indexOn": ["bookingId", "timestamp"]
-      }
+      ".read": false,
+      ".write": false
     },
     "pushTokens": {
       "$userId": {

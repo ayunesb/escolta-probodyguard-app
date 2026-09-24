@@ -1,469 +1,510 @@
-import { useCallback, useState } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  TouchableOpacity,
-  Alert,
-  Image,
-  ActivityIndicator,
-  Linking,
-} from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Stack, useFocusEffect } from 'expo-router';
-import { FileText, CheckCircle, XCircle, Eye, Shield } from 'lucide-react-native';
-import { userService } from '@/services/userService';
-import { kycAuditService } from '@/services/kycAuditService';
-import { useAuth } from '@/contexts/AuthContext';
-import type { Guard } from '@/types';
+import { useCallback, useMemo, useState } from 'react';
+import { RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
+import { Stack, useFocusEffect, useRouter } from 'expo-router';
+import { useTranslation } from 'react-i18next';
+import { Camera, FileText, History, IdCard, ShieldCheck, ShieldX } from 'lucide-react-native';
 import Colors from '@/constants/colors';
+import { Space } from '@/constants/design';
+import {
+  AppText,
+  Avatar,
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  IconButton,
+  Input,
+  ListGroup,
+  ListRow,
+  Screen,
+  ScreenHeader,
+  SectionTitle,
+  SegmentedControl,
+  SkeletonCard,
+} from '@/components/ui';
+import { Notice, RoleGate, Sheet, formatDate, fullName, kycMeta, openDocument } from '@/components/backoffice';
+import { useAuth } from '@/contexts/AuthContext';
+import i18n from '@/i18n';
+import { kycAuditService } from '@/services/kycAuditService';
+import { countKycDocuments, GuardKycRecord, UserRecord, userService } from '@/services/userService';
+import type { KYCStatus } from '@/types';
+import { confirm } from '@/utils/confirm';
+import { logger } from '@/utils/logger';
 
-function guardDocuments(guard: Guard): { label: string; url: string }[] {
-  const docs: { label: string; url: string }[] = [];
-  if (guard.governmentIdUrls?.length) {
-    guard.governmentIdUrls.forEach((url, i) => docs.push({ label: `Government ID ${i + 1}`, url }));
-  }
-  if (guard.licenseUrls?.length) {
-    guard.licenseUrls.forEach((url, i) => docs.push({ label: `Security License ${i + 1}`, url }));
-  }
-  if (guard.insuranceUrls?.length) {
-    guard.insuranceUrls.forEach((url, i) => docs.push({ label: `Insurance ${i + 1}`, url }));
-  }
-  if (guard.vehicleDocUrls?.length) {
-    guard.vehicleDocUrls.forEach((url, i) => docs.push({ label: `Vehicle Document ${i + 1}`, url }));
-  }
-  if (guard.outfitPhotos?.length) {
-    guard.outfitPhotos.forEach((url, i) => docs.push({ label: `Outfit Photo ${i + 1}`, url }));
-  }
-  return docs;
+type Tab = KYCStatus;
+
+interface DocItem {
+  key: string;
+  label: string;
+  url: string;
+  kind: 'private' | 'public';
 }
 
-export default function AdminKYCScreen() {
-  const insets = useSafeAreaInsets();
-  const { user } = useAuth();
-  const [selectedTab, setSelectedTab] = useState<'pending' | 'approved' | 'rejected'>('pending');
-  const [guards, setGuards] = useState<Guard[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+// Claves de i18n, no textos: la etiqueta se traduce al armar la lista.
+const DOC_LABELS: { field: keyof GuardKycRecord; labelKey: 'governmentId' | 'license' | 'insurance' | 'vehicle' }[] = [
+  { field: 'governmentIdUrls', labelKey: 'governmentId' },
+  { field: 'licenseUrls', labelKey: 'license' },
+  { field: 'insuranceUrls', labelKey: 'insurance' },
+  { field: 'vehicleDocUrls', labelKey: 'vehicle' },
+];
 
-  const loadGuards = useCallback(async () => {
-    setIsLoading(true);
+const indexed = (label: string, index: number, total: number) =>
+  total > 1 ? i18n.t('backoffice:docs.indexed', { label, index: index + 1, total }) : label;
+
+function documentItems(guard: UserRecord, kyc: GuardKycRecord | null): DocItem[] {
+  const items: DocItem[] = [];
+  DOC_LABELS.forEach(({ field, labelKey }) => {
+    const urls = (kyc?.[field] as string[] | undefined) ?? [];
+    const label = i18n.t(`backoffice:docs.${labelKey}`);
+    urls.forEach((url, i) => items.push({ key: `${field}-${i}`, label: indexed(label, i, urls.length), url, kind: 'private' }));
+  });
+  (guard.photos ?? []).forEach((url, i) => items.push({ key: `photo-${i}`, label: i18n.t('backoffice:docs.photo'), url, kind: 'public' }));
+  const outfits = guard.outfitPhotos ?? [];
+  const outfitLabel = i18n.t('backoffice:docs.outfit');
+  outfits.forEach((url, i) => items.push({ key: `outfit-${i}`, label: indexed(outfitLabel, i, outfits.length), url, kind: 'public' }));
+  return items;
+}
+
+export default function AdminKYCRoute() {
+  return (
+    <>
+      <Stack.Screen options={{ headerShown: false }} />
+      <RoleGate roles={['admin']}>
+        <AdminKYCScreen />
+      </RoleGate>
+    </>
+  );
+}
+
+function AdminKYCScreen() {
+  const router = useRouter();
+  const { t } = useTranslation(['backoffice', 'common']);
+  const { user } = useAuth();
+  const [tab, setTab] = useState<Tab>('pending');
+  const [guards, setGuards] = useState<UserRecord[] | null>(null);
+  const [docCounts, setDocCounts] = useState<Record<string, number>>({});
+  const [loadError, setLoadError] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  // Revision abierta
+  const [selected, setSelected] = useState<UserRecord | null>(null);
+  const [selectedKyc, setSelectedKyc] = useState<GuardKycRecord | null>(null);
+  const [kycState, setKycState] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [mode, setMode] = useState<'review' | 'reject'>('review');
+  const [reason, setReason] = useState('');
+  const [reasonError, setReasonError] = useState<string | null>(null);
+  const [acting, setActing] = useState<'approve' | 'reject' | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [openError, setOpenError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoadError(false);
     try {
-      const result = await userService.listByRole('guard');
-      setGuards(result as Guard[]);
-    } finally {
-      setIsLoading(false);
+      const list = await userService.listByRole('guard');
+      list.sort((a, b) => (Date.parse(b.updatedAt ?? '') || 0) - (Date.parse(a.updatedAt ?? '') || 0));
+      setGuards(list);
+      // Cuantos documentos tiene cada escolta en revision (lectura puntual
+      // del documento privado, solo para la cola pendiente).
+      const pending = list.filter((g) => (g.kycStatus ?? 'pending') === 'pending');
+      const results = await Promise.allSettled(pending.map((g) => userService.getGuardKyc(g.id)));
+      const counts: Record<string, number> = {};
+      results.forEach((r, i) => {
+        if (r.status === 'fulfilled') counts[pending[i].id] = countKycDocuments(r.value);
+      });
+      setDocCounts(counts);
+    } catch (error) {
+      logger.error('[AdminKYC] Failed to load guards', error);
+      setLoadError(true);
     }
   }, []);
 
   useFocusEffect(
     useCallback(() => {
-      loadGuards();
-    }, [loadGuards])
+      load();
+    }, [load])
   );
 
-  const pendingGuards = guards.filter(g => g.kycStatus === 'pending');
-  const approvedGuards = guards.filter(g => g.kycStatus === 'approved');
-  const rejectedGuards = guards.filter(g => g.kycStatus === 'rejected');
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await load();
+    setRefreshing(false);
+  };
 
-  const reviewKYC = async (guard: Guard, decision: 'approved' | 'rejected') => {
+  const grouped = useMemo(() => {
+    const g: Record<Tab, UserRecord[]> = { pending: [], approved: [], rejected: [] };
+    (guards ?? []).forEach((guard) => {
+      const s = (guard.kycStatus ?? 'pending') as Tab;
+      (g[s] ?? g.pending).push(guard);
+    });
+    return g;
+  }, [guards]);
+
+  const openReview = async (guard: UserRecord) => {
+    setSelected(guard);
+    setSelectedKyc(null);
+    setMode('review');
+    setReason('');
+    setReasonError(null);
+    setActionError(null);
+    setOpenError(null);
+    setKycState('loading');
     try {
-      await userService.setKYCStatus(guard.id, decision);
-      if (user) {
-        await kycAuditService.logDocumentReview(
-          guard.id,
-          `${guard.id}-kyc`,
-          user.id,
-          user.role,
-          decision === 'approved' ? 'approve' : 'reject',
-          guard.kycStatus,
-          decision
-        );
-      }
-      await loadGuards();
-      Alert.alert(
-        decision === 'approved' ? 'Success' : 'Rejected',
-        decision === 'approved'
-          ? `KYC approved for ${guard.firstName} ${guard.lastName}. They can now accept bookings.`
-          : `KYC rejected for ${guard.firstName} ${guard.lastName}. They will be notified.`
-      );
+      setSelectedKyc(await userService.getGuardKyc(guard.id));
+      setKycState('ready');
     } catch (error) {
-      console.error('[AdminKYC] Failed to review KYC:', error);
-      Alert.alert('Error', 'Failed to update KYC status. Please try again.');
+      logger.error('[AdminKYC] Failed to load guard KYC record', error);
+      setKycState('error');
     }
   };
 
-  const handleApprove = (guard: Guard) => {
-    Alert.alert(
-      'Approve KYC',
-      `Are you sure you want to approve KYC for ${guard.firstName} ${guard.lastName}?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Approve', onPress: () => reviewKYC(guard, 'approved') },
-      ]
-    );
+  const closeReview = () => {
+    if (acting) return;
+    setSelected(null);
   };
 
-  const handleReject = (guard: Guard) => {
-    Alert.alert(
-      'Reject KYC',
-      `Are you sure you want to reject KYC for ${guard.firstName} ${guard.lastName}?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Reject', style: 'destructive', onPress: () => reviewKYC(guard, 'rejected') },
-      ]
-    );
-  };
-
-  const handleViewDocuments = (guard: Guard) => {
-    const docs = guardDocuments(guard);
-    if (docs.length === 0) {
-      Alert.alert(
-        'No Documents',
-        `${guard.firstName} ${guard.lastName} has not uploaded any KYC documents yet.`
+  const decide = async (decision: 'approved' | 'rejected') => {
+    if (!selected || !user) return;
+    const name = fullName(selected);
+    if (decision === 'rejected') {
+      const trimmed = reason.trim();
+      if (trimmed.length < 5) {
+        setReasonError(t('adminKyc.reasonError'));
+        return;
+      }
+    } else {
+      const ok = await confirm(
+        t('adminKyc.approveTitle'),
+        t('adminKyc.approveMessage', { name }),
+        t('adminKyc.approve'),
+        t('common:actions.cancel')
       );
-      return;
+      if (!ok) return;
     }
-    Alert.alert(
-      'KYC Documents',
-      docs.map(d => d.label).join('\n'),
-      [
-        ...docs.slice(0, 3).map(d => ({ text: `Open ${d.label}`, onPress: () => Linking.openURL(d.url) })),
-        { text: 'Close', style: 'cancel' as const },
-      ]
-    );
+    setActing(decision === 'approved' ? 'approve' : 'reject');
+    setActionError(null);
+    try {
+      await userService.reviewGuardKyc({
+        guardId: selected.id,
+        decision,
+        reviewerId: user.id,
+        reason: decision === 'rejected' ? reason.trim() : undefined,
+      });
+      await kycAuditService.logDocumentReview(
+        selected.id,
+        `${selected.id}-kyc`,
+        user.id,
+        user.role,
+        decision === 'approved' ? 'approve' : 'reject',
+        selected.kycStatus ?? 'pending',
+        decision,
+        decision === 'rejected' ? reason.trim() : undefined
+      );
+      setSelected(null);
+      setNotice(decision === 'approved' ? t('adminKyc.approvedNotice', { name }) : t('adminKyc.rejectedNotice', { name }));
+      await load();
+    } catch (error) {
+      logger.error('[AdminKYC] Failed to record KYC decision', error);
+      setActionError(t('adminKyc.actionError'));
+    } finally {
+      setActing(null);
+    }
   };
 
-  const renderGuardCard = (guard: Guard) => (
-    <View key={guard.id} style={styles.guardCard}>
-      <View style={styles.guardHeader}>
-        {guard.photos?.[0] ? (
-          <Image source={{ uri: guard.photos[0] }} style={styles.guardPhoto} />
-        ) : (
-          <View style={[styles.guardPhoto, styles.guardPhotoPlaceholder]}>
-            <Shield size={24} color={Colors.textTertiary} />
-          </View>
-        )}
-        <View style={styles.guardInfo}>
-          <Text style={styles.guardName}>
-            {guard.firstName} {guard.lastName}
-          </Text>
-          <Text style={styles.guardEmail}>{guard.email}</Text>
-          <View style={styles.guardMeta}>
-            <Text style={styles.guardMetaText}>
-              {guard.completedJobs ?? 0} jobs • {(guard.rating ?? 0).toFixed(1)} rating
-            </Text>
-          </View>
-        </View>
-      </View>
+  const open = async (item: DocItem) => {
+    setOpenError(null);
+    const ok = await openDocument(item.url);
+    if (!ok) setOpenError(t('adminKyc.openError', { label: item.label }));
+  };
 
-      {(guard.certifications?.length ?? 0) > 0 && (
-        <View style={styles.certifications}>
-          {guard.certifications.slice(0, 3).map((cert: string, idx: number) => (
-            <View key={idx} style={styles.certBadge}>
-              <Shield size={12} color={Colors.gold} />
-              <Text style={styles.certText}>{cert}</Text>
-            </View>
-          ))}
+  const list = grouped[tab];
+  const docs = selected ? documentItems(selected, selectedKyc) : [];
+  const privateDocs = docs.filter((d) => d.kind === 'private');
+  const publicDocs = docs.filter((d) => d.kind === 'public');
+  const selectedStatus = (selected?.kycStatus ?? 'pending') as Tab;
+
+  return (
+    <Screen glow refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.accent} />}>
+      <ScreenHeader
+        eyebrow={t('adminKyc.eyebrow')}
+        title={t('adminKyc.title')}
+        subtitle={t('adminKyc.subtitle')}
+        right={<IconButton icon={History} onPress={() => router.push('/admin/kyc-audit')} accessibilityLabel={t('adminKyc.auditA11y')} />}
+      />
+
+      {/* Con conteos de dos cifras en espanol ("Verificados 12") las tres
+          pestanas no caben a 375 px: en vez de recortarse, se desplazan. */}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.tabsScroll}
+        contentContainerStyle={styles.tabsContent}
+      >
+        <SegmentedControl<Tab>
+          value={tab}
+          onChange={setTab}
+          style={styles.tabs}
+          options={[
+            {
+              value: 'pending',
+              label: `${t('adminKyc.tabPending')} ${guards ? grouped.pending.length : ''}`.trim(),
+              accessibilityLabel: t('adminKyc.tabPendingA11y'),
+            },
+            {
+              value: 'approved',
+              label: `${t('adminKyc.tabVerified')} ${guards ? grouped.approved.length : ''}`.trim(),
+              accessibilityLabel: t('adminKyc.tabVerifiedA11y'),
+            },
+            {
+              value: 'rejected',
+              label: `${t('adminKyc.tabRejected')} ${guards ? grouped.rejected.length : ''}`.trim(),
+              accessibilityLabel: t('adminKyc.tabRejectedA11y'),
+            },
+          ]}
+        />
+      </ScrollView>
+
+      {notice ? <Notice tone="success" message={notice} onDismiss={() => setNotice(null)} style={styles.notice} /> : null}
+
+      <SectionTitle
+        title={tab === 'pending' ? t('adminKyc.sectionPending') : tab === 'approved' ? t('adminKyc.sectionVerified') : t('adminKyc.sectionRejected')}
+      />
+
+      {loadError ? (
+        <Notice tone="error" message={t('adminKyc.loadError')} actionLabel={t('common:actions.tryAgain')} onAction={load} />
+      ) : guards === null ? (
+        <>
+          <SkeletonCard media />
+          <SkeletonCard media />
+          <SkeletonCard media />
+        </>
+      ) : list.length === 0 ? (
+        <EmptyState
+          icon={tab === 'rejected' ? ShieldX : ShieldCheck}
+          title={tab === 'pending' ? t('adminKyc.emptyPending') : tab === 'approved' ? t('adminKyc.emptyVerified') : t('adminKyc.emptyRejected')}
+          message={tab === 'pending' ? t('adminKyc.emptyPendingMessage') : undefined}
+        />
+      ) : (
+        <View style={styles.list}>
+          {list.map((guard) => {
+            const name = fullName(guard);
+            const count = docCounts[guard.id];
+            return (
+              <Card key={guard.id} onPress={() => openReview(guard)} accessibilityLabel={t('adminKyc.reviewA11y', { name })} style={styles.row}>
+                <Avatar name={name} uri={guard.photos?.[0]} size={48} verified={guard.kycStatus === 'approved'} />
+                <View style={styles.rowText}>
+                  <AppText variant="headline" numberOfLines={1}>
+                    {name}
+                  </AppText>
+                  <AppText variant="footnote" numberOfLines={1}>
+                    {guard.email}
+                  </AppText>
+                  <AppText variant="caption" color={Colors.textTertiary}>
+                    {guard.companyId ? t('shared.companyGuard') : t('shared.independent')}
+                  </AppText>
+                  <AppText variant="caption" color={Colors.textTertiary}>
+                    {t('adminKyc.updatedOn', { date: formatDate(guard.updatedAt) })}
+                  </AppText>
+                </View>
+                {tab === 'pending' ? (
+                  typeof count === 'number' ? (
+                    <Badge
+                      label={count > 0 ? t('counts.files', { count }) : t('adminKyc.noFiles')}
+                      tone={count > 0 ? 'gold' : 'neutral'}
+                      style={styles.badgeCenter}
+                    />
+                  ) : null
+                ) : (
+                  <Badge {...kycMeta(guard.kycStatus)} style={styles.badgeCenter} />
+                )}
+              </Card>
+            );
+          })}
         </View>
       )}
 
-      <View style={styles.guardActions}>
-        <TouchableOpacity
-          style={styles.viewButton}
-          onPress={() => handleViewDocuments(guard)}
-        >
-          <Eye size={16} color={Colors.textPrimary} />
-          <Text style={styles.viewButtonText}>View Documents</Text>
-        </TouchableOpacity>
+      <Sheet
+        visible={!!selected}
+        onClose={closeReview}
+        dismissable={!acting}
+        eyebrow={mode === 'reject' ? t('adminKyc.eyebrowReject') : t('adminKyc.eyebrowReview')}
+        title={selected ? fullName(selected) : ''}
+        // Espacios duros en el telefono: no se parte a la mitad del numero.
+        subtitle={selected ? [selected.email, selected.phone?.replace(/ /g, '\u00A0')].filter(Boolean).join(' · ') : undefined}
+        footer={
+          !selected ? null : mode === 'reject' ? (
+            <>
+              <Button title={t('common:actions.back')} variant="secondary" onPress={() => setMode('review')} disabled={!!acting} style={styles.flex} />
+              <Button
+                title={t('adminKyc.reject')}
+                variant="danger"
+                icon={ShieldX}
+                loading={acting === 'reject'}
+                onPress={() => decide('rejected')}
+                style={styles.flex}
+                accessibilityLabel={t('adminKyc.rejectWithReasonA11y')}
+              />
+            </>
+          ) : (
+            <>
+              {selectedStatus !== 'rejected' ? (
+                <Button
+                  title={t('adminKyc.reject')}
+                  variant="danger"
+                  icon={ShieldX}
+                  onPress={() => setMode('reject')}
+                  disabled={!!acting}
+                  style={styles.flex}
+                  accessibilityLabel={t('adminKyc.rejectA11y')}
+                />
+              ) : null}
+              {selectedStatus !== 'approved' ? (
+                <Button
+                  title={t('adminKyc.approve')}
+                  icon={ShieldCheck}
+                  loading={acting === 'approve'}
+                  disabled={kycState !== 'ready' || privateDocs.length === 0}
+                  onPress={() => decide('approved')}
+                  style={styles.flex}
+                  accessibilityLabel={t('adminKyc.approveTitle')}
+                />
+              ) : null}
+            </>
+          )
+        }
+      >
+        {selected ? (
+          mode === 'reject' ? (
+            <>
+              <AppText variant="callout">{t('adminKyc.rejectHelp')}</AppText>
+              <Input
+                label={t('adminKyc.reason')}
+                placeholder={t('adminKyc.reasonPlaceholder')}
+                value={reason}
+                onChangeText={(v) => {
+                  setReason(v);
+                  if (reasonError) setReasonError(null);
+                }}
+                error={reasonError}
+                multiline
+                maxLength={500}
+                autoFocus
+                accessibilityLabel={t('adminKyc.reasonA11y')}
+              />
+              {actionError ? <Notice tone="error" message={actionError} /> : null}
+            </>
+          ) : (
+            <>
+              <View style={styles.sheetHeader}>
+                <Avatar name={fullName(selected)} uri={selected.photos?.[0]} size={56} verified={selected.kycStatus === 'approved'} />
+                <View style={styles.rowText}>
+                  <Badge {...kycMeta(selected.kycStatus)} />
+                  <View>
+                    <AppText variant="caption" color={Colors.textTertiary}>
+                      {selected.companyId ? t('shared.companyGuard') : t('shared.independentGuard')}
+                    </AppText>
+                    <AppText variant="caption" color={Colors.textTertiary}>
+                      {t('adminKyc.joinedOn', { date: formatDate(selected.createdAt) })}
+                    </AppText>
+                  </View>
+                </View>
+              </View>
 
-        {guard.kycStatus === 'pending' && (
-          <View style={styles.actionButtons}>
-            <TouchableOpacity
-              style={styles.rejectButton}
-              onPress={() => handleReject(guard)}
-            >
-              <XCircle size={16} color={Colors.error} />
-              <Text style={styles.rejectButtonText}>Reject</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.approveButton}
-              onPress={() => handleApprove(guard)}
-            >
-              <CheckCircle size={16} color={Colors.background} />
-              <Text style={styles.approveButtonText}>Approve</Text>
-            </TouchableOpacity>
-          </View>
-        )}
-      </View>
-    </View>
-  );
+              {selectedKyc?.rejectionReason && selectedStatus === 'rejected' ? (
+                <Notice tone="warning" title={t('adminKyc.previousRejection')} message={selectedKyc.rejectionReason} />
+              ) : null}
 
-  const getGuardsList = () => {
-    switch (selectedTab) {
-      case 'pending':
-        return pendingGuards;
-      case 'approved':
-        return approvedGuards;
-      case 'rejected':
-        return rejectedGuards;
-      default:
-        return [];
-    }
-  };
+              <View>
+                <SectionTitle title={t('adminKyc.verificationDocs')} style={styles.sheetSection} />
+                {kycState === 'loading' ? (
+                  <SkeletonCard lines={2} />
+                ) : kycState === 'error' ? (
+                  <Notice
+                    tone="error"
+                    message={t('adminKyc.privateDocsError')}
+                    actionLabel={t('common:actions.tryAgain')}
+                    onAction={() => openReview(selected)}
+                  />
+                ) : privateDocs.length === 0 ? (
+                  <Notice tone="info" message={t('adminKyc.noPrivateDocs')} />
+                ) : (
+                  <ListGroup>
+                    {privateDocs.map((d) => (
+                      <ListRow
+                        key={d.key}
+                        icon={d.key.startsWith('governmentId') ? IdCard : FileText}
+                        title={d.label}
+                        subtitle={t('adminKyc.opensFile')}
+                        onPress={() => open(d)}
+                        accessibilityHint={t('adminKyc.opensDocHint')}
+                      />
+                    ))}
+                  </ListGroup>
+                )}
+              </View>
 
-  const guardsList = getGuardsList();
+              {publicDocs.length > 0 ? (
+                <View>
+                  <SectionTitle title={t('adminKyc.publicPhotos')} style={styles.sheetSection} />
+                  <ListGroup>
+                    {publicDocs.map((d) => (
+                      <ListRow key={d.key} icon={Camera} title={d.label} onPress={() => open(d)} accessibilityHint={t('adminKyc.opensPhotoHint')} />
+                    ))}
+                  </ListGroup>
+                </View>
+              ) : null}
 
-  return (
-    <View style={styles.container}>
-      <Stack.Screen options={{ headerShown: false }} />
-      
-      <View style={[styles.header, { paddingTop: insets.top + 24 }]}>
-        <View>
-          <Text style={styles.title}>KYC Management</Text>
-          <Text style={styles.subtitle}>
-            Review and approve guard applications
-          </Text>
-        </View>
-      </View>
-
-      <View style={styles.tabs}>
-        <TouchableOpacity
-          style={[styles.tab, selectedTab === 'pending' && styles.tabActive]}
-          onPress={() => setSelectedTab('pending')}
-        >
-          <Text style={[styles.tabText, selectedTab === 'pending' && styles.tabTextActive]}>
-            Pending ({pendingGuards.length})
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.tab, selectedTab === 'approved' && styles.tabActive]}
-          onPress={() => setSelectedTab('approved')}
-        >
-          <Text style={[styles.tabText, selectedTab === 'approved' && styles.tabTextActive]}>
-            Approved ({approvedGuards.length})
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.tab, selectedTab === 'rejected' && styles.tabActive]}
-          onPress={() => setSelectedTab('rejected')}
-        >
-          <Text style={[styles.tabText, selectedTab === 'rejected' && styles.tabTextActive]}>
-            Rejected ({rejectedGuards.length})
-          </Text>
-        </TouchableOpacity>
-      </View>
-
-      <ScrollView style={styles.content} contentContainerStyle={styles.scrollContent}>
-        {isLoading ? (
-          <View style={styles.emptyState}>
-            <ActivityIndicator size="large" color={Colors.gold} />
-          </View>
-        ) : guardsList.length === 0 ? (
-          <View style={styles.emptyState}>
-            <FileText size={48} color={Colors.textTertiary} />
-            <Text style={styles.emptyText}>No {selectedTab} applications</Text>
-            <Text style={styles.emptySubtext}>
-              {selectedTab === 'pending'
-                ? 'New KYC applications will appear here'
-                : `No ${selectedTab} applications to show`}
-            </Text>
-          </View>
-        ) : (
-          guardsList.map(renderGuardCard)
-        )}
-      </ScrollView>
-    </View>
+              {openError ? <Notice tone="error" message={openError} /> : null}
+              {actionError ? <Notice tone="error" message={actionError} /> : null}
+            </>
+          )
+        ) : null}
+      </Sheet>
+    </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: Colors.background,
+  tabsScroll: {
+    flexGrow: 0,
+    marginHorizontal: -Space.gutter,
   },
-  header: {
-    padding: 24,
-    paddingTop: 60,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-  },
-  title: {
-    fontSize: 32,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-    marginBottom: 4,
-  },
-  subtitle: {
-    fontSize: 14,
-    color: Colors.textSecondary,
+  // flexGrow: la barra ocupa todo el ancho cuando cabe, como antes.
+  tabsContent: {
+    flexGrow: 1,
+    paddingHorizontal: Space.gutter,
   },
   tabs: {
-    flexDirection: 'row',
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-    backgroundColor: Colors.surface,
+    flexGrow: 1,
   },
-  tab: {
+  notice: {
+    marginTop: Space.lg,
+  },
+  list: {
+    gap: Space.md,
+  },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Space.md,
+  },
+  rowText: {
     flex: 1,
-    paddingVertical: 16,
+    gap: 2,
+  },
+  // Badge trae alignSelf: 'flex-start'; en una fila centrada se ve subido.
+  badgeCenter: {
+    alignSelf: 'center',
+  },
+  sheetHeader: {
+    flexDirection: 'row',
     alignItems: 'center',
-    borderBottomWidth: 2,
-    borderBottomColor: 'transparent',
+    gap: Space.lg,
   },
-  tabActive: {
-    borderBottomColor: Colors.gold,
+  sheetSection: {
+    marginTop: 0,
   },
-  tabText: {
-    fontSize: 14,
-    fontWeight: '600' as const,
-    color: Colors.textSecondary,
-  },
-  tabTextActive: {
-    color: Colors.gold,
-  },
-  content: {
+  flex: {
     flex: 1,
-  },
-  scrollContent: {
-    padding: 16,
-  },
-  guardCard: {
-    backgroundColor: Colors.surface,
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  guardHeader: {
-    flexDirection: 'row',
-    marginBottom: 16,
-  },
-  guardPhoto: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: Colors.surfaceLight,
-    marginRight: 12,
-  },
-  guardPhotoPlaceholder: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  guardInfo: {
-    flex: 1,
-    justifyContent: 'center',
-  },
-  guardName: {
-    fontSize: 18,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-    marginBottom: 4,
-  },
-  guardEmail: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-    marginBottom: 4,
-  },
-  guardMeta: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  guardMetaText: {
-    fontSize: 12,
-    color: Colors.textTertiary,
-  },
-  certifications: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 16,
-  },
-  certBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: Colors.background,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  certText: {
-    fontSize: 11,
-    color: Colors.textSecondary,
-    fontWeight: '600' as const,
-  },
-  guardActions: {
-    gap: 12,
-  },
-  viewButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: Colors.background,
-    paddingVertical: 12,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  viewButtonText: {
-    fontSize: 14,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-  },
-  actionButtons: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  rejectButton: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: Colors.error + '20',
-    paddingVertical: 12,
-    borderRadius: 12,
-  },
-  rejectButtonText: {
-    fontSize: 14,
-    fontWeight: '700' as const,
-    color: Colors.error,
-  },
-  approveButton: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: Colors.success,
-    paddingVertical: 12,
-    borderRadius: 12,
-  },
-  approveButtonText: {
-    fontSize: 14,
-    fontWeight: '700' as const,
-    color: Colors.background,
-  },
-  emptyState: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 80,
-  },
-  emptyText: {
-    fontSize: 18,
-    fontWeight: '600' as const,
-    color: Colors.textPrimary,
-    marginTop: 16,
-  },
-  emptySubtext: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-    marginTop: 8,
-    textAlign: 'center' as const,
   },
 });

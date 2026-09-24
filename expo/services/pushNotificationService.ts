@@ -1,8 +1,9 @@
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
-import { doc, getDoc, updateDoc, collection, addDoc, query, where, getDocs } from 'firebase/firestore';
-import { db as getDbInstance } from '@/lib/firebase';
+import { doc, getDoc, setDoc, updateDoc, collection, addDoc, query, where, getDocs } from 'firebase/firestore';
+import { db as getDbInstance, auth as getAuthInstance } from '@/lib/firebase';
 import { UserRole } from '@/types';
+import i18n from '@/i18n';
 
 export interface PushNotificationPayload {
   title: string;
@@ -34,37 +35,43 @@ if (Platform.OS !== 'web') {
   });
 
   if (Platform.OS === 'android') {
-    Notifications.setNotificationChannelAsync('booking-updates', {
-      name: 'Booking Updates',
-      importance: Notifications.AndroidImportance.HIGH,
-      vibrationPattern: [0, 250, 250, 250],
-      lightColor: '#D4AF37',
-      sound: 'default',
-    });
+    // Los nombres de canal se ven en los ajustes de Android: se vuelven a
+    // registrar (misma id, nuevo nombre) cada vez que cambia el idioma.
+    const configureAndroidChannels = () => {
+      Notifications.setNotificationChannelAsync('booking-updates', {
+        name: i18n.t('booking:notifications.channels.bookingUpdates'),
+        importance: Notifications.AndroidImportance.HIGH,
+        vibrationPattern: [0, 250, 250, 250],
+        lightColor: '#D4AF37',
+        sound: 'default',
+      });
 
-    Notifications.setNotificationChannelAsync('chat-messages', {
-      name: 'Chat Messages',
-      importance: Notifications.AndroidImportance.HIGH,
-      vibrationPattern: [0, 150, 150, 150],
-      lightColor: '#D4AF37',
-      sound: 'default',
-    });
+      Notifications.setNotificationChannelAsync('chat-messages', {
+        name: i18n.t('booking:notifications.channels.chatMessages'),
+        importance: Notifications.AndroidImportance.HIGH,
+        vibrationPattern: [0, 150, 150, 150],
+        lightColor: '#D4AF37',
+        sound: 'default',
+      });
 
-    Notifications.setNotificationChannelAsync('emergency', {
-      name: 'Emergency Alerts',
-      importance: Notifications.AndroidImportance.MAX,
-      vibrationPattern: [0, 500, 250, 500],
-      lightColor: '#FF0000',
-      sound: 'default',
-    });
+      Notifications.setNotificationChannelAsync('emergency', {
+        name: i18n.t('booking:notifications.channels.emergency'),
+        importance: Notifications.AndroidImportance.MAX,
+        vibrationPattern: [0, 500, 250, 500],
+        lightColor: '#FF0000',
+        sound: 'default',
+      });
 
-    Notifications.setNotificationChannelAsync('payments', {
-      name: 'Payment Alerts',
-      importance: Notifications.AndroidImportance.DEFAULT,
-      vibrationPattern: [0, 200],
-      lightColor: '#D4AF37',
-      sound: 'default',
-    });
+      Notifications.setNotificationChannelAsync('payments', {
+        name: i18n.t('booking:notifications.channels.payments'),
+        importance: Notifications.AndroidImportance.DEFAULT,
+        vibrationPattern: [0, 200],
+        lightColor: '#D4AF37',
+        sound: 'default',
+      });
+    };
+    configureAndroidChannels();
+    i18n.on('languageChanged', configureAndroidChannels);
   }
 }
 
@@ -113,22 +120,24 @@ export const pushNotificationService = {
       }
 
       const token = (await Notifications.getExpoPushTokenAsync()).data;
-      console.log('[Push] Device token:', token);
 
-      await updateDoc(doc(getDbInstance(), 'users', userId), {
-        pushToken: token,
-        pushTokenUpdatedAt: new Date().toISOString(),
-        devicePlatform: Platform.OS,
-      });
-
-      await addDoc(collection(getDbInstance(), 'deviceTokens'), {
-        userId,
-        token,
-        platform: Platform.OS,
-        role,
-        createdAt: new Date().toISOString(),
-        lastUsedAt: new Date().toISOString(),
-      });
+      // Un documento por (usuario, dispositivo), con id determinista: antes se
+      // agregaba uno nuevo en cada arranque y el servidor mandaba el mismo
+      // aviso N veces. El token tampoco se guarda ya en el perfil publico
+      // users/{uid}, que cualquier usuario registrado puede leer.
+      const tokenId = `${userId}_${token.replace(/[^A-Za-z0-9]/g, '').slice(-40)}`;
+      await setDoc(
+        doc(getDbInstance(), 'deviceTokens', tokenId),
+        {
+          userId,
+          token,
+          platform: Platform.OS,
+          role,
+          active: true,
+          lastUsedAt: new Date().toISOString(),
+        },
+        { merge: true }
+      );
 
       return token;
     } catch (error) {
@@ -169,12 +178,20 @@ export const pushNotificationService = {
       // leer el padron. Ahora quien resuelve los tokens es la funcion de
       // servidor `enviarAvisoEncolado`, que corre con Admin SDK y ademas
       // atiende todos los aparatos del usuario, no solo el ultimo.
+      // Forma que exigen las reglas: remitente = quien escribe, tipo de una
+      // lista cerrada y, si el destinatario es otra persona, la reserva que
+      // comparten. Titulo y cuerpo los arma el servidor desde plantillas: un
+      // cliente ya no puede mandarle texto arbitrario a otro usuario.
+      const senderId = getAuthInstance().currentUser?.uid;
+      const type = typeof payload.data?.type === 'string' ? payload.data.type : undefined;
+      if (!senderId || !type) return;
       await addDoc(collection(getDbInstance(), 'notifications'), {
         userId,
-        title: payload.title,
-        body: payload.body,
-        data: payload.data || {},
+        senderId,
+        type,
+        ...(typeof payload.data?.bookingId === 'string' ? { bookingId: payload.data.bookingId } : {}),
         status: 'pending',
+        read: false,
         createdAt: new Date().toISOString(),
       });
 
@@ -223,8 +240,8 @@ export const pushNotificationService = {
 
   async notifyBookingCreated(userId: string, bookingId: string): Promise<void> {
     await this.sendPushNotification(userId, {
-      title: 'Booking Created',
-      body: 'Your booking request has been submitted successfully.',
+      title: i18n.t('booking:notifications.bookingCreated.title'),
+      body: i18n.t('booking:notifications.bookingCreated.body'),
       data: { type: 'booking_created', bookingId },
       categoryId: 'booking-updates',
       priority: 'high',
@@ -237,8 +254,8 @@ export const pushNotificationService = {
     guardName: string
   ): Promise<void> {
     await this.sendPushNotification(userId, {
-      title: 'Booking Accepted',
-      body: `${guardName} has accepted your booking request.`,
+      title: i18n.t('booking:notifications.bookingAccepted.title'),
+      body: i18n.t('booking:notifications.bookingAccepted.body', { name: guardName }),
       data: { type: 'booking_accepted', bookingId },
       categoryId: 'booking-updates',
       priority: 'high',
@@ -251,8 +268,8 @@ export const pushNotificationService = {
     reason?: string
   ): Promise<void> {
     await this.sendPushNotification(userId, {
-      title: 'Booking Declined',
-      body: reason || 'Your booking request was declined. We will find another guard.',
+      title: i18n.t('booking:notifications.bookingRejected.title'),
+      body: reason || i18n.t('booking:notifications.bookingRejected.body'),
       data: { type: 'booking_rejected', bookingId },
       categoryId: 'booking-updates',
       priority: 'high',
@@ -266,8 +283,8 @@ export const pushNotificationService = {
     eta: string
   ): Promise<void> {
     await this.sendPushNotification(userId, {
-      title: 'Guard En Route',
-      body: `${guardName} is on the way. ETA: ${eta}`,
+      title: i18n.t('booking:notifications.guardEnRoute.title'),
+      body: i18n.t('booking:notifications.guardEnRoute.body', { name: guardName, eta }),
       data: { type: 'guard_en_route', bookingId },
       categoryId: 'booking-updates',
       priority: 'high',
@@ -279,8 +296,8 @@ export const pushNotificationService = {
     bookingId: string
   ): Promise<void> {
     await this.sendPushNotification(userId, {
-      title: 'Service Started',
-      body: 'Your protection service has started. Stay safe!',
+      title: i18n.t('booking:notifications.serviceStarted.title'),
+      body: i18n.t('booking:notifications.serviceStarted.body'),
       data: { type: 'service_started', bookingId },
       categoryId: 'booking-updates',
       priority: 'high',
@@ -292,8 +309,8 @@ export const pushNotificationService = {
     bookingId: string
   ): Promise<void> {
     await this.sendPushNotification(userId, {
-      title: 'Service Completed',
-      body: 'Your protection service has been completed. Please rate your experience.',
+      title: i18n.t('booking:notifications.serviceCompleted.title'),
+      body: i18n.t('booking:notifications.serviceCompleted.body'),
       data: { type: 'service_completed', bookingId },
       categoryId: 'booking-updates',
       priority: 'high',
@@ -307,7 +324,7 @@ export const pushNotificationService = {
     messagePreview: string
   ): Promise<void> {
     await this.sendPushNotification(userId, {
-      title: `Message from ${senderName}`,
+      title: i18n.t('booking:notifications.newMessage.title', { name: senderName }),
       body: messagePreview,
       data: { type: 'new_message', bookingId },
       categoryId: 'chat-messages',
@@ -321,8 +338,8 @@ export const pushNotificationService = {
     amount: number
   ): Promise<void> {
     await this.sendPushNotification(userId, {
-      title: 'Payment Successful',
-      body: `Payment of $${amount.toFixed(2)} MXN processed successfully.`,
+      title: i18n.t('booking:notifications.paymentSuccess.title'),
+      body: i18n.t('booking:notifications.paymentSuccess.body', { amount: amount.toFixed(2) }),
       data: { type: 'payment_success', bookingId },
       categoryId: 'payments',
       priority: 'default',
@@ -335,8 +352,8 @@ export const pushNotificationService = {
     reason: string
   ): Promise<void> {
     await this.sendPushNotification(userId, {
-      title: 'Payment Failed',
-      body: `Payment failed: ${reason}. Please update your payment method.`,
+      title: i18n.t('booking:notifications.paymentFailed.title'),
+      body: i18n.t('booking:notifications.paymentFailed.body', { reason }),
       data: { type: 'payment_failed', bookingId },
       categoryId: 'payments',
       priority: 'high',
@@ -349,7 +366,7 @@ export const pushNotificationService = {
     message: string
   ): Promise<void> {
     await this.sendPushNotification(userId, {
-      title: 'EMERGENCY ALERT',
+      title: i18n.t('booking:notifications.emergency.title'),
       body: message,
       data: { type: 'emergency', bookingId },
       categoryId: 'emergency',
@@ -363,8 +380,8 @@ export const pushNotificationService = {
     clientName: string
   ): Promise<void> {
     await this.sendPushNotification(guardId, {
-      title: 'New Booking Request',
-      body: `${clientName} has requested your protection services.`,
+      title: i18n.t('booking:notifications.newBookingRequest.title'),
+      body: i18n.t('booking:notifications.newBookingRequest.body', { name: clientName }),
       data: { type: 'new_booking_request', bookingId },
       categoryId: 'booking-updates',
       priority: 'high',

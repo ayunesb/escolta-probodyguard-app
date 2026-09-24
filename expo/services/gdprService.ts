@@ -1,20 +1,10 @@
-import { db as getDbInstance, auth as getAuthInstance } from '@/lib/firebase';
-import { getStorage } from 'firebase/storage';
-import {
-  collection,
-  query,
-  where,
-  getDocs,
-  deleteDoc,
-  doc,
-  addDoc,
-  Timestamp,
-} from 'firebase/firestore';
-import { deleteUser } from 'firebase/auth';
-import { ref, listAll, deleteObject } from 'firebase/storage';
+import { db as getDbInstance, realtimeDb as getRealtimeDb } from '@/lib/firebase';
+import { addDoc, collection, doc, getDoc, getDocs, query, Timestamp, where } from 'firebase/firestore';
+import { get, ref } from 'firebase/database';
 import { monitoringService } from './monitoringService';
+import { logger } from '@/utils/logger';
 
-interface DeletionRequest {
+export interface DeletionRequest {
   userId: string;
   reason?: string;
   requestedAt: Date;
@@ -23,193 +13,132 @@ interface DeletionRequest {
   error?: string;
 }
 
+export interface UserDataExport {
+  exportedAt: string;
+  userId: string;
+  // Secciones que no se pudieron leer (sin permiso o sin conexion). Se
+  // informan en vez de fingir que la exportacion esta completa.
+  unavailableSections: string[];
+  [section: string]: unknown;
+}
+
+const serialize = (value: unknown): unknown => {
+  if (value && typeof value === 'object') {
+    if (value instanceof Timestamp) return value.toDate().toISOString();
+    if (Array.isArray(value)) return value.map(serialize);
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, serialize(v)]));
+  }
+  return value;
+};
+
 class GDPRService {
+  // Derecho de cancelacion (ARCO). El borrado real lo ejecuta un
+  // administrador: el cliente solo deja la solicitud registrada.
   async requestDataDeletion(userId: string, reason?: string): Promise<string> {
     try {
-      const deletionRequest: DeletionRequest = {
-        userId,
-        reason,
-        requestedAt: new Date(),
-        status: 'pending',
-      };
-
       const docRef = await addDoc(collection(getDbInstance(), 'deletion_requests'), {
-        ...deletionRequest,
-        requestedAt: Timestamp.fromDate(deletionRequest.requestedAt),
+        userId,
+        reason: reason ?? null,
+        requestedAt: Timestamp.fromDate(new Date()),
+        status: 'pending',
       });
-
-      await monitoringService.log('info', 'GDPR deletion requested', { userId, requestId: docRef.id }, userId);
-
-      console.log('[GDPR] Deletion request created:', docRef.id);
+      await monitoringService.log('info', 'Deletion requested', { userId, requestId: docRef.id }, userId);
       return docRef.id;
     } catch (error) {
-      console.error('[GDPR] Failed to create deletion request:', error);
-      await monitoringService.reportError({ error: error as Error, userId, context: { action: 'requestDataDeletion' } });
-      throw error;
-    }
-  }
-
-  async executeDataDeletion(userId: string): Promise<void> {
-    try {
-      console.log('[GDPR] Starting data deletion for user:', userId);
-
-      await this.deleteFirestoreData(userId);
-      await this.deleteStorageData(userId);
-      await this.deleteAuthAccount(userId);
-
-      await monitoringService.log('info', 'GDPR deletion completed', { userId }, userId);
-      console.log('[GDPR] Data deletion completed for user:', userId);
-    } catch (error) {
-      console.error('[GDPR] Failed to execute deletion:', error);
-      await monitoringService.reportError({ error: error as Error, userId, context: { action: 'executeDataDeletion' } });
-      throw error;
-    }
-  }
-
-  private async deleteFirestoreData(userId: string): Promise<void> {
-    const collections = [
-      'users',
-      'bookings',
-      'messages',
-      'reviews',
-      'payouts',
-      'ledger',
-      'kyc_documents',
-      'favorites',
-      'notifications',
-      'location_history',
-      'emergency_alerts',
-    ];
-
-    for (const collectionName of collections) {
-      try {
-        const q = query(
-          collection(getDbInstance(), collectionName),
-          where('userId', '==', userId)
-        );
-        const snapshot = await getDocs(q);
-
-        for (const document of snapshot.docs) {
-          await deleteDoc(doc(getDbInstance(), collectionName, document.id));
-        }
-
-        console.log(`[GDPR] Deleted ${snapshot.size} documents from ${collectionName}`);
-      } catch (error) {
-        console.error(`[GDPR] Error deleting from ${collectionName}:`, error);
-      }
-    }
-
-    // Borrado directo por ID. La consulta anterior filtraba por el campo `id`,
-    // que es una operacion de lista y las reglas la niegan. Nota: borrar un
-    // usuario sigue estando reservado al administrador; el camino correcto
-    // para el usuario es dejar su peticion en `deletion_requests`, que ya
-    // tiene reglas, y que un administrador la ejecute.
-    await deleteDoc(doc(getDbInstance(), 'users', userId));
-  }
-
-  private async deleteStorageData(userId: string): Promise<void> {
-    try {
-      const storage = getStorage();
-      const userStorageRef = ref(storage, `users/${userId}`);
-      const fileList = await listAll(userStorageRef);
-
-      for (const fileRef of fileList.items) {
-        await deleteObject(fileRef);
-      }
-
-      for (const folderRef of fileList.prefixes) {
-        const folderFiles = await listAll(folderRef);
-        for (const fileRef of folderFiles.items) {
-          await deleteObject(fileRef);
-        }
-      }
-
-      console.log('[GDPR] Deleted storage data for user:', userId);
-    } catch (error) {
-      console.error('[GDPR] Error deleting storage data:', error);
-    }
-  }
-
-  private async deleteAuthAccount(userId: string): Promise<void> {
-    try {
-      const currentUser = getAuthInstance().currentUser;
-      if (currentUser && currentUser.uid === userId) {
-        await deleteUser(currentUser);
-        console.log('[GDPR] Deleted auth account for user:', userId);
-      } else {
-        console.warn('[GDPR] Cannot delete auth account - user not authenticated or mismatch');
-      }
-    } catch (error) {
-      console.error('[GDPR] Error deleting auth account:', error);
-      throw error;
-    }
-  }
-
-  async exportUserData(userId: string): Promise<Record<string, any>> {
-    try {
-      console.log('[GDPR] Exporting data for user:', userId);
-
-      const userData: Record<string, any> = {
-        exportedAt: new Date().toISOString(),
-        userId,
-      };
-
-      const collections = [
-        'users',
-        'bookings',
-        'messages',
-        'reviews',
-        'payouts',
-        'ledger',
-        'favorites',
-      ];
-
-      for (const collectionName of collections) {
-        const q = query(
-          collection(getDbInstance(), collectionName),
-          where('userId', '==', userId)
-        );
-        const snapshot = await getDocs(q);
-
-        userData[collectionName] = snapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data(),
-        }));
-      }
-
-      await monitoringService.log('info', 'GDPR data export completed', { userId }, userId);
-      console.log('[GDPR] Data export completed for user:', userId);
-
-      return userData;
-    } catch (error) {
-      console.error('[GDPR] Failed to export data:', error);
-      await monitoringService.reportError({ error: error as Error, userId, context: { action: 'exportUserData' } });
+      logger.error('[GDPR] Failed to create deletion request', error);
       throw error;
     }
   }
 
   async getDeletionStatus(requestId: string): Promise<DeletionRequest | null> {
     try {
-
-      const snapshot = await getDocs(query(collection(getDbInstance(), 'deletion_requests'), where('__name__', '==', requestId)));
-
-      if (snapshot.empty) {
-        return null;
-      }
-
-      const data = snapshot.docs[0].data();
+      const snap = await getDoc(doc(getDbInstance(), 'deletion_requests', requestId));
+      if (!snap.exists()) return null;
+      const data = snap.data();
       return {
         userId: data.userId,
-        reason: data.reason,
-        requestedAt: data.requestedAt.toDate(),
+        reason: data.reason ?? undefined,
+        requestedAt: data.requestedAt?.toDate?.() ?? new Date(0),
         status: data.status,
-        completedAt: data.completedAt?.toDate(),
+        completedAt: data.completedAt?.toDate?.(),
         error: data.error,
       };
     } catch (error) {
-      console.error('[GDPR] Failed to get deletion status:', error);
+      logger.error('[GDPR] Failed to get deletion status', error);
       return null;
     }
+  }
+
+  // Derecho de acceso (ARCO): todo lo que la app puede leer de esta persona
+  // con sus propios permisos. Cada seccion se lee por separado; si una falla,
+  // se anota en unavailableSections y el resto se exporta igual.
+  async exportUserData(userId: string): Promise<UserDataExport> {
+    const db = getDbInstance();
+    const out: UserDataExport = { exportedAt: new Date().toISOString(), userId, unavailableSections: [] };
+
+    const section = async (name: string, read: () => Promise<unknown>) => {
+      try {
+        out[name] = serialize(await read());
+      } catch (error) {
+        logger.warn(`[GDPR] Export section unavailable: ${name}`, { code: (error as { code?: string })?.code });
+        out.unavailableSections.push(name);
+      }
+    };
+
+    const byField = (col: string, field: string) => async () => {
+      const snap = await getDocs(query(collection(db, col), where(field, '==', userId)));
+      return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    };
+
+    await section('profile', async () => {
+      const snap = await getDoc(doc(db, 'users', userId));
+      return snap.exists() ? { id: snap.id, ...snap.data() } : null;
+    });
+
+    const role = (out.profile as { role?: string } | null | undefined)?.role;
+
+    if (role === 'guard') {
+      await section('verificationDocuments', async () => {
+        const snap = await getDoc(doc(db, 'users', userId, 'private', 'kyc'));
+        return snap.exists() ? snap.data() : null;
+      });
+    }
+
+    await section('bookings', async () => {
+      const rtdb = getRealtimeDb();
+      const indexPaths = role === 'guard' ? [`guardBookingIndex/${userId}`] : [`clientBookingIndex/${userId}`];
+      const ids = new Set<string>();
+      for (const path of indexPaths) {
+        const snap = await get(ref(rtdb, path));
+        Object.keys((snap.val() as Record<string, unknown> | null) ?? {}).forEach((id) => ids.add(id));
+      }
+      const results = await Promise.allSettled(Array.from(ids).map((id) => get(ref(rtdb, `bookings/${id}`))));
+      return results
+        .filter((r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof get>>> => r.status === 'fulfilled')
+        .map((r) => r.value.val())
+        .filter(Boolean);
+    });
+
+    await section('messages', async () => {
+      const snap = await getDocs(query(collection(db, 'messages'), where('participantIds', 'array-contains', userId)));
+      return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    });
+    await section('reviewsWritten', byField('reviews', 'clientId'));
+    if (role === 'guard') {
+      await section('reviewsReceived', byField('reviews', 'guardId'));
+      await section('payouts', byField('payouts', 'guardId'));
+      await section('ledger', byField('ledger', 'guardId'));
+    }
+    await section('emergencyAlerts', byField('emergencyAlerts', 'userId'));
+    await section('notifications', byField('notifications', 'userId'));
+    await section('deletionRequests', byField('deletion_requests', 'userId'));
+    await section('privacyPreferences', async () => {
+      const snap = await getDoc(doc(db, 'consents', userId));
+      return snap.exists() ? snap.data() : null;
+    });
+
+    monitoringService.log('info', 'Data export completed', { userId, unavailable: out.unavailableSections.length }, userId).catch(() => {});
+    return out;
   }
 }
 

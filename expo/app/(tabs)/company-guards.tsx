@@ -1,27 +1,38 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
+import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Clipboard from 'expo-clipboard';
 import { createUserWithEmailAndPassword, sendPasswordResetEmail, signOut } from 'firebase/auth';
 import { doc, setDoc } from 'firebase/firestore';
-import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  TouchableOpacity,
-  TextInput,
-  Alert,
-  ActivityIndicator,
-} from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Stack, useFocusEffect, useRouter } from 'expo-router';
-import { UserPlus, Mail, Shield, CheckCircle, XCircle, Upload, FileText, Copy, FolderOpen } from 'lucide-react-native';
-import { useAuth } from '@/contexts/AuthContext';
-import { userService } from '@/services/userService';
-import { guardService } from '@/services/guardService';
-import { secondaryAuth, secondaryDb } from '@/lib/firebase';
-import type { Guard } from '@/types';
+import { useTranslation } from 'react-i18next';
+import { BadgeDollarSign, Copy, FileSpreadsheet, FolderOpen, Search, Shield, ShieldCheck, Upload, UserMinus, UserPlus } from 'lucide-react-native';
 import Colors from '@/constants/colors';
+import { Radius, Space } from '@/constants/design';
+import {
+  AppText,
+  Avatar,
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  IconButton,
+  Input,
+  Screen,
+  ScreenHeader,
+  SectionTitle,
+  SkeletonCard,
+} from '@/components/ui';
+import { Notice, RoleGate, Sheet, fullName, kycMeta } from '@/components/backoffice';
+import { useAuth } from '@/contexts/AuthContext';
+import { secondaryAuth, secondaryDb, secondaryRealtimeDb } from '@/lib/firebase';
+import { ref, set } from 'firebase/database';
+import i18n from '@/i18n';
+import { UserRecord, userService } from '@/services/userService';
+import { confirm } from '@/utils/confirm';
+import { formatNumber } from '@/i18n/format';
+import { formatMXN } from '@/utils/pricing';
+import { logger } from '@/utils/logger';
 
 function randomTempPassword(): string {
   // Nunca se usa para entrar: se manda sendPasswordResetEmail justo despues
@@ -30,6 +41,7 @@ function randomTempPassword(): string {
 }
 
 const CSV_TEMPLATE = 'firstName,lastName,email,phone,hourlyRate\nJuan,Perez,juan.perez@example.com,+525512345678,180';
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 interface NewGuardInput {
   firstName: string;
@@ -42,99 +54,127 @@ interface NewGuardInput {
 interface CreateGuardResult {
   email: string;
   success: boolean;
-  uid?: string;
   error?: string;
 }
 
-function parseGuardsCSV(text: string): { rows: NewGuardInput[]; errors: string[] } {
-  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-  const errors: string[] = [];
-  if (lines.length < 2) {
-    return { rows: [], errors: ['The file has no data rows.'] };
-  }
+type FormState = { firstName: string; lastName: string; email: string; phone: string; hourlyRate: string };
+const EMPTY_FORM: FormState = { firstName: '', lastName: '', email: '', phone: '', hourlyRate: '' };
 
-  const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+function parseGuardsCSV(text: string): { rows: NewGuardInput[]; errors: string[] } {
+  const lines = text
+    .replace(/^\uFEFF/, '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (lines.length < 2) return { rows: [], errors: [i18n.t('backoffice:companyGuards.csvNoRows')] };
+
+  const headers = lines[0].split(',').map((h) => h.trim().toLowerCase());
   const required = ['firstname', 'lastname', 'email', 'phone', 'hourlyrate'];
-  const missing = required.filter(r => !headers.includes(r));
-  if (missing.length > 0) {
-    return { rows: [], errors: [`Missing column(s): ${missing.join(', ')}`] };
-  }
+  const missing = required.filter((r) => !headers.includes(r));
+  if (missing.length > 0) return { rows: [], errors: [i18n.t('backoffice:companyGuards.csvMissingColumns', { columns: missing.join(', ') })] };
 
   const rows: NewGuardInput[] = [];
+  const errors: string[] = [];
   for (let i = 1; i < lines.length; i++) {
-    const cells = lines[i].split(',').map(c => c.trim());
+    const cells = lines[i].split(',').map((c) => c.trim());
     const get = (key: string) => cells[headers.indexOf(key)] ?? '';
     const hourlyRate = Number(get('hourlyrate'));
-    const firstName = get('firstname');
-    const lastName = get('lastname');
-    const email = get('email');
-    const phone = get('phone');
-
-    if (!firstName || !lastName || !email || !phone || !Number.isFinite(hourlyRate) || hourlyRate <= 0) {
-      errors.push(`Row ${i + 1}: missing or invalid data`);
+    const row = { firstName: get('firstname'), lastName: get('lastname'), email: get('email'), phone: get('phone'), hourlyRate };
+    if (!row.firstName || !row.lastName || !EMAIL_RE.test(row.email) || !row.phone || !Number.isFinite(hourlyRate) || hourlyRate <= 0) {
+      errors.push(i18n.t('backoffice:companyGuards.csvBadRow', { row: i + 1 }));
       continue;
     }
-    rows.push({ firstName, lastName, email, phone, hourlyRate });
+    rows.push(row);
   }
   return { rows, errors };
 }
 
-export default function CompanyGuardsScreen() {
-  const { user } = useAuth();
-  const router = useRouter();
-  const insets = useSafeAreaInsets();
-  const [showInviteForm, setShowInviteForm] = useState(false);
-  const [inviteFirstName, setInviteFirstName] = useState('');
-  const [inviteLastName, setInviteLastName] = useState('');
-  const [inviteEmail, setInviteEmail] = useState('');
-  const [invitePhone, setInvitePhone] = useState('');
-  const [inviteRate, setInviteRate] = useState('');
-  const [isInviting, setIsInviting] = useState(false);
-  const [showImportModal, setShowImportModal] = useState(false);
-  const [importedFile, setImportedFile] = useState<any>(null);
-  const [importing, setImporting] = useState(false);
-  const [companyGuards, setCompanyGuards] = useState<Guard[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+export default function CompanyGuardsRoute() {
+  return (
+    <>
+      <Stack.Screen options={{ headerShown: false }} />
+      <RoleGate roles={['company']}>
+        <CompanyGuardsScreen />
+      </RoleGate>
+    </>
+  );
+}
 
-  const loadGuards = useCallback(async () => {
+function CompanyGuardsScreen() {
+  const router = useRouter();
+  const { t } = useTranslation(['backoffice', 'common']);
+  const { user } = useAuth();
+  const [guards, setGuards] = useState<UserRecord[] | null>(null);
+  const [loadError, setLoadError] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [search, setSearch] = useState('');
+  const [notice, setNotice] = useState<{ tone: 'success' | 'error' | 'info'; message: string } | null>(null);
+  const [removingId, setRemovingId] = useState<string | null>(null);
+
+  // Alta individual
+  const [addOpen, setAddOpen] = useState(false);
+  const [form, setForm] = useState<FormState>(EMPTY_FORM);
+  const [formErrors, setFormErrors] = useState<Partial<Record<keyof FormState, string>>>({});
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+
+  // Tarifa
+  const [rateGuard, setRateGuard] = useState<UserRecord | null>(null);
+  const [rateInput, setRateInput] = useState('');
+  const [rateError, setRateError] = useState<string | null>(null);
+  const [savingRate, setSavingRate] = useState(false);
+
+  // Importacion CSV
+  const [importFile, setImportFile] = useState<DocumentPicker.DocumentPickerAsset | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState<{ created: number; total: number; issues: string[] } | null>(null);
+  const [formatCopied, setFormatCopied] = useState(false);
+
+  const load = useCallback(async () => {
     if (!user) return;
-    setIsLoading(true);
+    setLoadError(false);
     try {
-      const result = await guardService.listGuardsForCompany(user.id);
-      setCompanyGuards(result as Guard[]);
-    } finally {
-      setIsLoading(false);
+      const list = await userService.fetchGuardsForCompany(user.id);
+      list.sort((a, b) => fullName(a).localeCompare(fullName(b)));
+      setGuards(list);
+    } catch (error) {
+      logger.error('[CompanyGuards] Failed to load guards', error);
+      setLoadError(true);
     }
   }, [user]);
 
   useFocusEffect(
     useCallback(() => {
-      loadGuards();
-    }, [loadGuards])
+      load();
+    }, [load])
   );
 
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await load();
+    setRefreshing(false);
+  };
+
+  const visible = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return guards ?? [];
+    return (guards ?? []).filter((g) => [fullName(g), g.email, g.phone].some((v) => (v ?? '').toLowerCase().includes(q)));
+  }, [guards, search]);
+
+  const available = (guards ?? []).filter((g) => g.availability === true).length;
+
   // Crea cada cuenta con el SDK de cliente en una app de Firebase secundaria
-  // (ver lib/firebase.ts) en vez de una Cloud Function: createCompanyGuards
-  // quedo inalcanzable en produccion por una politica de organizacion de GCP
-  // que bloquea el acceso publico al servicio Cloud Run subyacente, fuera de
-  // lo que este proyecto puede resolver por si solo. Esta ruta no depende de
-  // Cloud Functions ni de una cuenta de servicio: cada escolta se crea con
-  // su propia sesion temporal, autorizado por la misma regla de Firestore
-  // que ya deja a cualquier usuario nuevo escribir SU PROPIO documento al
-  // registrarse.
-  const createGuardsRemote = async (guards: NewGuardInput[]): Promise<CreateGuardResult[]> => {
-    if (!user) {
-      return guards.map((g) => ({ email: g.email, success: false, error: 'Not authenticated' }));
-    }
-
+  // (ver lib/firebase.ts): cada escolta se crea con su propia sesion temporal
+  // y escribe SU PROPIO perfil, que es lo que permiten las reglas. Los
+  // documentos KYC nunca van en este perfil publico (CONTRACT §5).
+  const createGuards = async (inputs: NewGuardInput[]): Promise<CreateGuardResult[]> => {
+    if (!user) return inputs.map((g) => ({ email: g.email, success: false, error: t('companyGuards.notSignedIn') }));
     const results: CreateGuardResult[] = [];
-
-    for (const g of guards) {
+    for (const g of inputs) {
       try {
         const credential = await createUserWithEmailAndPassword(secondaryAuth(), g.email, randomTempPassword());
-        const uid = credential.user.uid;
         const now = new Date().toISOString();
-        await setDoc(doc(secondaryDb(), 'users', uid), {
+        await setDoc(doc(secondaryDb(), 'users', credential.user.uid), {
           email: g.email,
           role: 'guard',
           firstName: g.firstName,
@@ -147,16 +187,10 @@ export default function CompanyGuardsScreen() {
           emailVerified: false,
           updatedAt: now,
           bio: '',
-          height: 0,
-          weight: 0,
           languages: ['es'],
           hourlyRate: g.hourlyRate,
           photos: [],
           outfitPhotos: [],
-          governmentIdUrls: [],
-          licenseUrls: [],
-          vehicleDocUrls: [],
-          insuranceUrls: [],
           certifications: [],
           rating: 0,
           completedJobs: 0,
@@ -164,788 +198,574 @@ export default function CompanyGuardsScreen() {
           companyId: user.id,
           availability: false,
         });
-
-        // Firebase Auth manda este correo el mismo, gratis, con su plantilla
-        // propia — no hace falta ningun servicio de correo de terceros.
-        await sendPasswordResetEmail(secondaryAuth(), g.email).catch((e) =>
-          console.error('[CompanyGuards] Failed to send reset email to', g.email, e)
+        // Espejo del rol en Realtime Database: sin el, las reglas no reconocen
+        // a la empresa como duena de las reservas de este escolta.
+        await set(ref(secondaryRealtimeDb(), `users/${credential.user.uid}`), { role: 'guard', companyId: user.id }).catch((e) =>
+          logger.error('[CompanyGuards] Failed to write guard role mirror', e)
         );
-
-        results.push({ email: g.email, success: true, uid });
-      } catch (error: any) {
-        console.error('[CompanyGuards] Failed to create guard:', g.email, error);
-        const message =
-          error?.code === 'auth/email-already-in-use'
-            ? 'Email already in use'
-            : error?.message || 'Failed to create account';
-        results.push({ email: g.email, success: false, error: message });
+        // Firebase Auth manda este correo con su plantilla propia.
+        await sendPasswordResetEmail(secondaryAuth(), g.email).catch((e) =>
+          logger.error('[CompanyGuards] Failed to send set-password email', e)
+        );
+        results.push({ email: g.email, success: true });
+      } catch (error) {
+        logger.error('[CompanyGuards] Failed to create guard', error);
+        const code = (error as { code?: string })?.code;
+        results.push({
+          email: g.email,
+          success: false,
+          error:
+            code === 'auth/email-already-in-use'
+              ? t('companyGuards.emailInUse')
+              : code === 'auth/invalid-email'
+              ? t('companyGuards.invalidEmail')
+              : t('companyGuards.createFailed'),
+        });
       } finally {
         await signOut(secondaryAuth()).catch(() => {});
       }
     }
-
     return results;
   };
 
-  const handleSendInvite = async () => {
-    const hourlyRate = Number(inviteRate);
-    if (!inviteFirstName || !inviteLastName || !inviteEmail || !invitePhone || !Number.isFinite(hourlyRate) || hourlyRate <= 0) {
-      Alert.alert('Error', 'Please fill in all fields with a valid hourly rate.');
-      return;
-    }
-
-    setIsInviting(true);
-    try {
-      const [result] = await createGuardsRemote([
-        { firstName: inviteFirstName, lastName: inviteLastName, email: inviteEmail, phone: invitePhone, hourlyRate },
-      ]);
-      if (result.success) {
-        setInviteFirstName('');
-        setInviteLastName('');
-        setInviteEmail('');
-        setInvitePhone('');
-        setInviteRate('');
-        setShowInviteForm(false);
-        await loadGuards();
-        Alert.alert('Guard Added', `${inviteEmail} was created and sent an email to set their password.`);
-      } else {
-        Alert.alert('Error', result.error || 'Failed to create guard account.');
-      }
-    } catch (error: any) {
-      console.error('[CompanyGuards] Failed to create guard:', error);
-      Alert.alert('Error', error.message || 'Failed to create guard account.');
-    } finally {
-      setIsInviting(false);
-    }
+  const openAdd = () => {
+    setForm(EMPTY_FORM);
+    setFormErrors({});
+    setCreateError(null);
+    setAddOpen(true);
   };
 
-  const handleRemoveGuard = (guardId: string, guardName: string) => {
-    Alert.alert(
-      'Remove Guard',
-      `Are you sure you want to remove ${guardName} from your company?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
+  const submitAdd = async () => {
+    const errors: typeof formErrors = {};
+    const rate = Number(form.hourlyRate.replace(',', '.'));
+    if (!form.firstName.trim()) errors.firstName = t('shared.required');
+    if (!form.lastName.trim()) errors.lastName = t('shared.required');
+    if (!EMAIL_RE.test(form.email.trim())) errors.email = t('companyGuards.emailInvalid');
+    if (!form.phone.trim()) errors.phone = t('shared.required');
+    if (!Number.isFinite(rate) || rate <= 0) errors.hourlyRate = t('shared.rateInvalid');
+    setFormErrors(errors);
+    if (Object.keys(errors).length) return;
+
+    setCreating(true);
+    setCreateError(null);
+    try {
+      const [result] = await createGuards([
         {
-          text: 'Remove',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await userService.removeGuardFromCompany(guardId);
-              await loadGuards();
-              Alert.alert('Success', `${guardName} has been removed from your company.`);
-            } catch (error) {
-              console.error('[CompanyGuards] Failed to remove guard:', error);
-              Alert.alert('Error', `Failed to remove ${guardName}. Please try again.`);
-            }
-          },
+          firstName: form.firstName.trim(),
+          lastName: form.lastName.trim(),
+          email: form.email.trim().toLowerCase(),
+          phone: form.phone.trim(),
+          hourlyRate: Math.round(rate * 100) / 100,
         },
-      ]
-    );
-  };
-
-  const handlePickCSV = async () => {
-    try {
-      const result = await DocumentPicker.getDocumentAsync({
-        type: 'text/csv',
-        copyToCacheDirectory: true,
-      });
-
-      if (!result.canceled && result.assets && result.assets.length > 0) {
-        const file = result.assets[0];
-        setImportedFile(file);
-        setShowImportModal(true);
-      }
-    } catch (error) {
-      console.error('[CSV Import] Error picking file:', error);
-      Alert.alert('Error', 'Failed to select file');
-    }
-  };
-
-  const handleCopyFormat = async () => {
-    await Clipboard.setStringAsync(CSV_TEMPLATE);
-    Alert.alert('Copied', 'The required CSV format was copied to your clipboard.');
-  };
-
-  const handleImportCSV = async () => {
-    if (!importedFile) return;
-
-    setImporting(true);
-    try {
-      const text = await fetch(importedFile.uri).then(r => r.text());
-      const { rows, errors: parseErrors } = parseGuardsCSV(text);
-
-      if (rows.length === 0) {
-        Alert.alert('Nothing to Import', parseErrors[0] || 'No valid rows found in the file.');
+      ]);
+      if (!result.success) {
+        setCreateError(result.error ?? t('companyGuards.createFailedFull'));
         return;
       }
+      setAddOpen(false);
+      setNotice({ tone: 'success', message: t('companyGuards.added', { email: result.email }) });
+      await load();
+    } finally {
+      setCreating(false);
+    }
+  };
 
-      const results = await createGuardsRemote(rows);
-      const successCount = results.filter(r => r.success).length;
-      const failed = results.filter(r => !r.success);
-      const failedLines = [...parseErrors, ...failed.map(f => `${f.email}: ${f.error}`)];
+  const removeGuard = async (g: UserRecord) => {
+    const name = fullName(g);
+    const ok = await confirm(
+      t('companyGuards.removeTitle', { name }),
+      t('companyGuards.removeMessage'),
+      t('companyGuards.remove'),
+      t('common:actions.cancel'),
+      true
+    );
+    if (!ok) return;
+    setRemovingId(g.id);
+    setNotice(null);
+    try {
+      await userService.removeGuardFromCompany(g.id);
+      setGuards((prev) => (prev ?? []).filter((x) => x.id !== g.id));
+      setNotice({ tone: 'success', message: t('companyGuards.removed', { name }) });
+    } catch (error) {
+      logger.error('[CompanyGuards] Failed to remove guard', error);
+      setNotice({ tone: 'error', message: t('companyGuards.removeError', { name }) });
+    } finally {
+      setRemovingId(null);
+    }
+  };
 
-      await loadGuards();
-      setShowImportModal(false);
-      setImportedFile(null);
+  const openRate = (g: UserRecord) => {
+    setRateGuard(g);
+    setRateInput(typeof g.hourlyRate === 'number' && g.hourlyRate > 0 ? String(g.hourlyRate) : '');
+    setRateError(null);
+  };
 
-      Alert.alert(
-        successCount > 0 ? 'Import Complete' : 'Import Failed',
-        `${successCount} of ${rows.length} guard(s) created.` +
-          (failedLines.length > 0 ? `\n\nIssues:\n${failedLines.join('\n')}` : '')
-      );
-    } catch (error: any) {
-      console.error('[CSV Import] Error:', error);
-      Alert.alert('Error', error.message || 'Failed to import CSV file');
+  const saveRate = async () => {
+    if (!rateGuard) return;
+    const rate = Number(rateInput.replace(',', '.'));
+    if (!Number.isFinite(rate) || rate <= 0) {
+      setRateError(t('shared.rateInvalid'));
+      return;
+    }
+    const hourlyRate = Math.round(rate * 100) / 100;
+    setSavingRate(true);
+    setRateError(null);
+    try {
+      await userService.updateCompanyGuard(rateGuard.id, { hourlyRate });
+      setGuards((prev) => (prev ?? []).map((x) => (x.id === rateGuard.id ? { ...x, hourlyRate } : x)));
+      setNotice({ tone: 'success', message: t('companyGuards.rateSaved', { name: fullName(rateGuard), amount: formatMXN(hourlyRate) }) });
+      setRateGuard(null);
+    } catch (error) {
+      logger.error('[CompanyGuards] Failed to save rate', error);
+      setRateError(t('companyGuards.rateSaveError'));
+    } finally {
+      setSavingRate(false);
+    }
+  };
+
+  const pickCSV = async () => {
+    setNotice(null);
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ['text/csv', 'text/comma-separated-values', 'application/vnd.ms-excel', 'text/plain'],
+        copyToCacheDirectory: true,
+      });
+      if (!result.canceled && result.assets?.[0]) {
+        setImportResult(null);
+        setFormatCopied(false);
+        setImportFile(result.assets[0]);
+      }
+    } catch (error) {
+      logger.error('[CompanyGuards] CSV picker failed', error);
+      setNotice({ tone: 'error', message: t('companyGuards.fileOpenError') });
+    }
+  };
+
+  const runImport = async () => {
+    if (!importFile) return;
+    setImporting(true);
+    try {
+      const text = await fetch(importFile.uri).then((r) => r.text());
+      const { rows, errors } = parseGuardsCSV(text);
+      if (rows.length === 0) {
+        setImportResult({ created: 0, total: 0, issues: errors.length ? errors : [t('companyGuards.csvNoValidRows')] });
+        return;
+      }
+      const results = await createGuards(rows);
+      const failed = results.filter((r) => !r.success).map((r) => `${r.email}: ${r.error}`);
+      setImportResult({ created: results.length - failed.length, total: rows.length, issues: [...errors, ...failed] });
+      await load();
+    } catch (error) {
+      logger.error('[CompanyGuards] CSV import failed', error);
+      setImportResult({ created: 0, total: 0, issues: [t('companyGuards.csvReadError')] });
     } finally {
       setImporting(false);
     }
   };
 
+  const copyFormat = async () => {
+    await Clipboard.setStringAsync(CSV_TEMPLATE);
+    setFormatCopied(true);
+  };
+
   return (
-    <View style={styles.container}>
-      <Stack.Screen options={{ headerShown: false }} />
-      
-      <View style={[styles.header, { paddingTop: insets.top + 24 }]}>
-        <View>
-          <Text style={styles.title}>Manage Guards</Text>
-          <Text style={styles.subtitle}>
-            {companyGuards.length} guard{companyGuards.length !== 1 ? 's' : ''} in your team
-          </Text>
-        </View>
-        <View style={styles.headerActions}>
-          <TouchableOpacity
-            style={styles.importButton}
-            onPress={handlePickCSV}
-          >
-            <Upload size={18} color={Colors.gold} />
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.inviteButton}
-            onPress={() => setShowInviteForm(!showInviteForm)}
-          >
-            <UserPlus size={20} color={Colors.background} />
-            <Text style={styles.inviteButtonText}>Invite</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-
-      <ScrollView style={styles.content} contentContainerStyle={styles.scrollContent}>
-        {showInviteForm && (
-          <View style={styles.inviteForm}>
-            <Text style={styles.formTitle}>Add New Guard</Text>
-            <Text style={styles.formSubtitle}>
-              Creates their account now and emails them a link to set their password.
-            </Text>
-
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>First Name</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="Juan"
-                placeholderTextColor={Colors.textTertiary}
-                value={inviteFirstName}
-                onChangeText={setInviteFirstName}
-              />
-            </View>
-
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Last Name</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="Perez"
-                placeholderTextColor={Colors.textTertiary}
-                value={inviteLastName}
-                onChangeText={setInviteLastName}
-              />
-            </View>
-
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Email Address</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="guard@example.com"
-                placeholderTextColor={Colors.textTertiary}
-                value={inviteEmail}
-                onChangeText={setInviteEmail}
-                keyboardType="email-address"
-                autoCapitalize="none"
-              />
-            </View>
-
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Phone</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="+525512345678"
-                placeholderTextColor={Colors.textTertiary}
-                value={invitePhone}
-                onChangeText={setInvitePhone}
-                keyboardType="phone-pad"
-              />
-            </View>
-
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Hourly Rate (MXN)</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="180"
-                placeholderTextColor={Colors.textTertiary}
-                value={inviteRate}
-                onChangeText={setInviteRate}
-                keyboardType="numeric"
-              />
-            </View>
-
-            <View style={styles.formActions}>
-              <TouchableOpacity
-                style={styles.cancelButton}
-                onPress={() => {
-                  setShowInviteForm(false);
-                  setInviteFirstName('');
-                  setInviteLastName('');
-                  setInviteEmail('');
-                  setInvitePhone('');
-                  setInviteRate('');
-                }}
-                disabled={isInviting}
-              >
-                <Text style={styles.cancelButtonText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.sendButton, isInviting && styles.modalImportButtonDisabled]}
-                onPress={handleSendInvite}
-                disabled={isInviting}
-              >
-                {isInviting ? (
-                  <ActivityIndicator size="small" color={Colors.background} />
-                ) : (
-                  <>
-                    <Mail size={18} color={Colors.background} />
-                    <Text style={styles.sendButtonText}>Create Account</Text>
-                  </>
-                )}
-              </TouchableOpacity>
-            </View>
+    <Screen glow keyboard refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.accent} />}>
+      <ScreenHeader
+        eyebrow={t('companyGuards.eyebrow')}
+        title={t('companyGuards.title')}
+        subtitle={
+          guards
+            ? t('companyGuards.subtitle', {
+                guards: t('counts.guards', { count: guards.length }),
+                available: t('shared.availableNow', { count: available }),
+              })
+            : t('companyGuards.subtitleFallback')
+        }
+        right={
+          <View style={styles.headerActions}>
+            <IconButton icon={Upload} onPress={pickCSV} accessibilityLabel={t('companyGuards.importA11y')} />
+            <IconButton icon={UserPlus} tone="accent" onPress={openAdd} accessibilityLabel={t('companyGuards.addGuard')} />
           </View>
-        )}
+        }
+      />
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Your Guards</Text>
-          {isLoading ? (
-            <View style={styles.emptyState}>
-              <ActivityIndicator size="large" color={Colors.gold} />
-            </View>
-          ) : companyGuards.length === 0 ? (
-            <View style={styles.emptyState}>
-              <Shield size={48} color={Colors.textTertiary} />
-              <Text style={styles.emptyText}>No guards yet</Text>
-              <Text style={styles.emptySubtext}>
-                Invite security professionals to join your company
-              </Text>
-            </View>
-          ) : (
-            companyGuards.map((guard) => (
-              <View key={guard.id} style={styles.guardCard}>
-                <View style={styles.guardHeader}>
-                  <View style={styles.guardInfo}>
-                    <Text style={styles.guardName}>
-                      {guard.firstName} {guard.lastName}
-                    </Text>
-                    <Text style={styles.guardEmail}>{guard.email}</Text>
+      {notice ? <Notice tone={notice.tone} message={notice.message} onDismiss={() => setNotice(null)} style={styles.block} /> : null}
+
+      {guards && guards.length > 4 ? (
+        <Input
+          icon={Search}
+          placeholder={t('companyGuards.search')}
+          value={search}
+          onChangeText={setSearch}
+          autoCapitalize="none"
+          autoCorrect={false}
+          accessibilityLabel={t('companyGuards.search')}
+        />
+      ) : null}
+
+      <SectionTitle title={search.trim() ? t('counts.results', { count: visible.length }) : t('companyGuards.yourTeam')} />
+
+      {loadError ? (
+        <Notice tone="error" message={t('companyGuards.loadError')} actionLabel={t('common:actions.tryAgain')} onAction={load} />
+      ) : guards === null ? (
+        <>
+          <SkeletonCard media />
+          <SkeletonCard media />
+          <SkeletonCard media />
+        </>
+      ) : guards.length === 0 ? (
+        <EmptyState
+          icon={Shield}
+          title={t('companyGuards.emptyTitle')}
+          message={t('companyGuards.emptyMessage')}
+          actionLabel={t('companyGuards.addGuard')}
+          onAction={openAdd}
+        />
+      ) : visible.length === 0 ? (
+        <EmptyState icon={Search} title={t('shared.noMatches')} message={t('companyGuards.noMatchesMessage')} />
+      ) : (
+        <View style={styles.list}>
+          {visible.map((g) => {
+            const name = fullName(g);
+            const kyc = kycMeta(g.kycStatus);
+            const hasRate = typeof g.hourlyRate === 'number' && g.hourlyRate > 0;
+            const rate = hasRate ? t('shared.ratePerHour', { amount: formatMXN(g.hourlyRate as number) }) : t('shared.rateNotSet');
+            const jobs = typeof g.completedJobs === 'number' ? g.completedJobs : 0;
+            const rating = typeof g.rating === 'number' && g.rating > 0 ? g.rating.toFixed(1) : '—';
+            return (
+              <Card key={g.id} style={styles.card}>
+                <View style={styles.cardHead}>
+                  <Avatar name={name} uri={g.photos?.[0]} size={48} verified={g.kycStatus === 'approved'} />
+                  <View style={styles.flex}>
+                    <AppText variant="headline" numberOfLines={1}>
+                      {name}
+                    </AppText>
+                    <AppText variant="footnote" numberOfLines={1}>
+                      {g.email}
+                    </AppText>
                   </View>
-                  <View style={[styles.statusBadge, { backgroundColor: guard.availability ? Colors.success + '20' : Colors.textTertiary + '20' }]}>
-                    <Text style={[styles.statusText, { color: guard.availability ? Colors.success : Colors.textTertiary }]}>
-                      {guard.availability ? 'Available' : 'Offline'}
-                    </Text>
+                  {/* Quitar va aparte de las acciones: con tres botones en una fila
+                      las etiquetas se cortaban (sobre todo en espanol). */}
+                  {removingId === g.id ? (
+                    <View style={styles.removeSlot}>
+                      <ActivityIndicator color={Colors.error} size="small" />
+                    </View>
+                  ) : (
+                    <IconButton
+                      icon={UserMinus}
+                      tone="danger"
+                      onPress={() => removeGuard(g)}
+                      accessibilityLabel={t('companyGuards.removeA11y', { name })}
+                    />
+                  )}
+                </View>
+                <View style={styles.badges}>
+                  <Badge
+                    label={g.availability === true ? t('shared.available') : t('shared.offline')}
+                    tone={g.availability === true ? 'success' : 'neutral'}
+                  />
+                  <Badge label={kyc.label} tone={kyc.tone} icon={ShieldCheck} />
+                </View>
+                <View style={styles.metaRow}>
+                  <View style={[styles.meta, styles.metaWide]}>
+                    <AppText variant="overline" numberOfLines={1}>
+                      {t('companyGuards.metaRate')}
+                    </AppText>
+                    <AppText variant="numeric" color={hasRate ? Colors.textPrimary : Colors.textTertiary}>
+                      {rate}
+                    </AppText>
+                  </View>
+                  <View style={[styles.meta, styles.metaNarrow]}>
+                    <AppText variant="overline" numberOfLines={1}>
+                      {t('companyGuards.metaJobs')}
+                    </AppText>
+                    <AppText variant="numeric">{jobs}</AppText>
+                  </View>
+                  <View style={styles.meta}>
+                    <AppText variant="overline" numberOfLines={1}>
+                      {t('companyGuards.metaRating')}
+                    </AppText>
+                    <AppText variant="numeric" color={rating === '—' ? Colors.textTertiary : Colors.textPrimary}>
+                      {rating}
+                    </AppText>
                   </View>
                 </View>
-
-                <View style={styles.guardStats}>
-                  <View style={styles.statItem}>
-                    <Text style={styles.statValue}>{guard.completedJobs}</Text>
-                    <Text style={styles.statLabel}>Jobs</Text>
-                  </View>
-                  <View style={styles.statDivider} />
-                  <View style={styles.statItem}>
-                    <Text style={styles.statValue}>{guard.rating.toFixed(1)}</Text>
-                    <Text style={styles.statLabel}>Rating</Text>
-                  </View>
-                  <View style={styles.statDivider} />
-                  <View style={styles.statItem}>
-                    <Text style={styles.statValue}>${guard.hourlyRate}</Text>
-                    <Text style={styles.statLabel}>Per Hour</Text>
-                  </View>
+                <View style={styles.actions}>
+                  <Button
+                    title={t('companyGuards.documents')}
+                    icon={FolderOpen}
+                    variant="secondary"
+                    size="sm"
+                    onPress={() => router.push(`/company-guard-documents/${g.id}`)}
+                    style={styles.flex}
+                    accessibilityLabel={t('companyGuards.documentsA11y', { name })}
+                  />
+                  <Button
+                    title={hasRate ? t('companyGuards.rate') : t('companyGuards.setRate')}
+                    icon={BadgeDollarSign}
+                    variant={hasRate ? 'secondary' : 'outline'}
+                    size="sm"
+                    onPress={() => openRate(g)}
+                    style={styles.flex}
+                    accessibilityLabel={t('companyGuards.rateA11y', { name })}
+                  />
                 </View>
-
-                <View style={styles.guardActions}>
-                  <View style={[styles.kycBadge, { backgroundColor: guard.kycStatus === 'approved' ? Colors.success + '20' : Colors.warning + '20' }]}>
-                    {guard.kycStatus === 'approved' ? (
-                      <CheckCircle size={14} color={Colors.success} />
-                    ) : (
-                      <XCircle size={14} color={Colors.warning} />
-                    )}
-                    <Text style={[styles.kycText, { color: guard.kycStatus === 'approved' ? Colors.success : Colors.warning }]}>
-                      KYC {guard.kycStatus}
-                    </Text>
-                  </View>
-                  <TouchableOpacity
-                    style={styles.documentsButton}
-                    onPress={() => router.push(`/company-guard-documents/${guard.id}` as any)}
-                  >
-                    <FolderOpen size={14} color={Colors.gold} />
-                    <Text style={styles.documentsButtonText}>Documents</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={styles.removeButton}
-                    onPress={() => handleRemoveGuard(guard.id, `${guard.firstName} ${guard.lastName}`)}
-                  >
-                    <Text style={styles.removeButtonText}>Remove</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            ))
-          )}
-        </View>
-      </ScrollView>
-
-      {showImportModal && importedFile && (
-        <View style={styles.modalOverlay}>
-          <View style={styles.importModal}>
-            <View style={styles.modalHeader}>
-              <FileText size={32} color={Colors.gold} />
-              <Text style={styles.modalTitle}>Import CSV</Text>
-            </View>
-
-            <View style={styles.fileInfo}>
-              <Text style={styles.fileName}>{importedFile.name}</Text>
-              <Text style={styles.fileSize}>
-                {(importedFile.size / 1024).toFixed(2)} KB
-              </Text>
-            </View>
-
-            <View style={styles.csvInstructions}>
-              <Text style={styles.instructionsTitle}>Required CSV Format:</Text>
-              <Text style={styles.instructionsText}>{CSV_TEMPLATE}</Text>
-              <Text style={styles.instructionsNote}>
-                Each guard is created with an account and emailed a link to set their password.
-              </Text>
-              <TouchableOpacity style={styles.copyFormatButton} onPress={handleCopyFormat}>
-                <Copy size={14} color={Colors.gold} />
-                <Text style={styles.copyFormatText}>Copy Format</Text>
-              </TouchableOpacity>
-            </View>
-
-            <View style={styles.modalActions}>
-              <TouchableOpacity
-                style={styles.modalCancelButton}
-                onPress={() => {
-                  setShowImportModal(false);
-                  setImportedFile(null);
-                }}
-                disabled={importing}
-              >
-                <Text style={styles.modalCancelText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.modalImportButton, importing && styles.modalImportButtonDisabled]}
-                onPress={handleImportCSV}
-                disabled={importing}
-              >
-                {importing ? (
-                  <ActivityIndicator size="small" color={Colors.background} />
-                ) : (
-                  <>
-                    <Upload size={18} color={Colors.background} />
-                    <Text style={styles.modalImportText}>Import</Text>
-                  </>
-                )}
-              </TouchableOpacity>
-            </View>
-          </View>
+              </Card>
+            );
+          })}
         </View>
       )}
-    </View>
+
+      <Sheet
+        visible={addOpen}
+        onClose={() => setAddOpen(false)}
+        dismissable={!creating}
+        eyebrow={t('companyGuards.addEyebrow')}
+        title={t('companyGuards.addTitle')}
+        subtitle={t('companyGuards.addSubtitle')}
+        footer={
+          <>
+            <Button title={t('common:actions.cancel')} variant="secondary" onPress={() => setAddOpen(false)} disabled={creating} style={styles.flex} />
+            <Button title={t('companyGuards.createAccount')} icon={UserPlus} onPress={submitAdd} loading={creating} style={styles.flex} />
+          </>
+        }
+      >
+        <Input
+          label={t('shared.firstName')}
+          placeholder="Juan"
+          value={form.firstName}
+          onChangeText={(v) => setForm((f) => ({ ...f, firstName: v }))}
+          error={formErrors.firstName}
+          autoCapitalize="words"
+        />
+        <Input
+          label={t('shared.lastName')}
+          placeholder="Pérez"
+          value={form.lastName}
+          onChangeText={(v) => setForm((f) => ({ ...f, lastName: v }))}
+          error={formErrors.lastName}
+          autoCapitalize="words"
+        />
+        <Input
+          label={t('shared.email')}
+          placeholder={t('companyGuards.emailPlaceholder')}
+          value={form.email}
+          onChangeText={(v) => setForm((f) => ({ ...f, email: v }))}
+          error={formErrors.email}
+          keyboardType="email-address"
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+        <Input
+          label={t('shared.phone')}
+          placeholder="+52 55 1234 5678"
+          value={form.phone}
+          onChangeText={(v) => setForm((f) => ({ ...f, phone: v }))}
+          error={formErrors.phone}
+          keyboardType="phone-pad"
+        />
+        <Input
+          label={t('shared.hourlyRate')}
+          placeholder="180"
+          value={form.hourlyRate}
+          onChangeText={(v) => setForm((f) => ({ ...f, hourlyRate: v }))}
+          error={formErrors.hourlyRate}
+          keyboardType="decimal-pad"
+          hint={t('companyGuards.rateHint')}
+        />
+        {createError ? <Notice tone="error" message={createError} /> : null}
+      </Sheet>
+
+      <Sheet
+        visible={!!rateGuard}
+        onClose={() => setRateGuard(null)}
+        dismissable={!savingRate}
+        eyebrow={t('companyGuards.rateEyebrow')}
+        title={rateGuard ? fullName(rateGuard) : ''}
+        subtitle={t('companyGuards.rateSubtitle')}
+        footer={
+          <>
+            <Button title={t('common:actions.cancel')} variant="secondary" onPress={() => setRateGuard(null)} disabled={savingRate} style={styles.flex} />
+            <Button title={t('companyGuards.saveRate')} onPress={saveRate} loading={savingRate} style={styles.flex} />
+          </>
+        }
+      >
+        <Input
+          label={t('companyGuards.rateLabel')}
+          placeholder="180"
+          value={rateInput}
+          onChangeText={(v) => {
+            setRateInput(v);
+            if (rateError) setRateError(null);
+          }}
+          error={rateError}
+          keyboardType="decimal-pad"
+          autoFocus
+          returnKeyType="done"
+          onSubmitEditing={saveRate}
+        />
+        {!rateGuard || (typeof rateGuard.hourlyRate === 'number' && rateGuard.hourlyRate > 0) ? null : (
+          <Notice tone="info" message={t('companyGuards.noRateNotice')} />
+        )}
+      </Sheet>
+
+      <Sheet
+        visible={!!importFile}
+        onClose={() => setImportFile(null)}
+        dismissable={!importing}
+        eyebrow={t('companyGuards.importEyebrow')}
+        title={importResult ? t('companyGuards.importFinished') : t('companyGuards.importTitle')}
+        footer={
+          importResult ? (
+            <Button title={t('common:actions.done')} variant="secondary" onPress={() => setImportFile(null)} style={styles.flex} />
+          ) : (
+            <>
+              <Button title={t('common:actions.cancel')} variant="secondary" onPress={() => setImportFile(null)} disabled={importing} style={styles.flex} />
+              <Button title={t('companyGuards.import')} icon={Upload} onPress={runImport} loading={importing} style={styles.flex} />
+            </>
+          )
+        }
+      >
+        {importFile ? (
+          <View style={styles.fileRow}>
+            <FileSpreadsheet size={20} color={Colors.accent} />
+            <View style={styles.flex}>
+              <AppText variant="bodyMedium" numberOfLines={1}>
+                {importFile.name}
+              </AppText>
+              {typeof importFile.size === 'number' ? (
+                <AppText variant="caption" color={Colors.textTertiary}>
+                  {t('shared.fileSize', { size: formatNumber(importFile.size / 1024, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) })}
+                </AppText>
+              ) : null}
+            </View>
+          </View>
+        ) : null}
+        {importResult ? (
+          <>
+            <Notice
+              tone={importResult.created > 0 ? 'success' : 'error'}
+              message={
+                importResult.total > 0
+                  ? t('companyGuards.importResult', { created: importResult.created, count: importResult.total })
+                  : t('companyGuards.importNone')
+              }
+            />
+            {importResult.issues.length > 0 ? (
+              <View style={styles.issues}>
+                <AppText variant="overline">{t('companyGuards.issues')}</AppText>
+                {importResult.issues.map((issue) => (
+                  <AppText key={issue} variant="footnote">
+                    {issue}
+                  </AppText>
+                ))}
+              </View>
+            ) : null}
+          </>
+        ) : (
+          <>
+            <AppText variant="callout">{t('companyGuards.importHelp')}</AppText>
+            {/* Sin cortes de linea dentro de una fila: se desplaza de lado si no cabe. */}
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.code} contentContainerStyle={styles.codeContent}>
+              <AppText variant="footnote" color={Colors.textPrimary} style={styles.codeText}>
+                {CSV_TEMPLATE}
+              </AppText>
+            </ScrollView>
+            <Button
+              title={formatCopied ? t('companyGuards.formatCopied') : t('companyGuards.copyFormat')}
+              icon={Copy}
+              variant="ghost"
+              size="sm"
+              fullWidth={false}
+              onPress={copyFormat}
+            />
+          </>
+        )}
+      </Sheet>
+    </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: Colors.background,
-  },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: 24,
-    paddingTop: 60,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-  },
-  title: {
-    fontSize: 32,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-    marginBottom: 4,
-  },
-  subtitle: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-  },
-  inviteButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: Colors.gold,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderRadius: 12,
-  },
-  inviteButtonText: {
-    fontSize: 14,
-    fontWeight: '700' as const,
-    color: Colors.background,
-  },
-  content: {
-    flex: 1,
-  },
-  scrollContent: {
-    padding: 16,
-  },
-  inviteForm: {
-    backgroundColor: Colors.surface,
-    borderRadius: 16,
-    padding: 20,
-    marginBottom: 24,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  formTitle: {
-    fontSize: 20,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-    marginBottom: 8,
-  },
-  formSubtitle: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-    marginBottom: 20,
-  },
-  inputGroup: {
-    marginBottom: 16,
-  },
-  inputLabel: {
-    fontSize: 14,
-    fontWeight: '600' as const,
-    color: Colors.textPrimary,
-    marginBottom: 8,
-  },
-  input: {
-    backgroundColor: Colors.background,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: 12,
-    padding: 14,
-    fontSize: 16,
-    color: Colors.textPrimary,
-  },
-  formActions: {
-    flexDirection: 'row',
-    gap: 12,
-    marginTop: 8,
-  },
-  cancelButton: {
-    flex: 1,
-    backgroundColor: Colors.background,
-    paddingVertical: 14,
-    borderRadius: 12,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  cancelButtonText: {
-    fontSize: 16,
-    fontWeight: '700' as const,
-    color: Colors.textSecondary,
-  },
-  sendButton: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: Colors.gold,
-    paddingVertical: 14,
-    borderRadius: 12,
-  },
-  sendButtonText: {
-    fontSize: 16,
-    fontWeight: '700' as const,
-    color: Colors.background,
-  },
-  section: {
-    marginBottom: 24,
-  },
-  sectionTitle: {
-    fontSize: 20,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-    marginBottom: 16,
-  },
-  guardCard: {
-    backgroundColor: Colors.surface,
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  guardHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 16,
-  },
-  guardInfo: {
-    flex: 1,
-  },
-  guardName: {
-    fontSize: 18,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-    marginBottom: 4,
-  },
-  guardEmail: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-  },
-  statusBadge: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 8,
-  },
-  statusText: {
-    fontSize: 12,
-    fontWeight: '700' as const,
-  },
-  guardStats: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 16,
-    paddingVertical: 12,
-    borderTopWidth: 1,
-    borderBottomWidth: 1,
-    borderColor: Colors.border,
-  },
-  statItem: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  statValue: {
-    fontSize: 18,
-    fontWeight: '700' as const,
-    color: Colors.gold,
-    marginBottom: 4,
-  },
-  statLabel: {
-    fontSize: 12,
-    color: Colors.textSecondary,
-  },
-  statDivider: {
-    width: 1,
-    height: 32,
-    backgroundColor: Colors.border,
-  },
-  guardActions: {
-    flexDirection: 'row',
-    flexWrap: 'wrap' as const,
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: 8,
-  },
-  documentsButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: Colors.gold,
-  },
-  documentsButtonText: {
-    fontSize: 12,
-    fontWeight: '700' as const,
-    color: Colors.gold,
-  },
-  kycBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 8,
-  },
-  kycText: {
-    fontSize: 12,
-    fontWeight: '700' as const,
-    textTransform: 'uppercase' as const,
-  },
-  removeButton: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 8,
-    backgroundColor: Colors.error + '20',
-  },
-  removeButtonText: {
-    fontSize: 14,
-    fontWeight: '700' as const,
-    color: Colors.error,
-  },
-  emptyState: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 60,
-  },
-  emptyText: {
-    fontSize: 18,
-    fontWeight: '600' as const,
-    color: Colors.textPrimary,
-    marginTop: 16,
-  },
-  emptySubtext: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-    marginTop: 8,
-    textAlign: 'center' as const,
-  },
   headerActions: {
     flexDirection: 'row',
-    gap: 12,
+    gap: Space.sm,
   },
-  importButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-    backgroundColor: Colors.surface,
-    borderWidth: 2,
-    borderColor: Colors.gold,
-    alignItems: 'center',
-    justifyContent: 'center',
+  block: {
+    marginBottom: Space.lg,
   },
-  modalOverlay: {
-    position: 'absolute' as const,
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
+  list: {
+    gap: Space.md,
   },
-  importModal: {
-    backgroundColor: Colors.background,
-    borderRadius: 24,
-    padding: 24,
-    width: '100%',
-    maxWidth: 400,
+  card: {
+    gap: Space.md,
   },
-  modalHeader: {
-    alignItems: 'center',
-    marginBottom: 24,
-  },
-  modalTitle: {
-    fontSize: 24,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-    marginTop: 12,
-  },
-  fileInfo: {
-    backgroundColor: Colors.surface,
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 20,
-  },
-  fileName: {
-    fontSize: 16,
-    fontWeight: '600' as const,
-    color: Colors.textPrimary,
-    marginBottom: 4,
-  },
-  fileSize: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-  },
-  csvInstructions: {
-    backgroundColor: Colors.gold + '10',
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 24,
-  },
-  instructionsTitle: {
-    fontSize: 14,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-    marginBottom: 8,
-  },
-  instructionsText: {
-    fontSize: 13,
-    fontFamily: 'monospace',
-    color: Colors.textSecondary,
-    marginBottom: 8,
-  },
-  instructionsNote: {
-    fontSize: 12,
-    color: Colors.textSecondary,
-    fontStyle: 'italic' as const,
-    marginBottom: 12,
-  },
-  copyFormatButton: {
+  cardHead: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    alignSelf: 'flex-start' as const,
+    gap: Space.md,
   },
-  copyFormatText: {
-    fontSize: 13,
-    fontWeight: '700' as const,
-    color: Colors.gold,
-  },
-  modalActions: {
+  badges: {
     flexDirection: 'row',
-    gap: 12,
+    flexWrap: 'wrap',
+    gap: Space.sm,
   },
-  modalCancelButton: {
+  metaRow: {
+    flexDirection: 'row',
+    gap: Space.sm,
+    paddingVertical: Space.sm,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderColor: Colors.border,
+  },
+  // Columnas a la medida de su contenido: "Servicios" y un numero caben en
+  // menos; "Calificación" necesita mas que "Rating".
+  meta: {
+    flex: 1.15,
+    minWidth: 0,
+    gap: 2,
+  },
+  metaWide: {
     flex: 1,
-    backgroundColor: Colors.surface,
-    paddingVertical: 16,
-    borderRadius: 12,
+  },
+  metaNarrow: {
+    flex: 0.85,
+  },
+  removeSlot: {
+    width: 40,
+    height: 40,
     alignItems: 'center',
+    justifyContent: 'center',
+  },
+  actions: {
+    flexDirection: 'row',
+    gap: Space.md,
+  },
+  fileRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Space.md,
+    padding: Space.md,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.surfaceLight,
+  },
+  code: {
+    flexGrow: 0,
+    borderRadius: Radius.sm,
+    backgroundColor: Colors.background,
     borderWidth: 1,
     borderColor: Colors.border,
   },
-  modalCancelText: {
-    fontSize: 16,
-    fontWeight: '700' as const,
-    color: Colors.textSecondary,
+  codeContent: {
+    padding: Space.md,
   },
-  modalImportButton: {
+  codeText: {
+    fontVariant: ['tabular-nums'],
+  },
+  issues: {
+    gap: Space.xs,
+  },
+  flex: {
     flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: Colors.gold,
-    paddingVertical: 16,
-    borderRadius: 12,
-  },
-  modalImportButtonDisabled: {
-    opacity: 0.6,
-  },
-  modalImportText: {
-    fontSize: 16,
-    fontWeight: '700' as const,
-    color: Colors.background,
   },
 });

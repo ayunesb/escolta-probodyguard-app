@@ -17,9 +17,14 @@ jest.mock('../../utils/logger', () => ({
 // Mock Firebase modules before importing AuthContext
 jest.mock('firebase/auth');
 jest.mock('firebase/firestore');
+jest.mock('firebase/database', () => ({
+  ref: jest.fn(() => ({})),
+  set: jest.fn().mockResolvedValue(undefined),
+}));
 jest.mock('@/lib/firebase', () => ({
   auth: jest.fn(() => ({ currentUser: null })),
   db: jest.fn(() => ({})),
+  realtimeDb: jest.fn(() => ({})),
 }));
 jest.mock('@/services/rateLimitService');
 jest.mock('@/services/monitoringService');
@@ -29,6 +34,7 @@ jest.mock('@/services/notificationService', () => ({
 jest.mock('@/services/pushNotificationService', () => ({
   pushNotificationService: {
     registerDevice: jest.fn().mockResolvedValue(undefined),
+    unregisterDevice: jest.fn().mockResolvedValue(undefined),
   },
 }));
 
@@ -106,7 +112,7 @@ describe('AuthContext - Sign In Flow', () => {
     expect(rateLimitService.resetRateLimit).toHaveBeenCalledWith('login', 'test@example.com');
     expect(monitoringService.trackEvent).toHaveBeenCalledWith(
       'user_login',
-      expect.objectContaining({ email: 'test@example.com' }),
+      expect.objectContaining({ userId: 'test-user-123' }),
       mockUser.uid
     );
   });
@@ -140,7 +146,7 @@ describe('AuthContext - Sign In Flow', () => {
 
     expect(signInResult).toEqual({
       success: false,
-      error: 'Please verify your email before signing in',
+      error: 'Please verify your email before signing in.',
       emailNotVerified: true,
     });
     expect(firebaseAuth.signOut).toHaveBeenCalled();
@@ -198,9 +204,8 @@ describe('AuthContext - Sign In Flow', () => {
 
     expect(signInResult).toEqual({
       success: false,
-      error: 'Invalid email or password',
+      error: "That email and password don't match.",
     });
-    expect(monitoringService.reportError).toHaveBeenCalled();
   });
 });
 
@@ -259,10 +264,46 @@ describe('AuthContext - Sign Up Flow', () => {
     expect(monitoringService.trackEvent).toHaveBeenCalledWith(
       'user_signup',
       expect.objectContaining({
-        email: 'newuser@example.com',
         role: 'client',
+        userId: mockUser.uid,
       }),
       mockUser.uid
+    );
+  });
+
+  it('never lets a user sign up as admin', async () => {
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <AuthProvider>{children}</AuthProvider>
+    );
+    const { result } = renderHook(() => useAuth(), { wrapper });
+
+    let signUpResult: { success: boolean; error?: string } | undefined;
+    await act(async () => {
+      signUpResult = await result.current.signUp('x@example.com', 'Rt7kQz2mVx9#', 'A', 'B', '+525512345678', 'admin');
+    });
+
+    expect(signUpResult?.success).toBe(false);
+    expect(firebaseAuth.createUserWithEmailAndPassword).not.toHaveBeenCalled();
+  });
+
+  it('writes the profile before signing the new user out', async () => {
+    const order: string[] = [];
+    (firebaseAuth.createUserWithEmailAndPassword as jest.Mock).mockResolvedValue({ user: { uid: 'u1', email: 'a@b.co' } });
+    (firestore.setDoc as jest.Mock).mockImplementation(async () => { order.push('setDoc'); });
+    (firebaseAuth.sendEmailVerification as jest.Mock).mockImplementation(async () => { order.push('verify'); });
+    (firebaseAuth.signOut as jest.Mock).mockImplementation(async () => { order.push('signOut'); });
+
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <AuthProvider>{children}</AuthProvider>
+    );
+    const { result } = renderHook(() => useAuth(), { wrapper });
+    await act(async () => {
+      await result.current.signUp('a@b.co', 'Rt7kQz2mVx9#', 'A', 'B', '+525512345678', 'guard');
+    });
+
+    expect(order).toEqual(['setDoc', 'verify', 'signOut']);
+    expect((firestore.setDoc as jest.Mock).mock.calls[0][1]).toEqual(
+      expect.objectContaining({ role: 'guard', kycStatus: 'pending', isActive: true })
     );
   });
 
@@ -316,7 +357,7 @@ describe('AuthContext - Sign Up Flow', () => {
 
     expect(signUpResult).toEqual({
       success: false,
-      error: 'Email already in use',
+      error: 'An account with this email already exists. Try signing in.',
     });
   });
 });
@@ -324,92 +365,116 @@ describe('AuthContext - Sign Up Flow', () => {
 describe('AuthContext - Email Verification', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    (firebaseAuth.signOut as jest.Mock).mockResolvedValue(undefined);
   });
 
-  it('should resend verification email successfully', async () => {
-    const mockUser = {
-      uid: 'test-user-123',
-      email: 'test@example.com',
-      emailVerified: false,
-    };
-
-    const mockAuth = {
-      currentUser: mockUser,
-    };
-
-    jest.spyOn(firebaseLib, 'auth').mockReturnValue(mockAuth as any);
-    (firebaseAuth.reload as jest.Mock).mockResolvedValue(undefined);
-    (firebaseAuth.sendEmailVerification as jest.Mock).mockResolvedValue(undefined);
-
+  const render = () => {
     const wrapper = ({ children }: { children: React.ReactNode }) => (
       <AuthProvider>{children}</AuthProvider>
     );
+    return renderHook(() => useAuth(), { wrapper });
+  };
 
-    const { result } = renderHook(() => useAuth(), { wrapper });
+  it('should resend verification email successfully', async () => {
+    const mockUser = { uid: 'test-user-123', email: 'test@example.com', emailVerified: false };
+    (firebaseAuth.signInWithEmailAndPassword as jest.Mock).mockResolvedValue({ user: mockUser });
+    (firebaseAuth.sendEmailVerification as jest.Mock).mockResolvedValue(undefined);
 
+    const { result } = render();
     let resendResult;
     await act(async () => {
-      resendResult = await result.current.resendVerificationEmail();
+      resendResult = await result.current.resendVerificationEmail('test@example.com', 'pw');
     });
 
     expect(resendResult).toEqual({ success: true });
     expect(firebaseAuth.sendEmailVerification).toHaveBeenCalledWith(mockUser);
+    expect(firebaseAuth.signOut).toHaveBeenCalled();
   });
 
   it('should handle already verified email', async () => {
-    const mockUser = {
-      uid: 'test-user-123',
-      email: 'test@example.com',
-      emailVerified: true,
-    };
+    (firebaseAuth.signInWithEmailAndPassword as jest.Mock).mockResolvedValue({
+      user: { uid: 'test-user-123', email: 'test@example.com', emailVerified: true },
+    });
 
-    const mockAuth = {
-      currentUser: mockUser,
-    };
-
-    jest.spyOn(firebaseLib, 'auth').mockReturnValue(mockAuth as any);
-    (firebaseAuth.reload as jest.Mock).mockResolvedValue(undefined);
-
-    const wrapper = ({ children }: { children: React.ReactNode }) => (
-      <AuthProvider>{children}</AuthProvider>
-    );
-
-    const { result } = renderHook(() => useAuth(), { wrapper });
-
-    let resendResult;
+    const { result } = render();
+    let resendResult: { success: boolean; error?: string } | undefined;
     await act(async () => {
-      resendResult = await result.current.resendVerificationEmail();
+      resendResult = await result.current.resendVerificationEmail('test@example.com', 'pw');
     });
 
-    expect(resendResult).toEqual({
-      success: false,
-      error: 'Email already verified',
-    });
+    expect(resendResult?.success).toBe(false);
+    expect(resendResult?.error).toMatch(/already verified/i);
     expect(firebaseAuth.sendEmailVerification).not.toHaveBeenCalled();
   });
 
-  it('should handle no user signed in', async () => {
-    const mockAuth = {
-      currentUser: null,
-    };
+  it('should fail cleanly when the credentials are wrong', async () => {
+    (firebaseAuth.signInWithEmailAndPassword as jest.Mock).mockRejectedValue({ code: 'auth/invalid-credential' });
 
-    jest.spyOn(firebaseLib, 'auth').mockReturnValue(mockAuth as any);
+    const { result } = render();
+    let resendResult: { success: boolean; error?: string } | undefined;
+    await act(async () => {
+      resendResult = await result.current.resendVerificationEmail('test@example.com', 'wrong');
+    });
 
+    expect(resendResult?.success).toBe(false);
+    expect(firebaseAuth.sendEmailVerification).not.toHaveBeenCalled();
+  });
+
+  it('password reset does not reveal whether an account exists', async () => {
+    (firebaseAuth.sendPasswordResetEmail as jest.Mock).mockRejectedValue({ code: 'auth/user-not-found' });
+
+    const { result } = render();
+    let out: { success: boolean } | undefined;
+    await act(async () => {
+      out = await result.current.resetPassword('nobody@example.com');
+    });
+
+    expect(out).toEqual({ success: true });
+  });
+});
+
+describe('AuthContext - Profile gate', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (firebaseAuth.signOut as jest.Mock).mockResolvedValue(undefined);
+  });
+
+  const signedInAs = async (profile: Record<string, unknown>) => {
+    (firebaseAuth.onAuthStateChanged as jest.Mock).mockImplementation(
+      (_auth: unknown, callback: (u: unknown) => void) => {
+        callback({ uid: 'u1', email: 'u1@example.com', emailVerified: true });
+        return () => {};
+      }
+    );
+    (firestore.getDoc as jest.Mock).mockResolvedValue({ exists: () => true, data: () => profile });
     const wrapper = ({ children }: { children: React.ReactNode }) => (
       <AuthProvider>{children}</AuthProvider>
     );
-
-    const { result } = renderHook(() => useAuth(), { wrapper });
-
-    let resendResult;
+    const hook = renderHook(() => useAuth(), { wrapper });
     await act(async () => {
-      resendResult = await result.current.resendVerificationEmail();
+      await Promise.resolve();
+      await Promise.resolve();
     });
+    return hook;
+  };
 
-    expect(resendResult).toEqual({
-      success: false,
-      error: 'No user signed in',
-    });
+  it('signs out a suspended account and explains why', async () => {
+    const { result } = await signedInAs({ role: 'client', suspended: true, email: 'u1@example.com' });
+    expect(result.current.user).toBeNull();
+    expect(result.current.authError).toMatch(/suspended/i);
+    expect(firebaseAuth.signOut).toHaveBeenCalled();
+  });
+
+  it('rejects a profile with an unknown role instead of looping', async () => {
+    const { result } = await signedInAs({ role: 'bodyguard', email: 'u1@example.com' });
+    expect(result.current.user).toBeNull();
+    expect(result.current.authError).toBeTruthy();
+  });
+
+  it('loads a valid profile and stops loading', async () => {
+    const { result } = await signedInAs({ role: 'guard', email: 'u1@example.com', firstName: 'Diego' });
+    expect(result.current.user?.role).toBe('guard');
+    expect(result.current.isLoading).toBe(false);
   });
 });
 

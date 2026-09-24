@@ -1,505 +1,565 @@
-import { useEffect, useState, useMemo } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  Dimensions,
-  Alert,
-} from 'react-native';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Linking, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useTranslation } from 'react-i18next';
+import { formatTimeOfDay } from '@/i18n/format';
 import {
-  ChevronLeft,
-  Navigation,
-  Clock,
-  Phone,
-  MessageCircle,
-  Shield,
   AlertCircle,
+  Clock,
+  KeyRound,
+  LocateFixed,
+  MapPin,
+  MessageCircle,
+  Navigation,
+  Phone,
+  Radio,
+  SearchX,
+  Shield,
+  type LucideIcon,
 } from 'lucide-react-native';
-import { useLocationTracking } from '@/contexts/LocationTrackingContext';
-import { useAuth } from '@/contexts/AuthContext';
-import { guardService } from '@/services/guardService';
-import { bookingService } from '@/services/bookingService';
-import { Booking, Guard } from '@/types';
 import Colors from '@/constants/colors';
-import MapView, { Marker, Polyline, PROVIDER_DEFAULT } from '@/components/MapView';
+import { ICON_STROKE, MAX_CONTENT_WIDTH, Radius, Shadow, Space } from '@/constants/design';
+import {
+  AppText,
+  Avatar,
+  Button,
+  EmptyState,
+  IconButton,
+  NavBar,
+  Skeleton,
+  StatusBadge,
+} from '@/components/ui';
+import MapView, { Marker, Polyline, PROVIDER_DEFAULT, type MapViewHandle } from '@/components/MapView';
 import PanicButton from '@/components/PanicButton';
 import StartCodeInput from '@/components/StartCodeInput';
+import { useAuth } from '@/contexts/AuthContext';
+import { useBookingLocation, useGuardLocationPublisher } from '@/contexts/LocationTrackingContext';
+import { bookingService, isLiveStatus, _shouldShowGuardLocationByRule } from '@/services/bookingService';
+import { distanceBetween, estimateEtaMinutes, isValidCoordinate } from '@/services/locationTrackingService';
+import { guardDisplayName, useGuardProfile, useLiveBooking, useNow } from '@/components/booking/hooks';
+import { formatDistance, formatTime, timeAgo } from '@/components/booking/format';
+import type { Booking } from '@/types';
 
-const { width, height } = Dimensions.get('window');
+const DEFAULT_REGION = { latitude: 19.4326, longitude: -99.1332, latitudeDelta: 0.08, longitudeDelta: 0.08 };
+const STALE_AFTER_MS = 2 * 60 * 1000;
+
+type Viewer = 'client' | 'guard' | 'observer';
+
+function humanMinutes(minutes: number): string {
+  if (minutes < 60) return `${minutes} min`;
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return m ? `${h} h ${m} min` : `${h} h`;
+}
+
+function minutesUntilVisible(booking: Booking, now: number): number | null {
+  const start = new Date(`${booking.scheduledDate}T${booking.scheduledTime}`).getTime();
+  if (Number.isNaN(start)) return null;
+  return Math.max(1, Math.ceil((start - now) / 60000) - 10);
+}
 
 export default function TrackingScreen() {
   const { bookingId } = useLocalSearchParams<{ bookingId: string }>();
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
-  const {
-    currentLocation,
-    subscribeToGuardLocation,
-    getGuardLocation,
-    calculateDistance,
-    calculateETA,
-    hasPermission,
-    requestLocationPermission,
-  } = useLocationTracking();
+  const { t } = useTranslation(['booking', 'common']);
+  const { booking, loading, error, notFound, retry } = useLiveBooking(bookingId);
+  const { guard } = useGuardProfile(booking?.guardId);
 
-  const [booking, setBooking] = useState<Booking | null>(null);
-  const [showStartCodeModal, setShowStartCodeModal] = useState(false);
-  const [guard, setGuard] = useState<Guard | null>(null);
-  const guardId = booking?.guardId ?? '';
+  const isClient = !!user && !!booking && booking.clientId === user.id;
+  const isAssignedGuard = !!user && !!booking && user.role === 'guard' && booking.guardId === user.id;
+  const viewer: Viewer = isClient ? 'client' : isAssignedGuard ? 'guard' : 'observer';
+  const live = !!booking && isLiveStatus(booking.status);
 
-  useEffect(() => {
-    if (!guardId) {
-      setGuard(null);
-      return;
-    }
-    guardService.getGuardById(guardId).then(setGuard);
-  }, [guardId]);
+  // Reloj para "hace X s" y para la regla de 10 minutos.
+  const now = useNow(15000, live);
+  const visible = !!booking && _shouldShowGuardLocationByRule(booking, new Date(now));
 
-  const guardLocation = getGuardLocation(guardId);
+  // El escolta publica; cliente, escolta y admin leen.
+  const sharing = useGuardLocationPublisher(booking?.id, isAssignedGuard && visible);
+  const canRead = viewer !== 'observer' || user?.role === 'admin';
+  const { location, error: locationError } = useBookingLocation(booking?.id, canRead && visible);
 
-  useEffect(() => {
-    const loadBooking = async () => {
-      if (!bookingId) return;
-      const bookingData = await bookingService.getBookingById(bookingId);
-      setBooking(bookingData);
-    };
-    loadBooking();
-  }, [bookingId]);
+  const pickup = useMemo(
+    () =>
+      booking && isValidCoordinate({ latitude: booking.pickupLatitude, longitude: booking.pickupLongitude })
+        ? { latitude: booking.pickupLatitude, longitude: booking.pickupLongitude }
+        : null,
+    [booking]
+  );
+  const guardLat = visible && location && isValidCoordinate(location) ? location.latitude : null;
+  const guardLng = visible && location && isValidCoordinate(location) ? location.longitude : null;
+  const guardPoint = useMemo(
+    () => (guardLat !== null && guardLng !== null ? { latitude: guardLat, longitude: guardLng } : null),
+    [guardLat, guardLng]
+  );
+  const stale = !!location && now - location.timestamp > STALE_AFTER_MS;
+  const heading = booking?.status === 'accepted' || booking?.status === 'en_route';
+  const distanceKm = guardPoint && pickup && heading ? distanceBetween(guardPoint, pickup) : null;
 
-  const shouldShowGuardLocation = useMemo(() => {
-    if (!booking) return false;
-    return bookingService.shouldShowGuardLocation(booking);
-  }, [booking]);
-  
-  const minutesUntilStart = useMemo(() => {
-    if (!booking) return null;
-    return bookingService.getMinutesUntilStart(booking);
-  }, [booking]);
-  
-  const trackingMessage = useMemo(() => {
-    if (!booking) return null;
-    
-    if (booking.status === 'active') {
-      return 'Service is active - Live tracking enabled';
-    }
-    
-    if (booking.bookingType === 'instant') {
-      return 'For instant bookings, guard location will be visible after you enter the start code';
-    }
-    
-    if (minutesUntilStart !== null && minutesUntilStart > 10) {
-      const minutesRounded = Math.ceil(minutesUntilStart);
-      return `Guard location will be visible ${minutesRounded - 10} minutes before scheduled time (T-10 rule)`;
-    }
-    
-    if (minutesUntilStart !== null && minutesUntilStart <= 10 && minutesUntilStart > 0) {
-      return 'Guard is en route - Live tracking enabled';
-    }
-    
-    return 'Waiting for service to begin';
-  }, [booking, minutesUntilStart]);
+  // ---- Mapa: encuadre ------------------------------------------------------
+  const mapRef = useRef<MapViewHandle | null>(null);
+  const [sheetHeight, setSheetHeight] = useState(260);
+  const fittedRef = useRef(false);
+  const initialRegion = useMemo(
+    () => (pickup ? { ...pickup, latitudeDelta: 0.03, longitudeDelta: 0.03 } : DEFAULT_REGION),
+    // Solo la primera vez: despues se mueve con fitToCoordinates.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [!!pickup]
+  );
+
+  const fit = useCallback(() => {
+    const points = [pickup, guardPoint].filter(Boolean) as { latitude: number; longitude: number }[];
+    if (points.length === 0) return;
+    mapRef.current?.fitToCoordinates(points, {
+      edgePadding: { top: 72, right: 56, bottom: sheetHeight + 32, left: 56 },
+      animated: true,
+    });
+  }, [pickup, guardPoint, sheetHeight]);
 
   useEffect(() => {
-    if (!hasPermission) {
-      requestLocationPermission();
-    }
-  }, [hasPermission, requestLocationPermission]);
+    if (!guardPoint || fittedRef.current) return;
+    fittedRef.current = true;
+    fit();
+  }, [guardPoint, fit]);
 
-  useEffect(() => {
-    if (!guardId) return;
+  // ---- Codigo de inicio (escolta) ------------------------------------------
+  const [codeOpen, setCodeOpen] = useState(false);
 
-    console.log('[Tracking] Subscribing to guard location:', guardId);
-    const unsubscribe = subscribeToGuardLocation(guardId);
-
-    return () => {
-      console.log('[Tracking] Unsubscribing from guard location:', guardId);
-      unsubscribe();
-    };
-  }, [guardId, subscribeToGuardLocation]);
-
-  if (!guard) {
+  // ---- Estados de carga / error -------------------------------------------
+  if (loading || error || notFound || !booking) {
     return (
-      <View style={styles.container}>
-        <Stack.Screen options={{ headerShown: false }} />
-        <View style={styles.errorContainer}>
-          <Shield size={64} color={Colors.textTertiary} />
-          <Text style={styles.errorText}>Booking not found</Text>
-        </View>
+      <View style={styles.root}>
+        <NavBar title={t('booking:tracking.title')} />
+        {loading ? (
+          <View style={styles.flex} accessibilityLabel={t('booking:tracking.loadingMap')}>
+            <Skeleton width="100%" height={0} radius={0} style={styles.mapSkeleton} />
+            <View style={[styles.sheetWrap, { paddingBottom: Math.max(insets.bottom, Space.lg) }]}>
+              <View style={styles.sheet}>
+                <View style={styles.headerRow}>
+                  <Skeleton width={48} height={48} radius={14} />
+                  <View style={styles.flex}>
+                    <Skeleton width="50%" height={14} />
+                    <Skeleton width="30%" height={11} style={styles.skelGap} />
+                  </View>
+                </View>
+                <Skeleton width="80%" height={12} style={styles.skelBlock} />
+                <Skeleton width="100%" height={50} radius={Radius.md} style={styles.skelBlock} />
+              </View>
+            </View>
+          </View>
+        ) : (
+          <View style={styles.centerState}>
+            {error ? (
+              <EmptyState
+                icon={AlertCircle}
+                title={t('booking:tracking.loadError')}
+                message={error}
+                actionLabel={t('common:actions.tryAgain')}
+                onAction={retry}
+              />
+            ) : (
+              <EmptyState
+                icon={SearchX}
+                title={t('booking:shared.unavailableTitle')}
+                message={t('booking:shared.unavailableMessage')}
+                actionLabel={t('common:actions.goBack')}
+                onAction={() => (router.canGoBack() ? router.back() : router.replace('/(tabs)/bookings'))}
+              />
+            )}
+          </View>
+        )}
       </View>
     );
   }
 
-  const distance = currentLocation && guardLocation
-    ? calculateDistance(currentLocation, guardLocation)
-    : null;
-
-  const eta = currentLocation && guardLocation
-    ? calculateETA(currentLocation, guardLocation)
-    : null;
-
-  const handleCall = () => {
-    Alert.alert('Call Guard', `Call ${guard.firstName}?`, [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Call', onPress: () => console.log('Calling guard...') },
-    ]);
-  };
-
-  const handleMessage = () => {
-    Alert.alert('Message Guard', 'Open chat with guard?', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Open Chat', onPress: () => console.log('Opening chat...') },
-    ]);
-  };
-
-  const handleStartService = async (code: string): Promise<void> => {
-    if (!user) return;
-    try {
-      const isValid = await bookingService.verifyStartCode(bookingId, code, user.id);
-      if (isValid) {
-        await bookingService.updateBookingStatus(bookingId, 'active');
-        setShowStartCodeModal(false);
-        Alert.alert('Success', 'Service started successfully');
+  // ---- Mensaje de estado -----------------------------------------------------
+  const name = guardDisplayName(guard);
+  let statusIcon: LucideIcon = Clock;
+  let statusText: string;
+  let statusTone: string = Colors.textSecondary;
+  switch (booking.status) {
+    case 'pending':
+    case 'confirmed':
+      statusText = t('booking:tracking.notAccepted');
+      break;
+    case 'accepted':
+    case 'en_route':
+      if (!visible) {
+        const mins = minutesUntilVisible(booking, now);
+        if (viewer === 'guard') {
+          statusText = mins
+            ? t('booking:tracking.guardNotYetIn', { time: humanMinutes(mins) })
+            : t('booking:tracking.guardNotYet');
+        } else {
+          statusText = mins
+            ? t('booking:tracking.clientNotYetIn', { time: humanMinutes(mins) })
+            : t('booking:tracking.clientNotYet');
+        }
+      } else if (!canRead) {
+        statusText = t('booking:tracking.onlyParticipants');
+      } else if (!location) {
+        statusIcon = Radio;
+        statusText =
+          viewer === 'guard'
+            ? t('booking:tracking.waitingOwn')
+            : name
+              ? t('booking:tracking.waitingNamed', { name })
+              : t('booking:tracking.waitingProtector');
       } else {
-        Alert.alert('Invalid Code', 'The code you entered is incorrect');
+        statusIcon = Navigation;
+        statusTone = Colors.accent;
+        statusText =
+          viewer === 'guard'
+            ? t('booking:tracking.headingOwn')
+            : name
+              ? t('booking:tracking.headingNamed', { name })
+              : t('booking:tracking.headingProtector');
       }
-    } catch (error: any) {
-      Alert.alert('Error', error.message || 'Failed to verify code');
-      throw error;
-    }
-  };
+      break;
+    case 'active':
+      statusIcon = Shield;
+      statusTone = Colors.success;
+      statusText = booking.startedAt
+        ? t('booking:tracking.activeSince', { time: formatTimeOfDay(new Date(booking.startedAt)) })
+        : t('booking:tracking.active');
+      break;
+    case 'completed':
+      statusText = t('booking:tracking.completed');
+      break;
+    default:
+      statusText = t('booking:tracking.ended');
+  }
+  if (locationError && visible && canRead) {
+    statusIcon = AlertCircle;
+    statusTone = Colors.warning;
+    statusText = locationError;
+  } else if (stale && visible && location) {
+    statusIcon = AlertCircle;
+    statusTone = Colors.warning;
+    statusText = t('booking:tracking.stale', { ago: timeAgo(location.timestamp, now) });
+  }
+  const StatusIcon = statusIcon;
+
+  const phone = viewer === 'client' ? (guard?.phone ?? '').replace(/[^\d+]/g, '') : '';
+  const openChat = () => router.push(`/booking/${booking.id}?focus=chat`);
+  const canStart = viewer === 'guard' && (booking.status === 'accepted' || booking.status === 'en_route');
 
   return (
-    <View style={styles.container}>
-      <Stack.Screen options={{ headerShown: false }} />
+    <View style={styles.root}>
+      <NavBar title={t('booking:tracking.title')} right={<StatusBadge status={booking.status} />} />
 
-      <MapView
+      <View style={styles.flex}>
+        <MapView
+          ref={mapRef}
           provider={PROVIDER_DEFAULT}
-          style={styles.map}
-          initialRegion={{
-            latitude: currentLocation?.latitude || guard.latitude || 20.6296,
-            longitude: currentLocation?.longitude || guard.longitude || -87.0739,
-            latitudeDelta: 0.02,
-            longitudeDelta: 0.02,
-          }}
-          showsUserLocation={true}
+          style={StyleSheet.absoluteFill}
+          initialRegion={initialRegion}
+          showsUserLocation={false}
           showsMyLocationButton={false}
+          accessibilityLabel={t('booking:tracking.mapA11y')}
         >
-          {shouldShowGuardLocation && guardLocation && (
+          {pickup ? (
             <Marker
-              coordinate={{
-                latitude: guardLocation.latitude,
-                longitude: guardLocation.longitude,
-              }}
-              title={`${guard.firstName} ${guard.lastName.charAt(0)}.`}
-              description="Your guard"
+              coordinate={pickup}
+              title={t('booking:tracking.pickupMarker')}
+              description={booking.pickupAddress}
+              anchor={{ x: 0.5, y: 0.5 }}
             >
-              <View style={styles.guardMarker}>
-                <Shield size={24} color={Colors.gold} />
+              <View style={styles.pickupPin}>
+                <MapPin size={16} color={Colors.textPrimary} strokeWidth={ICON_STROKE} />
               </View>
             </Marker>
-          )}
-
-          {shouldShowGuardLocation && currentLocation && guardLocation && (
-            <Polyline
-              coordinates={[
-                { latitude: currentLocation.latitude, longitude: currentLocation.longitude },
-                { latitude: guardLocation.latitude, longitude: guardLocation.longitude },
-              ]}
-              strokeColor={Colors.gold}
-              strokeWidth={3}
-              lineDashPattern={[10, 5]}
-            />
-          )}
+          ) : null}
+          {guardPoint ? (
+            <Marker
+              coordinate={guardPoint}
+              title={viewer === 'guard' ? t('booking:tracking.you') : (name ?? t('booking:shared.yourProtector'))}
+              anchor={{ x: 0.5, y: 0.5 }}
+              zIndex={10}
+            >
+              <View style={[styles.guardHalo, stale ? styles.guardHaloStale : null]}>
+                <View style={styles.guardPin}>
+                  <Shield size={18} color={Colors.accent} strokeWidth={ICON_STROKE} />
+                </View>
+              </View>
+            </Marker>
+          ) : null}
+          {guardPoint && pickup && heading ? (
+            <Polyline coordinates={[guardPoint, pickup]} strokeColor={Colors.accent} strokeWidth={3} lineDashPattern={[8, 8]} />
+          ) : null}
         </MapView>
 
-
-
-      <TouchableOpacity
-        style={[styles.backButton, { top: insets.top + 10 }]}
-        onPress={() => router.back()}
-      >
-        <ChevronLeft size={24} color={Colors.white} />
-      </TouchableOpacity>
-
-      {user && (
-        <View style={[styles.panicButtonContainer, { top: insets.top + 10 }]}>
-          <PanicButton
-            userId={user.id}
-            bookingId={bookingId}
-            size="medium"
-            onAlertTriggered={(alertId) => {
-              console.log('[Tracking] Emergency alert triggered:', alertId);
-            }}
-          />
-        </View>
-      )}
-
-      <View style={[styles.infoCard, { bottom: insets.bottom + 20 }]}>
-        <View style={styles.guardHeader}>
-          <View style={styles.guardInfo}>
-            <Text style={styles.guardName}>
-              {guard.firstName} {guard.lastName.charAt(0)}.
-            </Text>
-            <Text style={styles.guardStatus}>En Route</Text>
-          </View>
-          <View style={styles.verifiedBadge}>
-            <Shield size={16} color={Colors.gold} />
-            <Text style={styles.verifiedText}>Verified</Text>
-          </View>
+        <View style={styles.floating} pointerEvents="box-none">
+          {user ? (
+            <PanicButton userId={user.id} bookingId={booking.id} size="small" />
+          ) : null}
+          {pickup || guardPoint ? (
+            <IconButton
+              icon={LocateFixed}
+              onPress={fit}
+              accessibilityLabel={t('booking:tracking.recenter')}
+              size={44}
+              style={styles.recenter}
+            />
+          ) : null}
         </View>
 
-        {!shouldShowGuardLocation && trackingMessage && (
-          <View style={styles.waitingCard}>
-            <AlertCircle size={24} color={Colors.gold} />
-            <Text style={styles.waitingText}>
-              {trackingMessage}
-            </Text>
-          </View>
-        )}
-        
-        {booking && (
-          <View style={styles.bookingTypeCard}>
-            <Text style={styles.bookingTypeLabel}>
-              {bookingService.getBookingTypeLabel(booking.bookingType)}
-            </Text>
-            {minutesUntilStart !== null && minutesUntilStart > 0 && (
-              <Text style={styles.bookingTypeTime}>
-                Starts in {Math.ceil(minutesUntilStart)} minutes
-              </Text>
-            )}
-          </View>
-        )}
-
-        {shouldShowGuardLocation && (
-          <View style={styles.statsRow}>
-            <View style={styles.statItem}>
-              <Navigation size={20} color={Colors.gold} />
-              <Text style={styles.statValue}>
-                {distance ? `${distance.toFixed(1)} km` : '---'}
-              </Text>
-              <Text style={styles.statLabel}>Distance</Text>
+        <View
+          style={[styles.sheetWrap, { paddingBottom: Math.max(insets.bottom, Space.lg) }]}
+          pointerEvents="box-none"
+          onLayout={(e) => setSheetHeight(e.nativeEvent.layout.height)}
+        >
+          <View style={styles.sheet}>
+            {/* Quien */}
+            <View style={styles.headerRow}>
+              {viewer === 'guard' ? (
+                <View style={styles.pickupBadge}>
+                  <MapPin size={20} color={Colors.accent} strokeWidth={ICON_STROKE} />
+                </View>
+              ) : (
+                <Avatar name={name ?? undefined} uri={guard?.photos?.[0]} size={48} verified={guard?.kycStatus === 'approved'} />
+              )}
+              <View style={styles.flex}>
+                <AppText variant="headline" numberOfLines={1}>
+                  {viewer === 'guard' ? t('booking:tracking.clientPickup') : (name ?? t('booking:shared.yourProtector'))}
+                </AppText>
+                <AppText variant="footnote" numberOfLines={2}>
+                  {viewer === 'guard'
+                    ? booking.pickupAddress || '—'
+                    : t('booking:tracking.pickupAt', { time: formatTime(booking), address: booking.pickupAddress || '—' })}
+                </AppText>
+              </View>
             </View>
-            <View style={styles.statDivider} />
-            <View style={styles.statItem}>
-              <Clock size={20} color={Colors.gold} />
-              <Text style={styles.statValue}>
-                {eta ? `${Math.round(eta)} min` : '---'}
-              </Text>
-              <Text style={styles.statLabel}>ETA</Text>
+
+            {/* Estado */}
+            <View style={styles.statusRow} accessibilityLiveRegion="polite">
+              <StatusIcon size={16} color={statusTone} strokeWidth={ICON_STROKE} />
+              <AppText variant="callout" color={statusTone === Colors.textSecondary ? Colors.textSecondary : Colors.textPrimary} style={styles.flex}>
+                {statusText}
+              </AppText>
             </View>
+
+            {/* Cifras (solo con ubicacion real) */}
+            {distanceKm !== null ? (
+              <View style={styles.stats}>
+                <View style={styles.stat}>
+                  <AppText variant="overline">{t('booking:tracking.distance')}</AppText>
+                  <AppText variant="numeric">{formatDistance(distanceKm)}</AppText>
+                </View>
+                <View style={styles.statDivider} />
+                <View style={styles.stat}>
+                  <AppText variant="overline">{t('booking:tracking.eta')}</AppText>
+                  <AppText variant="numeric">{humanMinutes(estimateEtaMinutes(distanceKm))}</AppText>
+                </View>
+                <View style={styles.statDivider} />
+                <View style={styles.stat}>
+                  <AppText variant="overline">{t('booking:tracking.updated')}</AppText>
+                  <AppText variant="numeric">{timeAgo(location?.timestamp, now)}</AppText>
+                </View>
+              </View>
+            ) : null}
+
+            {viewer === 'guard' && sharing.error ? (
+              <View style={styles.shareError}>
+                <AppText variant="footnote" color={Colors.error} style={styles.flex}>
+                  {sharing.error}
+                </AppText>
+                <Button
+                  title={t('common:actions.retry')}
+                  variant="ghost"
+                  size="sm"
+                  fullWidth={false}
+                  onPress={sharing.retry}
+                />
+              </View>
+            ) : null}
+
+            {/* Acciones */}
+            {canStart ? (
+              <Button
+                title={t('booking:shared.enterStartCode')}
+                icon={KeyRound}
+                onPress={() => setCodeOpen(true)}
+                style={styles.primary}
+              />
+            ) : null}
+            {viewer !== 'observer' ? (
+              <View style={styles.actions}>
+                <Button
+                  title={t('booking:tracking.message')}
+                  icon={MessageCircle}
+                  variant="secondary"
+                  onPress={openChat}
+                  style={styles.flex}
+                  accessibilityLabel={t(viewer === 'guard' ? 'booking:tracking.messageClient' : 'booking:tracking.messageProtector')}
+                />
+                {phone ? (
+                  <Button
+                    title={t('booking:tracking.call')}
+                    icon={Phone}
+                    variant="secondary"
+                    onPress={() => {
+                      Linking.openURL(`tel:${phone}`).catch(() => {});
+                    }}
+                    style={styles.flex}
+                    accessibilityLabel={name ? t('booking:tracking.callNamed', { name }) : t('booking:tracking.callProtector')}
+                  />
+                ) : null}
+              </View>
+            ) : null}
           </View>
-        )}
-
-        {booking?.status === 'accepted' && (
-          <TouchableOpacity
-            style={styles.startButton}
-            onPress={() => setShowStartCodeModal(true)}
-          >
-            <Text style={styles.startButtonText}>Enter Start Code</Text>
-          </TouchableOpacity>
-        )}
-
-        <View style={styles.actionRow}>
-          <TouchableOpacity style={styles.actionButton} onPress={handleCall}>
-            <Phone size={20} color={Colors.gold} />
-            <Text style={styles.actionButtonText}>Call</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.actionButton} onPress={handleMessage}>
-            <MessageCircle size={20} color={Colors.gold} />
-            <Text style={styles.actionButtonText}>Message</Text>
-          </TouchableOpacity>
         </View>
       </View>
 
       <StartCodeInput
-        visible={showStartCodeModal}
-        onSubmit={handleStartService}
-        onCancel={() => setShowStartCodeModal(false)}
+        visible={codeOpen}
+        onSubmit={async (code) => {
+          await bookingService.startBooking(booking.id, code);
+          setCodeOpen(false);
+        }}
+        onCancel={() => setCodeOpen(false)}
       />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  root: {
     flex: 1,
     backgroundColor: Colors.background,
   },
-  map: {
-    width: width,
-    height: height,
+  flex: {
+    flex: 1,
   },
-  backButton: {
-    position: 'absolute' as const,
-    left: 16,
+  centerState: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: Space.gutter,
+  },
+  mapSkeleton: {
+    ...StyleSheet.absoluteFillObject,
+    height: undefined,
+  },
+  skelGap: {
+    marginTop: Space.sm,
+  },
+  skelBlock: {
+    marginTop: Space.lg,
+  },
+  floating: {
+    position: 'absolute',
+    top: Space.lg,
+    right: Space.lg,
+    alignItems: 'flex-end',
+    gap: Space.md,
+  },
+  recenter: {
+    ...Shadow.md,
+  },
+  sheetWrap: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    paddingHorizontal: Space.md,
+  },
+  sheet: {
+    width: '100%',
+    maxWidth: MAX_CONTENT_WIDTH,
+    alignSelf: 'center',
+    backgroundColor: Colors.surface,
+    borderRadius: Radius.xl,
+    borderWidth: 1,
+    borderColor: Colors.borderStrong,
+    padding: Space.xl,
+    ...Shadow.lg,
+  },
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Space.md,
+  },
+  pickupBadge: {
+    width: 48,
+    height: 48,
+    borderRadius: 14,
+    backgroundColor: Colors.accentSoft,
+    borderWidth: 1,
+    borderColor: Colors.accentLine,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  statusRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: Space.sm,
+    marginTop: Space.lg,
+  },
+  stats: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: Space.lg,
+    paddingVertical: Space.md,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderColor: Colors.borderStrong,
+  },
+  stat: {
+    flex: 1,
+    alignItems: 'center',
+    gap: 4,
+  },
+  statDivider: {
+    width: StyleSheet.hairlineWidth,
+    alignSelf: 'stretch',
+    backgroundColor: Colors.borderStrong,
+  },
+  shareError: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Space.sm,
+    marginTop: Space.md,
+  },
+  primary: {
+    marginTop: Space.lg,
+  },
+  actions: {
+    flexDirection: 'row',
+    gap: Space.md,
+    marginTop: Space.md,
+  },
+  pickupPin: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    backgroundColor: Colors.elevated,
+    borderWidth: 1,
+    borderColor: Colors.borderStrong,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  guardHalo: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: Colors.accentSoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  guardHaloStale: {
+    backgroundColor: Colors.warningSoft,
+  },
+  guardPin: {
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: Colors.overlay,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  guardMarker: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
     backgroundColor: Colors.background,
-    borderWidth: 3,
-    borderColor: Colors.gold,
+    borderWidth: 2,
+    borderColor: Colors.accent,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  infoCard: {
-    position: 'absolute' as const,
-    left: 16,
-    right: 16,
-    backgroundColor: Colors.surface,
-    borderRadius: 20,
-    padding: 20,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  guardHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 20,
-  },
-  guardInfo: {
-    flex: 1,
-  },
-  guardName: {
-    fontSize: 20,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-    marginBottom: 4,
-  },
-  guardStatus: {
-    fontSize: 14,
-    color: Colors.gold,
-    fontWeight: '600' as const,
-  },
-  verifiedBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: Colors.gold + '20',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 12,
-  },
-  verifiedText: {
-    fontSize: 12,
-    fontWeight: '700' as const,
-    color: Colors.gold,
-  },
-  statsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 20,
-  },
-  statItem: {
-    flex: 1,
-    alignItems: 'center',
-    gap: 8,
-  },
-  statDivider: {
-    width: 1,
-    height: 60,
-    backgroundColor: Colors.border,
-  },
-  statValue: {
-    fontSize: 18,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-  },
-  statLabel: {
-    fontSize: 12,
-    color: Colors.textSecondary,
-  },
-  actionRow: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  actionButton: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: Colors.background,
-    paddingVertical: 14,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  actionButtonText: {
-    fontSize: 14,
-    fontWeight: '600' as const,
-    color: Colors.gold,
-  },
-  errorContainer: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  errorText: {
-    fontSize: 18,
-    fontWeight: '600' as const,
-    color: Colors.textPrimary,
-    marginTop: 16,
-  },
-  panicButtonContainer: {
-    position: 'absolute' as const,
-    right: 16,
-  },
-  waitingCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    backgroundColor: Colors.gold + '20',
-    padding: 16,
-    borderRadius: 12,
-    marginBottom: 20,
-  },
-  waitingText: {
-    flex: 1,
-    fontSize: 14,
-    fontWeight: '600' as const,
-    color: Colors.gold,
-    lineHeight: 20,
-  },
-  bookingTypeCard: {
-    backgroundColor: Colors.background,
-    padding: 12,
-    borderRadius: 12,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  bookingTypeLabel: {
-    fontSize: 14,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-    marginBottom: 4,
-  },
-  bookingTypeTime: {
-    fontSize: 12,
-    color: Colors.textSecondary,
-  },
-  startButton: {
-    backgroundColor: Colors.gold,
-    paddingVertical: 16,
-    borderRadius: 12,
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  startButtonText: {
-    fontSize: 16,
-    fontWeight: '700' as const,
-    color: Colors.background,
   },
 });

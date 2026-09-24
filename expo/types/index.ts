@@ -50,9 +50,10 @@ export interface Guard extends User {
   photos: string[];
   outfitPhotos: string[];
   governmentIdUrls?: string[];
-  licenseUrls: string[];
-  vehicleDocUrls: string[];
-  insuranceUrls: string[];
+  // Documentos KYC: viven en users/{uid}/private/kyc, no en el perfil publico.
+  licenseUrls?: string[];
+  vehicleDocUrls?: string[];
+  insuranceUrls?: string[];
   certifications: string[];
   rating: number;
   ratingBreakdown?: RatingBreakdown;
@@ -116,12 +117,22 @@ export interface Booking {
   destinationLongitude?: number;
   destinationCity?: string;
   routeStops?: RouteStop[];
-  startCode: string;
+  // The start code is NOT stored on the booking node: it lives in
+  // bookingSecrets/{id}/startCode (client + admin only). createBooking returns
+  // it on the object it hands back to the creating client; reads never have it.
+  startCode?: string;
+  // Written by the guard when starting the service; RTDB rules check it
+  // against bookingSecrets/{id}/startCode.
+  startCodeAttempt?: string;
+  // Guard's hourly rate (MXN) used to price the booking. Always written by
+  // createBooking; optional only so legacy/mock objects still type-check.
+  hourlyRate?: number;
   totalAmount: number;
   processingFee: number;
   platformCut: number;
   guardPayout: number;
   transactionId?: string;
+  paymentIntentId?: string;
   createdAt: string;
   confirmedAt?: string;
   acceptedAt?: string;

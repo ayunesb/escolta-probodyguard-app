@@ -1,346 +1,331 @@
-import { useState, useEffect, useCallback } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  TouchableOpacity,
-  TextInput,
-  Alert,
-} from 'react-native';
-import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Star, Shield } from 'lucide-react-native';
-import { bookingService } from '@/services/bookingService';
-import { Booking } from '@/types';
+import { useRef, useState } from 'react';
+import { StyleSheet, View } from 'react-native';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useTranslation } from 'react-i18next';
+import { AlertCircle, CheckCircle2, Hourglass, SearchX } from 'lucide-react-native';
 import Colors from '@/constants/colors';
+import { Space } from '@/constants/design';
+import {
+  ActionBar,
+  AppText,
+  Avatar,
+  Button,
+  Card,
+  EmptyState,
+  Input,
+  NavBar,
+  Screen,
+  SectionTitle,
+  Skeleton,
+  SkeletonCard,
+} from '@/components/ui';
+import { useAuth } from '@/contexts/AuthContext';
+import { bookingService } from '@/services/bookingService';
+import { StarRating, starCellInset } from '@/components/booking/StarRating';
+import { guardDisplayName, useGuardProfile, useLiveBooking } from '@/components/booking/hooks';
+import { formatLongDate } from '@/components/booking/format';
+import type { RatingBreakdown } from '@/types';
+
+// Textos en booking:rate.categories.<key> y booking:rate.verdict.<clave>.
+const CATEGORIES: (keyof RatingBreakdown)[] = ['professionalism', 'punctuality', 'communication', 'languageClarity'];
+
+const VERDICT = ['poor', 'fair', 'good', 'veryGood', 'excellent'] as const;
+
+const CATEGORY_STAR_SIZE = 24;
+
+const EMPTY_BREAKDOWN: RatingBreakdown = { professionalism: 0, punctuality: 0, communication: 0, languageClarity: 0 };
 
 export default function RateBookingScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
-  const insets = useSafeAreaInsets();
-  const [booking, setBooking] = useState<Booking | null>(null);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [overallRating, setOverallRating] = useState<number>(0);
-  const [professionalism, setProfessionalism] = useState<number>(0);
-  const [punctuality, setPunctuality] = useState<number>(0);
-  const [communication, setCommunication] = useState<number>(0);
-  const [languageClarity, setLanguageClarity] = useState<number>(0);
-  const [review, setReview] = useState<string>('');
-  const [submitting, setSubmitting] = useState<boolean>(false);
+  const { user } = useAuth();
+  const { t } = useTranslation(['booking', 'common']);
+  const { booking, loading, error, notFound, retry } = useLiveBooking(id);
+  const { guard } = useGuardProfile(booking?.guardId);
 
-  const loadBooking = useCallback(async () => {
-    if (!id) return;
+  const [overall, setOverall] = useState(0);
+  const [breakdown, setBreakdown] = useState<RatingBreakdown>(EMPTY_BREAKDOWN);
+  const [review, setReview] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  // Tras enviar, la reserva en vivo ya trae la calificacion: sin esto la
+  // pantalla parpadearia a "ya calificaste" antes de volver.
+  const submittedRef = useRef(false);
 
-    try {
-      setLoading(true);
-      const bookingData = await bookingService.getBookingById(id);
-      setBooking(bookingData);
-    } catch (error) {
-      console.error('[RateBooking] Error loading booking:', error);
-      Alert.alert('Error', 'Failed to load booking');
-    } finally {
-      setLoading(false);
-    }
-  }, [id]);
+  const backToBooking = () => {
+    if (router.canGoBack()) router.back();
+    else router.replace(`/booking/${id}`);
+  };
 
-  useEffect(() => {
-    loadBooking();
-  }, [loadBooking]);
+  const name = guardDisplayName(guard);
 
-  const handleSubmit = async () => {
-    if (!booking) return;
-
-    if (overallRating === 0) {
-      Alert.alert('Rating Required', 'Please provide an overall rating');
-      return;
-    }
-
-    if (professionalism === 0 || punctuality === 0 || communication === 0 || languageClarity === 0) {
-      Alert.alert('All Ratings Required', 'Please rate all categories');
-      return;
-    }
-
-    try {
-      setSubmitting(true);
-      await bookingService.rateBooking(
-        booking.id,
-        overallRating,
-        {
-          professionalism,
-          punctuality,
-          communication,
-          languageClarity,
-        },
-        review.trim() || undefined
+  const renderState = () => {
+    if (loading) {
+      return (
+        <View accessibilityLabel={t('booking:shared.loading')}>
+          <View style={styles.center}>
+            <Skeleton width={72} height={72} radius={22} />
+            <Skeleton width={160} height={16} style={styles.skelGap} />
+          </View>
+          <View style={styles.skelCards}>
+            <SkeletonCard lines={1} />
+            <SkeletonCard lines={4} />
+          </View>
+        </View>
       );
+    }
+    if (error) {
+      return (
+        <EmptyState
+          icon={AlertCircle}
+          title={t('booking:shared.loadError')}
+          message={error}
+          actionLabel={t('common:actions.tryAgain')}
+          onAction={retry}
+        />
+      );
+    }
+    if (notFound || !booking) {
+      return (
+        <EmptyState
+          icon={SearchX}
+          title={t('booking:shared.unavailableTitle')}
+          message={t('booking:shared.unavailableMessage')}
+          actionLabel={t('common:actions.goBack')}
+          onAction={backToBooking}
+        />
+      );
+    }
+    if (!user || booking.clientId !== user.id) {
+      return (
+        <EmptyState
+          icon={AlertCircle}
+          title={t('booking:rate.onlyClientTitle')}
+          message={t('booking:rate.onlyClientMessage')}
+          actionLabel={t('booking:shared.backToBooking')}
+          onAction={backToBooking}
+        />
+      );
+    }
+    if (booking.status !== 'completed') {
+      return (
+        <EmptyState
+          icon={Hourglass}
+          title={t('booking:rate.notYetTitle')}
+          message={t('booking:rate.notYetMessage')}
+          actionLabel={t('booking:shared.backToBooking')}
+          onAction={backToBooking}
+        />
+      );
+    }
+    if (typeof booking.rating === 'number' && !submittedRef.current) {
+      return (
+        <View style={styles.center}>
+          <EmptyState icon={CheckCircle2} title={t('booking:rate.alreadyRated')} />
+          <StarRating value={booking.rating} size={26} label={t('booking:rate.yourRating')} />
+          {booking.review ? (
+            <AppText variant="callout" align="center" style={styles.pastReview}>
+              {t('booking:rate.quoted', { text: booking.review })}
+            </AppText>
+          ) : null}
+          <Button
+            title={t('booking:shared.backToBooking')}
+            variant="outline"
+            fullWidth={false}
+            onPress={backToBooking}
+            style={styles.pastBack}
+          />
+        </View>
+      );
+    }
+    return null;
+  };
 
-      Alert.alert('Success', 'Thank you for your feedback!', [
-        {
-          text: 'OK',
-          onPress: () => router.back(),
-        },
-      ]);
-    } catch (error) {
-      console.error('[RateBooking] Error submitting rating:', error);
-      Alert.alert('Error', 'Failed to submit rating');
-    } finally {
+  const blocking = renderState();
+
+  const submit = async () => {
+    if (!booking || submitting) return;
+    if (overall === 0) {
+      setFormError(t('booking:rate.chooseOverall'));
+      return;
+    }
+    const values = Object.values(breakdown);
+    const rated = values.filter((v) => v > 0).length;
+    if (rated > 0 && rated < values.length) {
+      setFormError(t('booking:rate.allOrNone'));
+      return;
+    }
+    setSubmitting(true);
+    setFormError(null);
+    submittedRef.current = true;
+    try {
+      await bookingService.rateBooking(booking.id, {
+        rating: overall,
+        ratingBreakdown: rated === values.length ? breakdown : null,
+        review: review.trim() || undefined,
+      });
+      backToBooking();
+    } catch (e) {
+      submittedRef.current = false;
+      setFormError(e instanceof Error ? e.message : t('booking:rate.notSaved'));
       setSubmitting(false);
     }
   };
 
-  const renderStars = (rating: number, onPress: (value: number) => void) => {
-    return (
-      <View style={styles.starsContainer}>
-        {[1, 2, 3, 4, 5].map((value) => (
-          <TouchableOpacity
-            key={value}
-            onPress={() => onPress(value)}
-            style={styles.starButton}
-          >
-            <Star
-              size={32}
-              color={value <= rating ? Colors.gold : Colors.textTertiary}
-              fill={value <= rating ? Colors.gold : 'transparent'}
-            />
-          </TouchableOpacity>
-        ))}
-      </View>
-    );
-  };
-
-  if (loading) {
-    return (
-      <View style={styles.container}>
-        <Stack.Screen options={{ title: 'Rate Service' }} />
-        <View style={styles.centerContainer}>
-          <Text style={styles.loadingText}>Loading...</Text>
-        </View>
-      </View>
-    );
-  }
-
-  if (!booking) {
-    return (
-      <View style={styles.container}>
-        <Stack.Screen options={{ title: 'Rate Service' }} />
-        <View style={styles.centerContainer}>
-          <Shield size={64} color={Colors.textTertiary} />
-          <Text style={styles.errorText}>Booking not found</Text>
-        </View>
-      </View>
-    );
-  }
-
-  if (booking.rating) {
-    return (
-      <View style={styles.container}>
-        <Stack.Screen options={{ title: 'Rate Service' }} />
-        <View style={styles.centerContainer}>
-          <Shield size={64} color={Colors.gold} />
-          <Text style={styles.errorText}>Already Rated</Text>
-          <Text style={styles.errorSubtext}>
-            You have already rated this service
-          </Text>
-        </View>
-      </View>
-    );
-  }
-
   return (
-    <View style={styles.container}>
-      <Stack.Screen options={{ title: 'Rate Service' }} />
-
-      <ScrollView
-        style={styles.scrollView}
-        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 100 }]}
+    <View style={styles.root}>
+      <NavBar title={t('booking:rate.title')} />
+      <Screen
+        padTop={false}
+        keyboard
+        contentStyle={styles.content}
+        footer={
+          blocking ? null : (
+            <ActionBar>
+              {formError ? (
+                <AppText variant="footnote" color={Colors.error} style={styles.formError} accessibilityLiveRegion="polite">
+                  {formError}
+                </AppText>
+              ) : null}
+              <Button title={t('booking:rate.submit')} onPress={submit} loading={submitting} />
+            </ActionBar>
+          )
+        }
       >
-        <View style={styles.header}>
-          <Shield size={48} color={Colors.gold} />
-          <Text style={styles.title}>Rate Your Experience</Text>
-          <Text style={styles.subtitle}>
-            Help us improve by sharing your feedback
-          </Text>
-        </View>
+        {blocking ?? (
+          <>
+            <View style={styles.center}>
+              <Avatar name={name ?? undefined} uri={guard?.photos?.[0]} size={72} verified={guard?.kycStatus === 'approved'} />
+              <AppText variant="overline" color={Colors.accent} style={styles.eyebrow}>
+                {booking ? formatLongDate(booking) : ''}
+              </AppText>
+              <AppText variant="title2" align="center" accessibilityRole="header">
+                {name ? t('booking:rate.howDidNamed', { name }) : t('booking:rate.howWas')}
+              </AppText>
+              <StarRating
+                value={overall}
+                onChange={(v) => {
+                  setOverall(v);
+                  setFormError(null);
+                }}
+                size={38}
+                label={t('booking:rate.overall')}
+                style={styles.overall}
+              />
+              <AppText variant="callout" color={overall ? Colors.accentLight : Colors.textTertiary} style={styles.verdict}>
+                {overall ? t(`booking:rate.verdict.${VERDICT[overall - 1]}`) : t('booking:rate.tapStar')}
+              </AppText>
+            </View>
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Overall Rating</Text>
-          {renderStars(overallRating, setOverallRating)}
-        </View>
+            <SectionTitle
+              title={t('booking:rate.inDetail')}
+              action={
+                <AppText variant="caption" color={Colors.textTertiary}>
+                  {t('booking:rate.optional')}
+                </AppText>
+              }
+            />
+            <Card padded={false}>
+              {CATEGORIES.map((key, i) => {
+                const label = t(`booking:rate.categories.${key}.label`);
+                return (
+                  <View key={key} style={[styles.category, i > 0 ? styles.categoryDivider : null]}>
+                    <AppText variant="bodyMedium">{label}</AppText>
+                    <AppText variant="footnote" color={Colors.textTertiary}>
+                      {t(`booking:rate.categories.${key}.hint`)}
+                    </AppText>
+                    {/* Debajo del texto: cada estrella tiene 44 px de area tactil. */}
+                    <StarRating
+                      value={breakdown[key]}
+                      onChange={(v) => {
+                        setBreakdown((prev) => ({ ...prev, [key]: v }));
+                        setFormError(null);
+                      }}
+                      size={CATEGORY_STAR_SIZE}
+                      label={label}
+                      style={styles.categoryStars}
+                    />
+                  </View>
+                );
+              })}
+            </Card>
 
-        <View style={styles.divider} />
-
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Professionalism</Text>
-          <Text style={styles.sectionDescription}>
-            How professional was the guard?
-          </Text>
-          {renderStars(professionalism, setProfessionalism)}
-        </View>
-
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Punctuality</Text>
-          <Text style={styles.sectionDescription}>
-            Was the guard on time?
-          </Text>
-          {renderStars(punctuality, setPunctuality)}
-        </View>
-
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Communication</Text>
-          <Text style={styles.sectionDescription}>
-            How well did the guard communicate?
-          </Text>
-          {renderStars(communication, setCommunication)}
-        </View>
-
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Language Clarity</Text>
-          <Text style={styles.sectionDescription}>
-            How clear was the guard&apos;s language?
-          </Text>
-          {renderStars(languageClarity, setLanguageClarity)}
-        </View>
-
-        <View style={styles.divider} />
-
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Additional Comments (Optional)</Text>
-          <TextInput
-            style={styles.textInput}
-            placeholder="Share your experience..."
-            placeholderTextColor={Colors.textTertiary}
-            value={review}
-            onChangeText={setReview}
-            multiline
-            numberOfLines={6}
-            textAlignVertical="top"
-          />
-        </View>
-      </ScrollView>
-
-      <View style={[styles.footer, { paddingBottom: insets.bottom + 16 }]}>
-        <TouchableOpacity
-          style={[styles.submitButton, submitting && styles.submitButtonDisabled]}
-          onPress={handleSubmit}
-          disabled={submitting}
-        >
-          <Text style={styles.submitButtonText}>
-            {submitting ? 'Submitting...' : 'Submit Rating'}
-          </Text>
-        </TouchableOpacity>
-      </View>
+            <SectionTitle
+              title={t('booking:rate.review')}
+              action={
+                <AppText variant="caption" color={Colors.textTertiary}>
+                  {t('booking:rate.optional')}
+                </AppText>
+              }
+            />
+            <Input
+              value={review}
+              onChangeText={setReview}
+              placeholder={t('booking:rate.reviewPlaceholder')}
+              multiline
+              maxLength={1000}
+              accessibilityLabel={t('booking:rate.review')}
+            />
+          </>
+        )}
+      </Screen>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  root: {
     flex: 1,
     backgroundColor: Colors.background,
   },
-  centerContainer: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 20,
+  content: {
+    paddingTop: Space.xl,
   },
-  loadingText: {
-    fontSize: 16,
-    color: Colors.textSecondary,
-  },
-  errorText: {
-    fontSize: 18,
-    fontWeight: '600' as const,
-    color: Colors.textPrimary,
-    marginTop: 16,
-  },
-  errorSubtext: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-    marginTop: 8,
-    textAlign: 'center',
-  },
-  scrollView: {
+  flex: {
     flex: 1,
   },
-  scrollContent: {
-    padding: 20,
-  },
-  header: {
-    alignItems: 'center',
-    marginBottom: 32,
-  },
-  title: {
-    fontSize: 24,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-    marginTop: 16,
-  },
-  subtitle: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-    marginTop: 8,
-    textAlign: 'center',
-  },
-  section: {
-    marginBottom: 24,
-  },
-  sectionTitle: {
-    fontSize: 16,
-    fontWeight: '600' as const,
-    color: Colors.textPrimary,
-    marginBottom: 8,
-  },
-  sectionDescription: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-    marginBottom: 12,
-  },
-  starsContainer: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  starButton: {
-    padding: 4,
-  },
-  divider: {
-    height: 1,
-    backgroundColor: Colors.border,
-    marginVertical: 24,
-  },
-  textInput: {
-    backgroundColor: Colors.surface,
-    borderRadius: 12,
-    padding: 16,
-    fontSize: 14,
-    color: Colors.textPrimary,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    minHeight: 120,
-  },
-  footer: {
-    position: 'absolute' as const,
-    bottom: 0,
-    left: 0,
-    right: 0,
-    backgroundColor: Colors.background,
-    borderTopWidth: 1,
-    borderTopColor: Colors.border,
-    padding: 16,
-  },
-  submitButton: {
-    backgroundColor: Colors.gold,
-    paddingVertical: 16,
-    borderRadius: 12,
+  center: {
     alignItems: 'center',
   },
-  submitButtonDisabled: {
-    opacity: 0.5,
+  skelGap: {
+    marginTop: Space.lg,
   },
-  submitButtonText: {
-    fontSize: 16,
-    fontWeight: '600' as const,
-    color: Colors.white,
+  skelCards: {
+    marginTop: Space.xxl,
+  },
+  eyebrow: {
+    marginTop: Space.lg,
+    marginBottom: Space.sm,
+  },
+  overall: {
+    marginTop: Space.xl,
+  },
+  verdict: {
+    marginTop: Space.sm,
+  },
+  category: {
+    paddingHorizontal: Space.lg,
+    paddingTop: Space.md + 2,
+    paddingBottom: Space.xs,
+  },
+  // La celda de 44 px deja aire a los lados de la estrella: se compensa para
+  // que la primera quede alineada con el texto.
+  categoryStars: {
+    marginTop: Space.xxs,
+    marginLeft: -starCellInset(CATEGORY_STAR_SIZE),
+  },
+  categoryDivider: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: Colors.borderStrong,
+  },
+  pastReview: {
+    marginTop: Space.lg,
+    maxWidth: 320,
+  },
+  pastBack: {
+    marginTop: Space.xl,
+  },
+  formError: {
+    marginBottom: Space.sm,
   },
 });

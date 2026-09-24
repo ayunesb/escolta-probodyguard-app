@@ -1,6 +1,7 @@
 import * as LocalAuthentication from 'expo-local-authentication';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
+import i18n from '@/i18n';
 
 const BIOMETRIC_ENABLED_KEY = 'biometric_enabled';
 const BIOMETRIC_CREDENTIALS_KEY = 'biometric_credentials';
@@ -36,13 +37,13 @@ class BiometricService {
       const typeNames = types.map(type => {
         switch (type) {
           case LocalAuthentication.AuthenticationType.FINGERPRINT:
-            return 'Fingerprint';
+            return i18n.t('account:biometric.fingerprint');
           case LocalAuthentication.AuthenticationType.FACIAL_RECOGNITION:
-            return 'Face ID';
+            return i18n.t('account:biometric.faceId');
           case LocalAuthentication.AuthenticationType.IRIS:
-            return 'Iris';
+            return i18n.t('account:biometric.iris');
           default:
-            return 'Biometric';
+            return i18n.t('account:biometric.generic');
         }
       });
       console.log('[Biometric] Supported types:', typeNames);
@@ -53,7 +54,7 @@ class BiometricService {
     }
   }
 
-  async authenticate(reason: string = 'Authenticate to continue'): Promise<boolean> {
+  async authenticate(reason: string = i18n.t('account:biometric.authenticate')): Promise<boolean> {
     if (Platform.OS === 'web') {
       console.log('[Biometric] Web fallback - skipping authentication');
       return true;
@@ -62,9 +63,9 @@ class BiometricService {
     try {
       const result = await LocalAuthentication.authenticateAsync({
         promptMessage: reason,
-        cancelLabel: 'Cancel',
+        cancelLabel: i18n.t('common:actions.cancel'),
         disableDeviceFallback: false,
-        fallbackLabel: 'Use passcode',
+        fallbackLabel: i18n.t('account:biometric.usePasscode'),
       });
 
       console.log('[Biometric] Authentication result:', result.success);
@@ -98,7 +99,7 @@ class BiometricService {
         return false;
       }
 
-      const authenticated = await this.authenticate('Enable biometric login');
+      const authenticated = await this.authenticate(i18n.t('account:biometric.enableLogin'));
       if (!authenticated) {
         console.log('[Biometric] Authentication failed');
         return false;

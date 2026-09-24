@@ -1,78 +1,149 @@
-import { collection, doc, getDoc, getDocs, query, where } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, limit, query, where } from 'firebase/firestore';
 import { db as getDb } from '@/lib/firebase';
-import type { Guard } from '@/types';
+import type { Guard, Language } from '@/types';
 import { logger } from '@/utils/logger';
 
+// Upper bound for the client roster query. Large enough for launch, small
+// enough that one screen never downloads the whole user directory.
+const ROSTER_LIMIT = 100;
+
+const str = (value: unknown): string => (typeof value === 'string' ? value : '');
+const num = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : 0);
+const optNum = (value: unknown): number | undefined =>
+  typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+const strings = (value: unknown): string[] =>
+  Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string' && v.trim() !== '') : [];
+
+// A Firestore Timestamp (serverTimestamp) or an ISO string, as ISO; '' if absent.
+const isoDate = (value: unknown): string => {
+  if (typeof value === 'string') return value;
+  const maybe = value as { toDate?: () => Date } | null;
+  if (maybe && typeof maybe.toDate === 'function') {
+    try {
+      return maybe.toDate().toISOString();
+    } catch {
+      return '';
+    }
+  }
+  return '';
+};
+
 /**
- * Real guard accounts (created via sign-up, or by a company through
- * createCompanyGuards) don't fill in most of the Guard-only fields until the
- * guard finishes their profile — there's no "complete your profile" flow
- * yet. Every client-facing screen expects a fully-shaped Guard, so this
- * normalizes whatever is in Firestore into something safe to render instead
- * of crashing on missing arrays/numbers.
+ * Turns a Firestore `users/{uid}` guard document into a crash-safe `Guard`
+ * WITHOUT inventing anything:
+ * - text that is missing stays '' (screens hide empty sections),
+ * - arrays default to [],
+ * - `hourlyRate`, `rating`, `completedJobs`, `height`, `weight` are 0 when
+ *   missing — 0 means "not set" and screens must treat it that way
+ *   (`hourlyRate <= 0` = incomplete profile, not bookable),
+ * - coordinates stay undefined unless the guard really has them,
+ * - `availability` is true only when the document says exactly `true`.
+ *
+ * KYC document URLs (government ID, licences, vehicle docs, insurance) are
+ * NOT exposed: they live in `users/{uid}/private/kyc` (CONTRACT §5).
  */
 function normalizeGuard(id: string, data: Record<string, unknown>): Guard {
+  const spoken = strings(data.languages) as Language[];
+  const uiLanguage = typeof data.language === 'string' ? (data.language as Language) : undefined;
+  const hourlyRate = num(data.hourlyRate);
+
   return {
     id,
-    email: (data.email as string) ?? '',
+    email: str(data.email),
     role: 'guard',
-    firstName: (data.firstName as string) ?? '',
-    lastName: (data.lastName as string) ?? '',
-    phone: (data.phone as string) ?? '',
-    language: (data.language as Guard['language']) ?? 'es',
+    firstName: str(data.firstName),
+    lastName: str(data.lastName),
+    phone: str(data.phone),
+    language: uiLanguage ?? 'es',
     kycStatus: (data.kycStatus as Guard['kycStatus']) ?? 'pending',
-    createdAt: (data.createdAt as string) ?? new Date().toISOString(),
-    isActive: (data.isActive as boolean) ?? true,
-    emailVerified: (data.emailVerified as boolean) ?? false,
-    updatedAt: (data.updatedAt as string) ?? new Date().toISOString(),
-    bio: (data.bio as string) ?? 'Professional protection specialist.',
-    height: (data.height as number) ?? 0,
-    weight: (data.weight as number) ?? 0,
-    languages: (data.languages as Guard['languages']) ?? [(data.language as Guard['language']) ?? 'es'],
-    hourlyRate: (data.hourlyRate as number) ?? 150,
-    photos: (data.photos as string[]) ?? [],
-    outfitPhotos: (data.outfitPhotos as string[]) ?? [],
-    governmentIdUrls: (data.governmentIdUrls as string[]) ?? [],
-    licenseUrls: (data.licenseUrls as string[]) ?? [],
-    vehicleDocUrls: (data.vehicleDocUrls as string[]) ?? [],
-    insuranceUrls: (data.insuranceUrls as string[]) ?? [],
-    certifications: (data.certifications as string[]) ?? [],
-    rating: (data.rating as number) ?? 0,
-    ratingBreakdown: data.ratingBreakdown as Guard['ratingBreakdown'],
-    completedJobs: (data.completedJobs as number) ?? 0,
-    isFreelancer: (data.isFreelancer as boolean) ?? !data.companyId,
-    companyId: data.companyId as string | undefined,
-    availability: (data.availability as boolean) ?? true,
-    latitude: (data.latitude as number) ?? 20.6296,
-    longitude: (data.longitude as number) ?? -87.0739,
+    createdAt: isoDate(data.createdAt),
+    isActive: data.isActive !== false && data.suspended !== true,
+    emailVerified: data.emailVerified === true,
+    updatedAt: isoDate(data.updatedAt),
+    bio: str(data.bio),
+    height: num(data.height),
+    weight: num(data.weight),
+    // The profile's own UI language is a language the guard really speaks;
+    // it's the only fallback used when no spoken languages were listed.
+    languages: spoken.length > 0 ? spoken : uiLanguage ? [uiLanguage] : [],
+    hourlyRate: hourlyRate > 0 ? hourlyRate : 0,
+    photos: strings(data.photos),
+    outfitPhotos: strings(data.outfitPhotos),
+    // Moved to users/{uid}/private/kyc — never read from the public profile.
+    licenseUrls: [],
+    vehicleDocUrls: [],
+    insuranceUrls: [],
+    certifications: strings(data.certifications),
+    rating: num(data.rating),
+    ratingBreakdown: (data.ratingBreakdown as Guard['ratingBreakdown']) ?? undefined,
+    completedJobs: num(data.completedJobs),
+    isFreelancer: typeof data.isFreelancer === 'boolean' ? data.isFreelancer : !data.companyId,
+    companyId: typeof data.companyId === 'string' && data.companyId ? data.companyId : undefined,
+    availability: data.availability === true,
+    latitude: optNum(data.latitude),
+    longitude: optNum(data.longitude),
   };
 }
 
+/** Has a real hourly rate, so it can be priced and booked. */
+export function hasCompleteProfile(guard: Pick<Guard, 'hourlyRate'>): boolean {
+  return typeof guard.hourlyRate === 'number' && guard.hourlyRate > 0;
+}
+
+/** Real coordinates (not a default city centre). */
+export function hasCoordinates<T extends { latitude?: number; longitude?: number }>(
+  point: T
+): point is T & { latitude: number; longitude: number } {
+  return (
+    typeof point.latitude === 'number' &&
+    typeof point.longitude === 'number' &&
+    Number.isFinite(point.latitude) &&
+    Number.isFinite(point.longitude) &&
+    !(point.latitude === 0 && point.longitude === 0)
+  );
+}
+
 export const guardService = {
+  /**
+   * Guards a CLIENT may book: role guard, KYC approved, active, and
+   * availability === true. Throws on failure so screens can show an error
+   * with a retry instead of an empty roster.
+   *
+   * Heads-up for dev data: the seed scripts (setup-*.cjs, recreate-guards.cjs)
+   * create guards with kycStatus 'approved' but WITHOUT `hourlyRate` and with
+   * `availability` as a weekly-schedule object, so none of them qualify. That
+   * is intentional (honest data): a guard appears once they have an approved
+   * KYC, `availability: true` and a real `hourlyRate`.
+   */
   async listAvailableGuards(): Promise<Guard[]> {
+    const q = query(
+      collection(getDb(), 'users'),
+      where('role', '==', 'guard'),
+      // KYC gate enforced in the query itself: unverified guards never reach a client.
+      where('kycStatus', '==', 'approved'),
+      where('availability', '==', true),
+      limit(ROSTER_LIMIT)
+    );
     try {
-      const q = query(collection(getDb(), 'users'), where('role', '==', 'guard'));
       const snapshot = await getDocs(q);
       return snapshot.docs
         .map((d) => normalizeGuard(d.id, d.data()))
-        .filter((g) => g.isActive);
+        .filter((g) => g.isActive && g.availability && g.kycStatus === 'approved');
     } catch (error) {
       logger.error('[GuardService] Failed to list available guards:', error);
-      return [];
+      throw error;
     }
   },
 
-  // Igual que listAvailableGuards pero para el equipo de UNA empresa. Pasa
-  // por normalizeGuard a proposito: un escolta creado antes de que existiera
-  // tal o cual campo (o creado a mano en Firestore) no trae rating/
-  // completedJobs/availability, y company-guards.tsx truena en
-  // guard.rating.toFixed(1) si se le pasa el documento crudo.
+  // Same shape for ONE company's team (company dashboards). Keeps the old
+  // contract of returning [] on failure because other screens rely on it.
   async listGuardsForCompany(companyId: string): Promise<Guard[]> {
     try {
       const q = query(
         collection(getDb(), 'users'),
         where('role', '==', 'guard'),
-        where('companyId', '==', companyId)
+        where('companyId', '==', companyId),
+        limit(ROSTER_LIMIT)
       );
       const snapshot = await getDocs(q);
       return snapshot.docs.map((d) => normalizeGuard(d.id, d.data()));
@@ -82,13 +153,20 @@ export const guardService = {
     }
   },
 
-  async getGuardById(guardId: string): Promise<Guard | null> {
+  /**
+   * One guard by id. Returns null when the user doesn't exist or isn't a
+   * guard. On a read failure it returns null too, unless `throwOnError` is
+   * set — funnel screens use that to show "couldn't load" + retry instead of
+   * "not found".
+   */
+  async getGuardById(guardId: string, options?: { throwOnError?: boolean }): Promise<Guard | null> {
     try {
       const snapshot = await getDoc(doc(getDb(), 'users', guardId));
       if (!snapshot.exists() || snapshot.data()?.role !== 'guard') return null;
       return normalizeGuard(snapshot.id, snapshot.data());
     } catch (error) {
       logger.error(`[GuardService] Failed to get guard: ${guardId}`, error);
+      if (options?.throwOnError) throw error;
       return null;
     }
   },

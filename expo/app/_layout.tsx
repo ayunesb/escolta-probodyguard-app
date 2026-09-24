@@ -1,21 +1,34 @@
 import React, { useEffect, useState } from "react";
 import { Stack } from "expo-router";
-import { Platform, View, ActivityIndicator } from "react-native";
+import { Platform, View } from "react-native";
+import { StatusBar } from "expo-status-bar";
+import { useFonts } from "expo-font";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { AuthProvider } from "@/contexts/AuthContext";
-import { SessionProvider } from "@/contexts/SessionContext";
-import { LanguageProvider } from "@/contexts/LanguageContext";
+import { Geist_400Regular } from "@expo-google-fonts/geist/400Regular";
+import { Geist_500Medium } from "@expo-google-fonts/geist/500Medium";
+import { Geist_600SemiBold } from "@expo-google-fonts/geist/600SemiBold";
+import { Geist_700Bold } from "@expo-google-fonts/geist/700Bold";
+import { EncodeSansExpanded_300Light } from "@expo-google-fonts/encode-sans-expanded/300Light";
+import { EncodeSansExpanded_600SemiBold } from "@expo-google-fonts/encode-sans-expanded/600SemiBold";
+import { EncodeSansExpanded_700Bold } from "@expo-google-fonts/encode-sans-expanded/700Bold";
+import { EncodeSansExpanded_800ExtraBold } from "@expo-google-fonts/encode-sans-expanded/800ExtraBold";
+import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { NotificationProvider } from "@/contexts/NotificationContext";
 import { LocationTrackingProvider } from "@/contexts/LocationTrackingContext";
 import { RorkErrorBoundary as RootErrorBoundary } from "@/components/ErrorBoundary";
+import { AlertHost, BrandMark } from "@/components/ui";
 import { initSentry } from "@/services/sentryService";
 import { analyticsService } from "@/services/analyticsService";
 import { appCheckService } from "@/services/appCheckService";
 import { initializeFirebaseServices } from "@/lib/firebase";
 import { installAlertWebPolyfill } from "@/utils/alertWebPolyfill";
+import { hydrateLanguage } from "@/i18n";
 import Colors from "@/constants/colors";
+
+import { PUBLIC_DEMO } from '@/constants/demo';
+import { DemoBanner } from '@/components/DemoBanner';
 
 installAlertWebPolyfill();
 
@@ -28,45 +41,65 @@ const queryClient = new QueryClient({
   },
 });
 
+// Cuenta cada toque como actividad para el cierre por inactividad. Se usa la
+// fase de captura y se devuelve false: observa el toque sin quitarselo al
+// boton que lo recibe.
+function ActivityBoundary({ children }: { children: React.ReactNode }) {
+  const { markActivity } = useAuth();
+  return (
+    <View
+      style={{ flex: 1 }}
+      onStartShouldSetResponderCapture={() => {
+        markActivity();
+        return false;
+      }}
+    >
+      {children}
+    </View>
+  );
+}
+
 export default function RootLayout() {
-  const [isInitialized, setIsInitialized] = useState(false);
+  const [firebaseReady, setFirebaseReady] = useState(false);
+  // Las fuentes cargan en paralelo con Firebase. Si fallan, se sigue con las
+  // del sistema: nunca bloquean la app.
+  const [fontsLoaded, fontError] = useFonts({
+    Geist_400Regular,
+    Geist_500Medium,
+    Geist_600SemiBold,
+    Geist_700Bold,
+    EncodeSansExpanded_300Light,
+    EncodeSansExpanded_600SemiBold,
+    EncodeSansExpanded_700Bold,
+    EncodeSansExpanded_800ExtraBold,
+  });
 
   useEffect(() => {
-    const initializeApp = async () => {
-      try {
-        console.log('[App] Starting initialization...');
-        
-        await initializeFirebaseServices();
-        console.log('[App] Firebase initialized');
-        
+    // Solo Firebase bloquea el primer render: el resto de pantallas lo usan.
+    // Sentry, analitica y App Check van despues y sin esperar; antes eran una
+    // cadena de awaits que retrasaba el arranque sin hacer nada util (las dos
+    // ultimas son stubs).
+    // El idioma guardado se lee a la par (AsyncStorage, milisegundos) para que
+    // la primera pantalla ya salga en el idioma elegido.
+    Promise.all([
+      initializeFirebaseServices().catch((error) => console.error('[App] Firebase initialization error:', error)),
+      hydrateLanguage(),
+    ])
+      .finally(() => {
+        setFirebaseReady(true);
+        if (PUBLIC_DEMO) return;
         initSentry();
-        console.log('[App] Sentry initialized');
-        
-        await analyticsService.initialize();
-        console.log('[App] Analytics initialized');
-        
+        analyticsService.initialize().catch(() => {});
         if (Platform.OS !== 'web' || !__DEV__) {
-          await appCheckService.initialize();
-          console.log('[App] AppCheck initialized');
-        } else {
-          console.log('[App] AppCheck skipped in web dev mode');
+          appCheckService.initialize().catch(() => {});
         }
-        
-        console.log('[App] All services initialized successfully');
-        setIsInitialized(true);
-      } catch (error) {
-        console.error('[App] Initialization error:', error);
-        setIsInitialized(true);
-      }
-    };
-
-    initializeApp();
+      });
   }, []);
 
-  if (!isInitialized) {
+  if (!firebaseReady || (!fontsLoaded && !fontError)) {
     return (
       <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.background }}>
-        <ActivityIndicator size="large" color={Colors.gold} />
+        <BrandMark size={64} />
       </View>
     );
   }
@@ -74,22 +107,25 @@ export default function RootLayout() {
   return (
     <RootErrorBoundary>
       <QueryClientProvider client={queryClient}>
-        <GestureHandlerRootView style={{ flex: 1 }}>
+        <GestureHandlerRootView style={{ flex: 1, backgroundColor: Colors.background }}>
           <SafeAreaProvider>
+            <StatusBar style="light" />
             <AuthProvider>
-              <SessionProvider>
-                <LanguageProvider>
-                <NotificationProvider>
-                  <LocationTrackingProvider>
-                    <Stack
-                      screenOptions={{
-                        headerShown: false,
-                      }}
-                    />
-                  </LocationTrackingProvider>
-                </NotificationProvider>
-                </LanguageProvider>
-              </SessionProvider>
+              <NotificationProvider>
+                <LocationTrackingProvider>
+                  <ActivityBoundary>
+                  {PUBLIC_DEMO ? <DemoBanner /> : null}
+                  <Stack
+                    screenOptions={{
+                      headerShown: false,
+                      contentStyle: { backgroundColor: Colors.background },
+                      animation: 'fade_from_bottom',
+                    }}
+                  />
+                  </ActivityBoundary>
+                  <AlertHost />
+                </LocationTrackingProvider>
+              </NotificationProvider>
             </AuthProvider>
           </SafeAreaProvider>
         </GestureHandlerRootView>

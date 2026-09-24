@@ -128,8 +128,8 @@ eas build --profile development --platform ios
 # 1. Configure secrets (REQUIRED FIRST)
 cd functions
 firebase functions:config:set \
-  braintree.merchant_id="8jbcpm9yj7df7w4h" \
-  braintree.public_key="fnjq66rkd6vbkmxt" \
+  braintree.merchant_id="REDACTED" \
+  braintree.public_key="REDACTED" \
   braintree.private_key="YOUR_ACTUAL_PRIVATE_KEY"
 
 # 2. Deploy functions

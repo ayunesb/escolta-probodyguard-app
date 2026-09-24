@@ -1,480 +1,393 @@
-import { useState } from 'react';
-import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  StyleSheet,
-  KeyboardAvoidingView,
-  Platform,
-  ScrollView,
-  ActivityIndicator,
-} from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useMemo, useState } from 'react';
+import { StyleSheet, View } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
-import { Shield, CheckSquare, Square } from 'lucide-react-native';
+import { Building2, Check, Lock, Mail, MailCheck, Phone, Shield, UserRound, BriefcaseBusiness, CircleAlert } from 'lucide-react-native';
+import type { LucideIcon } from 'lucide-react-native';
 import { useAuth } from '@/contexts/AuthContext';
-import { UserRole } from '@/types';
+import { validatePasswordStrength } from '@/utils/passwordValidation';
+import type { UserRole } from '@/types';
 import Colors from '@/constants/colors';
+import { ICON_STROKE, Radius, Space } from '@/constants/design';
+import { AppText, Button, EmptyState, Input, NavBar, PressableScale, Screen, SectionTitle } from '@/components/ui';
+import { useTranslation } from 'react-i18next';
+
+type SignUpRole = Exclude<UserRole, 'admin'>;
+
+// Las cuentas de administrador no se crean desde la app.
+const ROLES: { value: SignUpRole; icon: LucideIcon }[] = [
+  { value: 'client', icon: Shield },
+  { value: 'guard', icon: BriefcaseBusiness },
+  { value: 'company', icon: Building2 },
+];
+
+type Consents = { terms: boolean; privacy: boolean; dataProcessing: boolean; marketing: boolean };
+
+function RoleOption({ option, selected, onPress }: { option: (typeof ROLES)[number]; selected: boolean; onPress: () => void }) {
+  const { t } = useTranslation('auth');
+  const Icon = option.icon;
+  const title = t(`signUp.roles.${option.value}.title`);
+  return (
+    <PressableScale
+      onPress={onPress}
+      scaleTo={0.98}
+      haptic="selection"
+      accessibilityRole="radio"
+      accessibilityState={{ selected }}
+      accessibilityLabel={title}
+      hoverStyle={selected ? undefined : { borderColor: Colors.borderStrong }}
+      style={[styles.roleOption, selected ? styles.roleOptionSelected : null]}
+    >
+      <View style={[styles.roleIcon, selected ? styles.roleIconSelected : null]}>
+        <Icon size={18} color={selected ? Colors.textOnAccent : Colors.accent} strokeWidth={ICON_STROKE} />
+      </View>
+      <View style={styles.roleText}>
+        <AppText variant="headline">{title}</AppText>
+        <AppText variant="footnote">{t(`signUp.roles.${option.value}.description`)}</AppText>
+      </View>
+      <View style={[styles.radio, selected ? styles.radioOn : null]}>{selected ? <View style={styles.radioDot} /> : null}</View>
+    </PressableScale>
+  );
+}
+
+function CheckRow({ checked, onToggle, children, label }: { checked: boolean; onToggle: () => void; children: React.ReactNode; label: string }) {
+  return (
+    <PressableScale
+      onPress={onToggle}
+      scaleTo={0.99}
+      haptic="selection"
+      accessibilityRole="checkbox"
+      accessibilityState={{ checked }}
+      accessibilityLabel={label}
+      style={styles.checkRow}
+    >
+      <View style={[styles.checkbox, checked ? styles.checkboxOn : null]}>
+        {checked ? <Check size={14} color={Colors.textOnAccent} strokeWidth={2.5} /> : null}
+      </View>
+      <View style={styles.checkText}>{children}</View>
+    </PressableScale>
+  );
+}
 
 export default function SignUpScreen() {
   const router = useRouter();
+  const { t } = useTranslation('auth');
   const { signUp } = useAuth();
-  const insets = useSafeAreaInsets();
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const [role, setRole] = useState<SignUpRole>('client');
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
+  const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
-  const [role, setRole] = useState<UserRole>('client');
+  const [password, setPassword] = useState('');
+  const [consents, setConsents] = useState<Consents>({ terms: false, privacy: false, dataProcessing: false, marketing: false });
+  const [errors, setErrors] = useState<Record<string, string | undefined>>({});
+  const [formError, setFormError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState('');
-  const [showVerificationMessage, setShowVerificationMessage] = useState(false);
-  const [acceptedTerms, setAcceptedTerms] = useState(false);
-  const [acceptedPrivacy, setAcceptedPrivacy] = useState(false);
-  const [acceptedDataProcessing, setAcceptedDataProcessing] = useState(false);
-  const [acceptedMarketing, setAcceptedMarketing] = useState(false);
+  const [sentTo, setSentTo] = useState<string | null>(null);
+
+  const strength = useMemo(() => (password ? validatePasswordStrength(password) : null), [password]);
+  const toggle = (key: keyof Consents) => setConsents((c) => ({ ...c, [key]: !c[key] }));
+  const clearError = (key: string) => setErrors((e) => (e[key] ? { ...e, [key]: undefined } : e));
 
   const handleSignUp = async () => {
-    const trimmedEmail = email.trim();
-    const trimmedPassword = password.trim();
-    const trimmedFirstName = firstName.trim();
-    const trimmedLastName = lastName.trim();
-    const trimmedPhone = phone.trim();
-    
-    if (!trimmedEmail || !trimmedPassword || !trimmedFirstName || !trimmedLastName || !trimmedPhone) {
-      setError('Please fill in all fields');
-      return;
-    }
-
-    if (!acceptedTerms || !acceptedPrivacy || !acceptedDataProcessing) {
-      setError('Please accept the required terms and conditions');
-      return;
-    }
+    const data = { firstName: firstName.trim(), lastName: lastName.trim(), email: email.trim(), phone: phone.trim() };
+    const next: Record<string, string> = {};
+    if (!data.firstName) next.firstName = t('validation.required');
+    if (!data.lastName) next.lastName = t('validation.required');
+    if (!data.email) next.email = t('validation.emailRequired');
+    else if (!/^\S+@\S+\.\S+$/.test(data.email)) next.email = t('validation.emailInvalid');
+    if (!data.phone) next.phone = t('validation.phoneRequired');
+    else if (data.phone.replace(/\D/g, '').length < 10) next.phone = t('validation.phoneShort');
+    if (!password) next.password = t('validation.choosePassword');
+    else if (strength && !strength.isValid) next.password = strength.feedback.join(' · ');
+    if (!consents.terms || !consents.privacy || !consents.dataProcessing) next.consents = t('validation.consentsRequired');
+    setErrors(next);
+    setFormError('');
+    if (Object.keys(next).length) return;
 
     setIsLoading(true);
-    setError('');
-
-    const result = await signUp(trimmedEmail, trimmedPassword, trimmedFirstName, trimmedLastName, trimmedPhone, role);
-
-    if (result.success && result.needsVerification) {
-      setShowVerificationMessage(true);
-      setIsLoading(false);
-    } else if (result.success) {
-      router.replace('/(tabs)/home');
+    const result = await signUp(data.email, password, data.firstName, data.lastName, data.phone, role, consents);
+    setIsLoading(false);
+    if (result.success) {
+      setSentTo(data.email);
     } else {
-      setError(result.error || 'Failed to sign up');
-      setIsLoading(false);
+      setFormError(result.error || t('errors.signUpFailedShort'));
     }
   };
 
+  if (sentTo) {
+    return (
+      <Screen glow padBottom contentStyle={styles.centered}>
+        <Stack.Screen options={{ headerShown: false }} />
+        <EmptyState
+          icon={MailCheck}
+          title={t('signUp.checkInbox')}
+          message={t('signUp.sentTo', { email: sentTo })}
+        />
+        <Button title={t('signUp.backToSignIn')} onPress={() => router.replace('/auth/sign-in')} />
+      </Screen>
+    );
+  }
+
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-    >
+    <View style={styles.root}>
       <Stack.Screen options={{ headerShown: false }} />
-      {showVerificationMessage ? (
-        <View style={[styles.verificationContainer, { paddingTop: insets.top + 24, paddingBottom: insets.bottom + 24 }]}>
-          <View style={styles.iconContainer}>
-            <Shield size={48} color={Colors.gold} strokeWidth={2} />
-          </View>
-          <Text style={styles.title}>Verify Your Email</Text>
-          <Text style={styles.verificationText}>
-            We&apos;ve sent a verification link to {email}. Please check your email and click the link to verify your account.
-          </Text>
-          <Text style={styles.verificationSubtext}>
-            After verifying, you can sign in to your account.
-          </Text>
-          <TouchableOpacity
-            style={styles.button}
-            onPress={() => router.replace('/auth/sign-in')}
-          >
-            <Text style={styles.buttonText}>Go to Sign In</Text>
-          </TouchableOpacity>
-        </View>
-      ) : (
-        <ScrollView
-          contentContainerStyle={[styles.scrollContent, { paddingTop: insets.top + 24, paddingBottom: insets.bottom + 24 }]}
-          keyboardShouldPersistTaps="handled"
-        >
-        <View style={styles.header}>
-          <View style={styles.iconContainer}>
-            <Shield size={48} color={Colors.gold} strokeWidth={2} />
-          </View>
-          <Text style={styles.title}>Create Account</Text>
-          <Text style={styles.subtitle}>Join Escolta Pro</Text>
+      <NavBar title={t('signUp.navTitle')} transparent />
+      <Screen keyboard padTop={false} padBottom contentStyle={styles.content}>
+        <AppText variant="title1" accessibilityRole="header">
+          {t('signUp.title')}
+        </AppText>
+        <AppText variant="callout" style={styles.lead}>
+          {t('signUp.lead')}
+        </AppText>
+
+        <SectionTitle title={t('signUp.accountType')} />
+        <View style={styles.roles} accessibilityRole="radiogroup">
+          {ROLES.map((option) => (
+            <RoleOption key={option.value} option={option} selected={role === option.value} onPress={() => setRole(option.value)} />
+          ))}
         </View>
 
-        <View style={styles.form}>
-          <View style={styles.roleSelector}>
-            <Text style={styles.label}>I am a</Text>
-            <View style={styles.roleButtons}>
-              <TouchableOpacity
-                style={[styles.roleButton, role === 'client' && styles.roleButtonActive]}
-                onPress={() => setRole('client')}
-              >
-                <Text style={[styles.roleButtonText, role === 'client' && styles.roleButtonTextActive]}>
-                  Client
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.roleButton, role === 'guard' && styles.roleButtonActive]}
-                onPress={() => setRole('guard')}
-              >
-                <Text style={[styles.roleButtonText, role === 'guard' && styles.roleButtonTextActive]}>
-                  Guard
-                </Text>
-              </TouchableOpacity>
-            </View>
-            <View style={[styles.roleButtons, { marginTop: 12 }]}>
-              <TouchableOpacity
-                style={[styles.roleButton, role === 'company' && styles.roleButtonActive]}
-                onPress={() => setRole('company')}
-              >
-                <Text style={[styles.roleButtonText, role === 'company' && styles.roleButtonTextActive]}>
-                  Company
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.roleButton, role === 'admin' && styles.roleButtonActive]}
-                onPress={() => setRole('admin')}
-              >
-                <Text style={[styles.roleButtonText, role === 'admin' && styles.roleButtonTextActive]}>
-                  Admin
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-
+        <SectionTitle title={t('signUp.yourDetails')} />
+        <View style={styles.fields}>
           <View style={styles.row}>
-            <View style={[styles.inputContainer, styles.halfWidth]}>
-              <Text style={styles.label}>First Name</Text>
-              <TextInput
-                style={styles.input}
-                value={firstName}
-                onChangeText={setFirstName}
-                placeholder="John"
-                placeholderTextColor={Colors.textTertiary}
-                autoCapitalize="words"
-              />
-            </View>
-
-            <View style={[styles.inputContainer, styles.halfWidth]}>
-              <Text style={styles.label}>Last Name</Text>
-              <TextInput
-                style={styles.input}
-                value={lastName}
-                onChangeText={setLastName}
-                placeholder="Doe"
-                placeholderTextColor={Colors.textTertiary}
-                autoCapitalize="words"
-              />
-            </View>
-          </View>
-
-          <View style={styles.inputContainer}>
-            <Text style={styles.label}>Email</Text>
-            <TextInput
-              style={styles.input}
-              value={email}
-              onChangeText={(text) => setEmail(text.trim())}
-              placeholder="your@email.com"
-              placeholderTextColor={Colors.textTertiary}
-              keyboardType="email-address"
-              autoCapitalize="none"
-              autoCorrect={false}
+            <Input
+              containerStyle={styles.half}
+              label={t('signUp.firstName')}
+              value={firstName}
+              onChangeText={(t) => {
+                setFirstName(t);
+                clearError('firstName');
+              }}
+              placeholder="Sofía"
+              autoCapitalize="words"
+              autoComplete="given-name"
+              error={errors.firstName}
+            />
+            <Input
+              containerStyle={styles.half}
+              label={t('signUp.lastName')}
+              value={lastName}
+              onChangeText={(t) => {
+                setLastName(t);
+                clearError('lastName');
+              }}
+              placeholder="Márquez"
+              autoCapitalize="words"
+              autoComplete="family-name"
+              error={errors.lastName}
             />
           </View>
-
-          <View style={styles.inputContainer}>
-            <Text style={styles.label}>Phone</Text>
-            <TextInput
-              style={styles.input}
-              value={phone}
-              onChangeText={setPhone}
-              placeholder="+1-555-0100"
-              placeholderTextColor={Colors.textTertiary}
-              keyboardType="phone-pad"
-            />
-          </View>
-
-          <View style={styles.inputContainer}>
-            <Text style={styles.label}>Password</Text>
-            <TextInput
-              style={styles.input}
-              value={password}
-              onChangeText={setPassword}
-              placeholder="••••••••"
-              placeholderTextColor={Colors.textTertiary}
-              secureTextEntry
-              autoCapitalize="none"
-            />
-          </View>
-
-          <View style={styles.consentSection}>
-            <Text style={styles.consentTitle}>Terms & Conditions</Text>
-            
-            <TouchableOpacity
-              style={styles.checkboxRow}
-              onPress={() => setAcceptedTerms(!acceptedTerms)}
-            >
-              {acceptedTerms ? (
-                <CheckSquare size={24} color={Colors.gold} />
-              ) : (
-                <Square size={24} color={Colors.textSecondary} />
-              )}
-              <Text style={styles.checkboxText}>
-                I accept the <Text style={styles.link}>Terms of Service</Text> *
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.checkboxRow}
-              onPress={() => setAcceptedPrivacy(!acceptedPrivacy)}
-            >
-              {acceptedPrivacy ? (
-                <CheckSquare size={24} color={Colors.gold} />
-              ) : (
-                <Square size={24} color={Colors.textSecondary} />
-              )}
-              <Text style={styles.checkboxText}>
-                I accept the <Text style={styles.link}>Privacy Policy</Text> *
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.checkboxRow}
-              onPress={() => setAcceptedDataProcessing(!acceptedDataProcessing)}
-            >
-              {acceptedDataProcessing ? (
-                <CheckSquare size={24} color={Colors.gold} />
-              ) : (
-                <Square size={24} color={Colors.textSecondary} />
-              )}
-              <Text style={styles.checkboxText}>
-                I consent to data processing for service delivery *
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.checkboxRow}
-              onPress={() => setAcceptedMarketing(!acceptedMarketing)}
-            >
-              {acceptedMarketing ? (
-                <CheckSquare size={24} color={Colors.gold} />
-              ) : (
-                <Square size={24} color={Colors.textSecondary} />
-              )}
-              <Text style={styles.checkboxText}>
-                I agree to receive marketing communications (optional)
-              </Text>
-            </TouchableOpacity>
-
-            <Text style={styles.requiredNote}>* Required</Text>
-          </View>
-
-          {error ? <Text style={styles.error}>{error}</Text> : null}
-
-          <TouchableOpacity
-            style={[styles.button, isLoading && styles.buttonDisabled]}
-            onPress={handleSignUp}
-            disabled={isLoading}
-          >
-            {isLoading ? (
-              <ActivityIndicator color={Colors.background} />
-            ) : (
-              <Text style={styles.buttonText}>Create Account</Text>
-            )}
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.linkButton}
-            onPress={() => router.back()}
-          >
-            <Text style={styles.linkText}>Already have an account? Sign In</Text>
-          </TouchableOpacity>
+          <Input
+            label={t('signUp.email')}
+            icon={Mail}
+            value={email}
+            onChangeText={(t) => {
+              setEmail(t.trim());
+              clearError('email');
+            }}
+            placeholder={t('signIn.emailPlaceholder')}
+            keyboardType="email-address"
+            autoCapitalize="none"
+            autoCorrect={false}
+            autoComplete="email"
+            error={errors.email}
+          />
+          <Input
+            label={t('signUp.phone')}
+            icon={Phone}
+            value={phone}
+            onChangeText={(t) => {
+              setPhone(t);
+              clearError('phone');
+            }}
+            placeholder="+52 55 1234 5678"
+            keyboardType="phone-pad"
+            autoComplete="tel"
+            error={errors.phone}
+          />
+          <Input
+            label={t('signUp.password')}
+            icon={Lock}
+            value={password}
+            onChangeText={(t) => {
+              setPassword(t);
+              clearError('password');
+            }}
+            placeholder={t('signUp.passwordPlaceholder')}
+            secureTextEntry
+            autoCapitalize="none"
+            autoComplete="new-password"
+            textContentType="newPassword"
+            error={errors.password}
+            hint={strength ? (strength.isValid ? t('password.strong') : strength.feedback[0]) : t('password.hint')}
+          />
         </View>
-      </ScrollView>
-      )}
-    </KeyboardAvoidingView>
+
+        <SectionTitle title={t('signUp.agreements')} />
+        <View style={styles.consents}>
+          <CheckRow checked={consents.terms} onToggle={() => toggle('terms')} label={t('signUp.termsA11y')}>
+            <AppText variant="callout" color={Colors.textPrimary}>
+              {t('signUp.terms')} <AppText variant="callout" color={Colors.textTertiary}>{t('signUp.required')}</AppText>
+            </AppText>
+          </CheckRow>
+          <CheckRow checked={consents.privacy} onToggle={() => toggle('privacy')} label={t('signUp.privacyA11y')}>
+            <AppText variant="callout" color={Colors.textPrimary}>
+              {t('signUp.privacyPrefix')}{' '}
+              <AppText variant="callout" color={Colors.accent} onPress={() => router.push('/privacy-policy' as never)} accessibilityRole="link">
+                {t('signUp.privacyLink')}
+              </AppText>{' '}
+              <AppText variant="callout" color={Colors.textTertiary}>{t('signUp.required')}</AppText>
+            </AppText>
+          </CheckRow>
+          <CheckRow checked={consents.dataProcessing} onToggle={() => toggle('dataProcessing')} label={t('signUp.dataProcessingA11y')}>
+            <AppText variant="callout" color={Colors.textPrimary}>
+              {t('signUp.dataProcessing')}{' '}
+              <AppText variant="callout" color={Colors.textTertiary}>{t('signUp.required')}</AppText>
+            </AppText>
+          </CheckRow>
+          <CheckRow checked={consents.marketing} onToggle={() => toggle('marketing')} label={t('signUp.marketingA11y')}>
+            <AppText variant="callout" color={Colors.textPrimary}>
+              {t('signUp.marketing')} <AppText variant="callout" color={Colors.textTertiary}>{t('signUp.optional')}</AppText>
+            </AppText>
+          </CheckRow>
+          {errors.consents ? (
+            <AppText variant="caption" color={Colors.error}>
+              {errors.consents}
+            </AppText>
+          ) : null}
+        </View>
+
+        {formError ? (
+          <View style={styles.formError} accessibilityRole="alert">
+            <CircleAlert size={17} color={Colors.error} strokeWidth={ICON_STROKE} />
+            <AppText variant="footnote" color={Colors.textPrimary} style={styles.flex}>
+              {formError}
+            </AppText>
+          </View>
+        ) : null}
+
+        <Button title={t('signUp.submit')} size="lg" onPress={handleSignUp} loading={isLoading} icon={UserRound} style={styles.submit} />
+        <Button title={t('signUp.haveAccount')} variant="ghost" onPress={() => router.replace('/auth/sign-in')} />
+      </Screen>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  root: {
     flex: 1,
     backgroundColor: Colors.background,
   },
-  scrollContent: {
-    flexGrow: 1,
-    padding: 24,
-    paddingTop: 60,
-  },
-  header: {
-    alignItems: 'center',
-    marginBottom: 32,
-  },
-  iconContainer: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: Colors.surface,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 16,
-  },
-  title: {
-    fontSize: 32,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-    marginBottom: 8,
-  },
-  subtitle: {
-    fontSize: 16,
-    color: Colors.textSecondary,
-  },
-  form: {
-    width: '100%',
-  },
-  roleSelector: {
-    marginBottom: 24,
-  },
-  roleButtons: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  roleButton: {
+  flex: {
     flex: 1,
+  },
+  centered: {
+    justifyContent: 'center',
+    gap: Space.xl,
+  },
+  content: {
+    paddingTop: Space.lg,
+  },
+  lead: {
+    marginTop: Space.sm,
+  },
+  roles: {
+    gap: Space.sm,
+  },
+  roleOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Space.md,
+    padding: Space.lg,
+    borderRadius: Radius.lg,
     backgroundColor: Colors.surface,
     borderWidth: 1,
     borderColor: Colors.border,
-    borderRadius: 12,
-    padding: 16,
+  },
+  roleOptionSelected: {
+    borderColor: Colors.accentLine,
+    backgroundColor: Colors.surfaceLight,
+  },
+  roleIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: Radius.sm,
     alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: Colors.accentSoft,
   },
-  roleButtonActive: {
-    backgroundColor: Colors.gold,
-    borderColor: Colors.gold,
+  roleIconSelected: {
+    backgroundColor: Colors.accent,
   },
-  roleButtonText: {
-    color: Colors.textPrimary,
-    fontSize: 16,
-    fontWeight: '600' as const,
+  roleText: {
+    flex: 1,
+    gap: 2,
   },
-  roleButtonTextActive: {
-    color: Colors.background,
+  radio: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: Colors.borderStrong,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  radioOn: {
+    borderColor: Colors.accent,
+  },
+  radioDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: Colors.accent,
+  },
+  fields: {
+    gap: Space.lg,
   },
   row: {
     flexDirection: 'row',
-    gap: 12,
+    gap: Space.md,
   },
-  halfWidth: {
+  half: {
     flex: 1,
   },
-  inputContainer: {
-    marginBottom: 20,
+  consents: {
+    gap: Space.md,
   },
-  label: {
-    fontSize: 14,
-    fontWeight: '600' as const,
-    color: Colors.textPrimary,
-    marginBottom: 8,
-  },
-  input: {
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: 12,
-    padding: 16,
-    fontSize: 16,
-    color: Colors.textPrimary,
-  },
-  error: {
-    color: Colors.error,
-    fontSize: 14,
-    marginBottom: 16,
-    textAlign: 'center' as const,
-  },
-  button: {
-    backgroundColor: Colors.gold,
-    borderRadius: 12,
-    padding: 16,
-    alignItems: 'center',
-    marginTop: 8,
-  },
-  buttonDisabled: {
-    opacity: 0.6,
-  },
-  buttonText: {
-    color: Colors.background,
-    fontSize: 16,
-    fontWeight: '700' as const,
-  },
-  linkButton: {
-    alignItems: 'center',
-    marginTop: 16,
-  },
-  linkText: {
-    color: Colors.gold,
-    fontSize: 14,
-    fontWeight: '600' as const,
-  },
-  verificationContainer: {
-    flex: 1,
-    padding: 24,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  verificationText: {
-    fontSize: 16,
-    color: Colors.textPrimary,
-    textAlign: 'center' as const,
-    marginTop: 24,
-    marginBottom: 16,
-    lineHeight: 24,
-  },
-  verificationSubtext: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-    textAlign: 'center' as const,
-    marginBottom: 32,
-  },
-  consentSection: {
-    marginTop: 8,
-    marginBottom: 24,
-    padding: 16,
-    backgroundColor: Colors.surface,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  consentTitle: {
-    fontSize: 16,
-    fontWeight: '600' as const,
-    color: Colors.textPrimary,
-    marginBottom: 16,
-  },
-  checkboxRow: {
+  checkRow: {
     flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: Space.md,
+    paddingVertical: Space.xs,
+  },
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 7,
+    borderWidth: 1.5,
+    borderColor: Colors.borderStrong,
     alignItems: 'center',
-    marginBottom: 12,
-    gap: 12,
+    justifyContent: 'center',
+    marginTop: 1,
   },
-  checkboxText: {
+  checkboxOn: {
+    backgroundColor: Colors.accent,
+    borderColor: Colors.accent,
+  },
+  checkText: {
     flex: 1,
-    fontSize: 14,
-    color: Colors.textPrimary,
-    lineHeight: 20,
   },
-  link: {
-    color: Colors.gold,
-    textDecorationLine: 'underline' as const,
+  formError: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: Space.sm,
+    padding: Space.md,
+    marginTop: Space.xl,
+    borderRadius: Radius.sm,
+    backgroundColor: Colors.errorSoft,
   },
-  requiredNote: {
-    fontSize: 12,
-    color: Colors.textSecondary,
-    marginTop: 8,
-    fontStyle: 'italic' as const,
+  submit: {
+    marginTop: Space.xxl,
+    marginBottom: Space.sm,
   },
 });

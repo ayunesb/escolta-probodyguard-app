@@ -16,24 +16,21 @@ import { onSchedule } from 'firebase-functions/v2/scheduler';
 import * as admin from 'firebase-admin';
 import express, { Request, Response } from 'express';
 import cors from 'cors';
-import * as braintree from 'braintree';
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { gateway, isGatewayConfigured, getConfigurationError } from './config/braintree';
+import { AuthedRequest, requireAdmin, requireAuth, requireSelf, roleOf } from './auth';
+import { PaymentError, ensureCustomer, processBookingPayment } from './payments/processBookingPayment';
 
 /**
  * Verdadero solo dentro de una corrida de Jest en una maquina de desarrollo.
  *
- * Cinco endpoints de pago de este archivo tienen un atajo que devuelve exito
- * falso para que las pruebas corran sin credenciales de Braintree. Antes
- * bastaban dos variables de entorno para activarlo: si NODE_ENV=test y
- * JEST_WORKER_ID aparecian por accidente en un entorno desplegado, esos cinco
- * endpoints confirmaban cobros que nunca ocurrieron.
- *
- * Ahora exige ademas que NO estemos en la nube. Cloud Functions v2 y Cloud Run
- * siempre inyectan K_SERVICE, y Cloud Functions inyecta FUNCTION_TARGET, asi
- * que en cualquier despliegue real esta funcion devuelve false pase lo que
- * pase con las otras variables.
+ * Algunos endpoints tienen un atajo que devuelve datos falsos para que las
+ * pruebas corran sin credenciales de Braintree. Exige ademas que NO estemos
+ * en la nube: Cloud Functions v2 / Cloud Run siempre inyectan K_SERVICE y
+ * Cloud Functions inyecta FUNCTION_TARGET. El cobro (/payments/process) NO
+ * tiene atajo.
  */
 function esPruebaUnitariaJest(): boolean {
   const enLaNube = Boolean(
@@ -48,871 +45,491 @@ function esPruebaUnitariaJest(): boolean {
 admin.initializeApp();
 
 const app = express();
+// La autenticacion es por token Bearer, no por cookies: reflejar el origen
+// no abre CSRF.
 app.use(cors({ origin: true }));
-app.use(express.json());
+app.use(express.json({ limit: '100kb' }));
+// Braintree manda los webhooks como application/x-www-form-urlencoded.
+app.use(express.urlencoded({ extended: false, limit: '1mb' }));
+
+function configError(res: Response): void {
+  res.status(503).json(getConfigurationError());
+}
 
 // === Payments routes (mobile expects /payments/*) ===
-app.get('/payments/client-token', async (req: Request, res: Response): Promise<void> => {
-  try {
-    // Verify Braintree credentials are configured
-    if (!isGatewayConfigured() || !gateway) {
-      console.error('[ClientToken] Braintree credentials missing or gateway not initialized');
-      res.status(500).json(getConfigurationError());
-      return;
-    }
+// Todas exigen `Authorization: Bearer <Firebase ID token>` salvo la pagina
+// estatica de Hosted Fields (se carga en un WebView y no recibe datos por URL).
 
-    // Mock token for automated testing only
+app.get('/payments/client-token', requireAuth, async (req: AuthedRequest, res: Response): Promise<void> => {
+  try {
     if (esPruebaUnitariaJest()) {
-      console.warn('[ClientToken] Test environment - returning mock token');
       res.json({ clientToken: 'mock-client-token-for-testing' });
       return;
     }
-
-    // Generate client token from Braintree
-    const result = await gateway!.clientToken.generate({
-      // Optional: include customerId here if implementing vaulted payment methods
-    });
-
-    const clientToken = result?.clientToken;
-
-    if (!clientToken) {
-      throw new Error('Braintree returned empty client token');
-    }
-
-    console.log('[ClientToken] Successfully generated token');
-    res.json({ clientToken });
-    
-  } catch (error) {
-    console.error('[ClientToken] Generation failed:', {
-      error: error instanceof Error ? error.message : 'Unknown error',
-      timestamp: new Date().toISOString()
-    });
-    
-    res.status(500).json({ 
-      error: {
-        code: 'PAYMENT_TOKEN_GENERATION_FAILED',
-        message: 'Unable to initialize payment. Please try again.'
-      }
-    });
-  }
-});
-
-// Serve a hosted payment page with Braintree Drop-In UI
-app.get('/payments/hosted-form', async (req: Request, res: Response) => {
-  try {
-    const { clientToken, amount, returnUrl } = req.query;
-
-    if (!clientToken || !amount) {
-      res.status(400).send('Missing required parameters: clientToken and amount');
+    if (!isGatewayConfigured() || !gateway) {
+      configError(res);
       return;
     }
 
-    // HTML page with Braintree Drop-In UI
-    const html = `
-      <!DOCTYPE html>
-      <html lang="es">
-        <head>
-          <meta charset="UTF-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>Pago Seguro</title>
-          <script src="https://js.braintreegateway.com/web/dropin/1.43.0/js/dropin.min.js"></script>
-          <style>
-            * { box-sizing: border-box; margin: 0; padding: 0; }
-            body {
-              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-              background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%);
-              min-height: 100vh;
-              padding: 20px;
-              color: #fff;
-            }
-            .container {
-              max-width: 500px;
-              margin: 40px auto;
-              background: #2a2a2a;
-              border-radius: 16px;
-              padding: 30px;
-              box-shadow: 0 10px 40px rgba(0,0,0,0.5);
-            }
-            h1 {
-              font-size: 24px;
-              margin-bottom: 10px;
-              color: #DAA520;
-              text-align: center;
-            }
-            .amount {
-              font-size: 32px;
-              font-weight: bold;
-              text-align: center;
-              margin: 20px 0 30px;
-              color: #fff;
-            }
-            #dropin-container {
-              min-height: 300px;
-            }
-            .button {
-              width: 100%;
-              padding: 16px;
-              background: #DAA520;
-              color: #000;
-              border: none;
-              border-radius: 12px;
-              font-size: 18px;
-              font-weight: 700;
-              cursor: pointer;
-              margin-top: 20px;
-              transition: opacity 0.2s;
-            }
-            .button:disabled {
-              opacity: 0.6;
-              cursor: not-allowed;
-            }
-            .button:not(:disabled):hover {
-              opacity: 0.9;
-            }
-            .security-note {
-              text-align: center;
-              font-size: 12px;
-              color: #888;
-              margin-top: 20px;
-            }
-            .error {
-              background: #ff4444;
-              color: white;
-              padding: 12px;
-              border-radius: 8px;
-              margin-top: 15px;
-              display: none;
-            }
-            .loading {
-              text-align: center;
-              padding: 40px;
-              color: #888;
-            }
-          </style>
-        </head>
-        <body>
-          <div class="container">
-            <h1>🔒 Pago Seguro</h1>
-            <div class="amount">$${amount}</div>
-            
-            <div id="dropin-container"></div>
-            <div id="loading" class="loading">Cargando formulario de pago...</div>
-            <div id="error" class="error"></div>
-            
-            <button id="submit-button" class="button" style="display:none;">
-              Pagar $${amount}
-            </button>
-            
-            <div class="security-note">
-              🔒 Conexión segura. Tu información está protegida por Braintree.
-            </div>
-          </div>
-
-          <script>
-            var button = document.getElementById('submit-button');
-            var errorDiv = document.getElementById('error');
-            var loading = document.getElementById('loading');
-            var dropinInstance;
-
-            dropin.create({
-              authorization: '${clientToken}',
-              container: '#dropin-container',
-              locale: 'es_ES',
-              card: {
-                cardholderName: {
-                  required: true
-                },
-                cvv: {
-                  required: true
-                },
-                postalCode: {
-                  required: true
-                }
-              }
-            }, function (err, instance) {
-              loading.style.display = 'none';
-              
-              if (err) {
-                console.error('Drop-in error:', err);
-                errorDiv.textContent = 'Error al cargar el formulario de pago: ' + err.message;
-                errorDiv.style.display = 'block';
-                return;
-              }
-
-              dropinInstance = instance;
-              button.style.display = 'block';
-
-              button.addEventListener('click', function () {
-                button.disabled = true;
-                button.textContent = 'Procesando...';
-                errorDiv.style.display = 'none';
-
-                instance.requestPaymentMethod(function (err, payload) {
-                  if (err) {
-                    console.error('Payment method error:', err);
-                    errorDiv.textContent = 'Error: ' + err.message;
-                    errorDiv.style.display = 'block';
-                    button.disabled = false;
-                    button.textContent = 'Pagar $${amount}';
-                    return;
-                  }
-
-                  // Return nonce to the app via redirect
-                  var returnUrl = '${returnUrl || 'nobodyguard://payment/success'}';
-                  window.location.href = returnUrl + '?nonce=' + encodeURIComponent(payload.nonce);
-                });
-              });
-            });
-          </script>
-        </body>
-      </html>
-    `;
-
-    res.setHeader('Content-Type', 'text/html');
-    res.send(html);
+    const merchantAccountId = process.env.BRAINTREE_MERCHANT_ACCOUNT_ID;
+    const result = await (gateway as any).clientToken.generate(merchantAccountId ? { merchantAccountId } : {});
+    const clientToken = result?.clientToken;
+    if (!clientToken) throw new Error('Braintree returned empty client token');
+    res.json({ clientToken });
   } catch (error) {
-    console.error('[HostedForm] Error:', error);
-    res.status(500).send('Internal server error');
+    console.error('[ClientToken] Generation failed:', error instanceof Error ? error.message : 'Unknown error');
+    res.status(500).json({
+      error: { code: 'PAYMENT_TOKEN_GENERATION_FAILED', message: 'Unable to initialize payment. Please try again.' },
+    });
   }
 });
 
-// Serve the Hosted Fields HTML page (custom in-app payment form)
-app.get('/payments/hosted-fields-page', async (req: Request, res: Response) => {
+// Pagina de Hosted Fields para el WebView. Recibe el client token por
+// postMessage, nunca por la URL.
+app.get('/payments/hosted-fields-page', async (_req: Request, res: Response) => {
   try {
-    console.log('[HostedFieldsPage] Serving Hosted Fields page');
-    
-    // Read the HTML file
     const htmlPath = path.join(__dirname, 'payments', 'hostedFieldsPage.html');
-    
     if (!fs.existsSync(htmlPath)) {
-      console.error('[HostedFieldsPage] HTML file not found at:', htmlPath);
       res.status(404).send('Hosted Fields page not found');
       return;
     }
-    
-    const html = fs.readFileSync(htmlPath, 'utf8');
-    
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-    res.send(html);
-    
+    res.send(fs.readFileSync(htmlPath, 'utf8'));
   } catch (error) {
     console.error('[HostedFieldsPage] Error:', error);
     res.status(500).send('Internal server error');
   }
 });
 
-app.post('/payments/process', async (req: Request, res: Response) => {
-  const startTime = Date.now();
-  const db = admin.firestore();
-  
+/**
+ * Cobra una reserva. Body: {bookingId, paymentMethodNonce | paymentMethodToken,
+ * deviceData?, saveCard?}. El importe se recalcula en el servidor.
+ * Respuestas: 200 {success, transactionId, status:'confirmed', breakdown};
+ * 409 {error:{code:'PRICE_CHANGED', breakdown}} si la tarifa cambio;
+ * 409 BOOKING_NOT_PENDING / PAYMENT_IN_PROGRESS / BOOKING_CHANGED;
+ * 402 PAYMENT_DECLINED; 403; 404; 422; 503 sin configuracion.
+ */
+app.post('/payments/process', requireAuth, async (req: AuthedRequest, res: Response) => {
+  const body = req.body ?? {};
   try {
-    const { nonce, amount, saveCard, bookingId, userId, deviceData } = req.body;
-    
-    if (!nonce || !amount) {
-      res.status(400).json({ error: 'Missing required parameters: nonce and amount' });
-      return;
-    }
-
-    // Verify gateway is configured
-    if (!isGatewayConfigured() || !gateway) {
-      console.error('[ProcessPayment] Gateway not initialized');
-      res.status(500).json(getConfigurationError());
-      return;
-    }
-    
-    if (esPruebaUnitariaJest()) {
-      console.warn('[ProcessPayment] Jest test mode active, returning mock payment result');
-      res.json({
-        success: true,
-        transactionId: `mock-transaction-${Date.now()}`,
-        status: 'settled',
-        amount: amount,
-      });
-      return;
-    }
-    
-    await db.collection('payment_attempts').add({
-      userId: userId || null,
-      bookingId: bookingId || null,
-      amount,
-      timestamp: admin.firestore.FieldValue.serverTimestamp(),
-      status: 'initiated',
+    const result = await processBookingPayment({
+      uid: req.uid!,
+      bookingId: body.bookingId,
+      paymentMethodNonce: body.paymentMethodNonce,
+      paymentMethodToken: body.paymentMethodToken,
+      deviceData: body.deviceData,
+      saveCard: body.saveCard,
     });
-    
-    const saleRequest: any = {
-      amount: amount.toString(),
-      paymentMethodNonce: nonce,
-      deviceData: deviceData || undefined,
-      options: {
-        submitForSettlement: true,
-        // 3D Secure for Strong Customer Authentication (SCA) compliance
-        threeDSecure: {
-          required: process.env.BRAINTREE_3DS_REQUIRED === 'true',
-        },
-      },
-    };
-    
-    if (saveCard && saleRequest.options) {
-      saleRequest.options.storeInVaultOnSuccess = true;
-    }
-    
-    // Verify gateway is initialized
-    if (!gateway) {
-      console.error('[ProcessPayment] Gateway not initialized');
-      res.status(500).json({ 
-        error: {
-          code: 'PAYMENT_CONFIG_ERROR',
-          message: 'Payment system is not properly configured'
-        }
-      });
+    res.json({ success: true, ...result });
+  } catch (error) {
+    if (error instanceof PaymentError) {
+      res.status(error.status).json({ success: false, error: { code: error.code, message: error.message, ...(error.extra ?? {}) } });
       return;
     }
-    
-    const result = await gateway.transaction.sale(saleRequest);
-    const duration = Date.now() - startTime;
-    
-    if (result.success) {
-      await db.collection('payment_attempts').add({
-        userId: userId || null,
-        bookingId: bookingId || null,
-        amount,
-        transactionId: result.transaction?.id,
-        timestamp: admin.firestore.FieldValue.serverTimestamp(),
-        status: 'success',
-        duration,
-      });
-      
-      res.json({
-        success: true,
-        transactionId: result.transaction?.id,
-      });
-    } else {
-      await db.collection('payment_attempts').add({
-        userId: userId || null,
-        bookingId: bookingId || null,
-        amount,
-        timestamp: admin.firestore.FieldValue.serverTimestamp(),
-        status: 'failed',
-        error: result.message,
-        duration,
-      });
-      
-      res.status(400).json({
-        success: false,
-        error: result.message,
-      });
-    }
-  } catch (error) {
-    const duration = Date.now() - startTime;
     console.error('[ProcessPayment] Error:', {
       error: error instanceof Error ? error.message : 'Unknown error',
-      userId: req.body.userId,
-      bookingId: req.body.bookingId,
-      amount: req.body.amount,
-      timestamp: new Date().toISOString()
+      bookingId: typeof body.bookingId === 'string' ? body.bookingId : null,
     });
-    
-    await db.collection('payment_attempts').add({
-      userId: req.body.userId || null,
-      bookingId: req.body.bookingId || null,
-      amount: req.body.amount || null,
-      timestamp: admin.firestore.FieldValue.serverTimestamp(),
-      status: 'error',
-      error: error instanceof Error ? error.message : 'Unknown error',
-      duration,
-    });
-    
-    res.status(500).json({ 
-      error: {
-        code: 'PAYMENT_PROCESSING_FAILED',
-        message: 'Payment could not be processed. Please check your payment details and try again.'
-      }
+    res.status(500).json({
+      success: false,
+      error: { code: 'PAYMENT_PROCESSING_FAILED', message: 'Payment could not be processed. Please try again.' },
     });
   }
 });
 
-app.post('/payments/refund', async (req: Request, res: Response) => {
+// Reembolsos: solo administradores.
+app.post('/payments/refund', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
   try {
-    const { transactionId, amount } = req.body;
-    
-    // Verify gateway is initialized
-    if (!gateway) {
-      console.error('[RefundPayment] Gateway not initialized');
-      res.status(500).json({ 
-        error: {
-          code: 'PAYMENT_CONFIG_ERROR',
-          message: 'Payment system is not properly configured'
-        }
-      });
+    const { transactionId, amount, bookingId, reason } = req.body ?? {};
+    if (typeof transactionId !== 'string' || !transactionId) {
+      res.status(400).json({ success: false, error: { code: 'INVALID_ARGUMENT', message: 'transactionId is required' } });
       return;
     }
-    
-    const result = await gateway.transaction.refund(
-      transactionId,
-      amount ? amount.toString() : undefined
-    );
-    
-    if (result.success) {
-      res.json({
-        success: true,
-        refundId: result.transaction?.id,
-      });
-    } else {
-      res.status(400).json({
-        success: false,
-        error: result.message,
-      });
-    }
-  } catch (error) {
-    console.error('[Refund] Error:', {
-      error: error instanceof Error ? error.message : 'Unknown error',
-      transactionId: req.body.transactionId,
-      amount: req.body.amount,
-      timestamp: new Date().toISOString()
-    });
-    res.status(500).json({ 
-      error: {
-        code: 'REFUND_PROCESSING_FAILED',
-        message: 'Unable to process refund. Please try again or contact support.'
+    let refundAmount: string | undefined;
+    if (amount !== undefined && amount !== null) {
+      const n = Number(amount);
+      if (!Number.isFinite(n) || n <= 0) {
+        res.status(400).json({ success: false, error: { code: 'INVALID_ARGUMENT', message: 'amount must be a positive number' } });
+        return;
       }
+      refundAmount = (Math.round(n * 100) / 100).toFixed(2);
+    }
+    if (!gateway) {
+      configError(res);
+      return;
+    }
+
+    const result = await (gateway as any).transaction.refund(transactionId, refundAmount);
+    if (!result?.success) {
+      res.status(400).json({ success: false, error: { code: 'REFUND_FAILED', message: result?.message ?? 'Refund failed' } });
+      return;
+    }
+
+    await admin.firestore().collection('refunds').add({
+      transactionId,
+      refundId: result.transaction?.id ?? null,
+      bookingId: typeof bookingId === 'string' ? bookingId : null,
+      amount: refundAmount ?? null,
+      reason: typeof reason === 'string' ? reason.slice(0, 500) : null,
+      currency: 'MXN',
+      status: 'completed',
+      processedBy: req.uid,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    res.json({ success: true, refundId: result.transaction?.id });
+  } catch (error) {
+    console.error('[Refund] Error:', error instanceof Error ? error.message : 'Unknown error');
+    res.status(500).json({
+      success: false,
+      error: { code: 'REFUND_PROCESSING_FAILED', message: 'Unable to process refund. Please try again or contact support.' },
     });
   }
 });
 
-// POST creates (vaults) a payment method for a user. Use verifyCard and
-// failOnDuplicatePaymentMethod to reduce fraud and duplicates.
-export async function handleCreatePaymentMethod(req: Request, res: Response): Promise<void> {
+/**
+ * Guarda (vault) un metodo de pago para el usuario autenticado. El cliente
+ * de Braintree usa el uid como id. verifyCard y failOnDuplicatePaymentMethod
+ * reducen fraude y duplicados.
+ */
+export async function handleCreatePaymentMethod(req: AuthedRequest, res: Response): Promise<void> {
   try {
     const { userId } = req.params;
-    const {
-      payment_method_nonce,
-      token,
-      cardholder_name,
-      billing_address,
-      make_default,
-      verify_card,
-      options,
-    } = req.body || {};
-
-    if (!payment_method_nonce && !token) {
-      res.status(400).json({ success: false, error: 'payment_method_nonce or token is required' });
+    if (!req.uid || req.uid !== userId) {
+      res.status(403).json({ success: false, error: 'You can only add payment methods to your own account' });
+      return;
+    }
+    const { payment_method_nonce, cardholder_name, billing_address, make_default, verify_card } = req.body || {};
+    if (typeof payment_method_nonce !== 'string' || !payment_method_nonce) {
+      res.status(400).json({ success: false, error: 'payment_method_nonce is required' });
       return;
     }
 
-    // El atajo de prueba va ANTES de validar el gateway: en Jest no hay
-    // credenciales de Braintree, asi que la validacion de abajo respondia 500
-    // y este bloque nunca se alcanzaba. Devuelve 201 con la misma forma que la
-    // ruta real de exito, no 200 con otra forma.
     if (esPruebaUnitariaJest()) {
-      console.warn('[PaymentMethod] Jest test mode active, returning mock payment method token');
       res.status(201).json({ success: true, token: 'unit-test-token', type: 'CreditCard' });
       return;
     }
-
-    const createParams: any = { customerId: userId };
-    if (payment_method_nonce) createParams.paymentMethodNonce = payment_method_nonce;
-    if (token) createParams.token = token;
-    if (cardholder_name) createParams.cardholderName = cardholder_name;
-    if (billing_address) createParams.billingAddress = billing_address;
-
-    createParams.options = {
-      ...(options || {}),
-      verifyCard: verify_card !== undefined ? !!verify_card : true,
-      failOnDuplicatePaymentMethod: true,
-    };
-    if (make_default) createParams.options.makeDefault = true;
-
-    console.log('[CreatePaymentMethod] Creating payment method with params:', createParams);
-    
-    // Verify gateway is initialized
     if (!gateway) {
-      console.error('[CreatePaymentMethod] Gateway not initialized');
-      res.status(500).json({ 
-        error: {
-          code: 'PAYMENT_CONFIG_ERROR',
-          message: 'Payment system is not properly configured'
-        }
-      });
+      configError(res);
       return;
     }
 
-    const result = await (gateway.paymentMethod as any).create(createParams as any);
+    await ensureCustomer(userId);
 
-    if ((result as any)?.success) {
-      const pm = (result as any).paymentMethod;
+    const createParams: Record<string, any> = {
+      customerId: userId,
+      paymentMethodNonce: payment_method_nonce,
+      options: {
+        verifyCard: verify_card !== undefined ? !!verify_card : true,
+        failOnDuplicatePaymentMethod: true,
+        ...(process.env.BRAINTREE_MERCHANT_ACCOUNT_ID
+          ? { verificationMerchantAccountId: process.env.BRAINTREE_MERCHANT_ACCOUNT_ID }
+          : {}),
+        ...(make_default ? { makeDefault: true } : {}),
+      },
+    };
+    if (typeof cardholder_name === 'string') createParams.cardholderName = cardholder_name;
+    if (billing_address && typeof billing_address === 'object') createParams.billingAddress = billing_address;
+
+    const result = await (gateway as any).paymentMethod.create(createParams);
+    if (result?.success) {
+      const pm = result.paymentMethod;
       res.status(201).json({ success: true, token: pm.token, type: pm.__type || pm.type });
       return;
     }
 
-    console.error('[PaymentMethod] create failed:', (result as any)?.message || result);
-    res.status(400).json({ success: false, error: (result as any)?.message || 'Failed to create payment method' });
+    console.error('[PaymentMethod] create failed:', result?.message);
+    res.status(400).json({ success: false, error: result?.message || 'Failed to create payment method' });
   } catch (error) {
-    console.error('[PaymentMethod] Error:', error);
+    console.error('[PaymentMethod] Error:', error instanceof Error ? error.message : error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 }
 
-// Register the exported function as the route handler
-app.post('/payments/methods/:userId', handleCreatePaymentMethod);
+app.post('/payments/methods/:userId', requireAuth, requireSelf('userId'), handleCreatePaymentMethod);
 
-// GET lists vaulted payment methods for a user (customer)
-app.get('/payments/methods/:userId', async (req: Request, res: Response) => {
+// Lista los metodos de pago guardados del usuario autenticado.
+app.get('/payments/methods/:userId', requireAuth, requireSelf('userId'), async (req: AuthedRequest, res: Response) => {
   try {
     const { userId } = req.params;
-    if (!userId) return res.status(400).json({ success: false, error: 'userId is required' });
-
-    // Verify gateway is configured (already checked earlier but double-check)
-    if (!gateway) {
-      console.error('[ListPaymentMethods] Gateway not initialized - already checked but re-validating');
-      res.status(500).json({ 
-        error: {
-          code: 'PAYMENT_CONFIG_ERROR',
-          message: 'Payment system is not properly configured'
-        }
-      });
-      return;
-    }
-
-    // Only use mock in explicit Jest test environment
     if (esPruebaUnitariaJest()) {
-      console.warn('[ListPaymentMethods] Jest test mode active, returning mock payment methods');
-      res.json({ 
-        success: true, 
+      res.json({
+        success: true,
         paymentMethods: [
           { token: 'mock-pm-1', type: 'CreditCard', default: true, cardType: 'Visa', maskedNumber: '****1111' },
-          { token: 'mock-pm-2', type: 'CreditCard', default: false, cardType: 'MasterCard', maskedNumber: '****4444' }
-        ]
+          { token: 'mock-pm-2', type: 'CreditCard', default: false, cardType: 'MasterCard', maskedNumber: '****4444' },
+        ],
       });
       return;
     }
-
-    // Verify gateway is initialized
     if (!gateway) {
-      console.error('[ListPaymentMethods] Gateway not initialized');
-      res.status(500).json({ 
-        error: {
-          code: 'PAYMENT_CONFIG_ERROR',
-          message: 'Payment system is not properly configured'
-        }
-      });
+      configError(res);
       return;
     }
 
-    // Use gateway.customer.find to retrieve customer + payment methods
-    const customerResult = await (gateway.customer as any).find(userId);
-    if (!customerResult) {
-      return res.status(404).json({ success: false, error: 'Customer not found' });
-    }
-
-    const vaulted: any[] = [];
-    const paymentMethods = customerResult.paymentMethods || [];
-    for (const pm of paymentMethods) {
-      vaulted.push({ token: pm.token, type: pm.__type || pm.type, default: pm.default, cardType: pm.cardType || pm.brand, maskedNumber: pm.maskedNumber || pm.maskedNumber });
-    }
-
-    res.json({ success: true, paymentMethods: vaulted });
+    const customer = await (gateway as any).customer.find(userId);
+    const paymentMethods = (customer?.paymentMethods || []).map((pm: any) => ({
+      token: pm.token,
+      type: pm.__type || pm.type,
+      default: pm.default,
+      cardType: pm.cardType || pm.brand,
+      maskedNumber: pm.maskedNumber,
+      last4: pm.last4,
+      expirationMonth: pm.expirationMonth,
+      expirationYear: pm.expirationYear,
+    }));
+    res.json({ success: true, paymentMethods });
   } catch (error) {
-    console.error('[ListPaymentMethods] Error:', error);
-    // Braintree throws for missing customer; map to 404
-    if (error && (error as any).type === 'notFoundError') {
-      return res.status(404).json({ success: false, error: 'Customer not found' });
+    if ((error as any)?.type === 'notFoundError') {
+      // Sin cliente en Braintree = sin tarjetas guardadas.
+      res.json({ success: true, paymentMethods: [] });
+      return;
     }
+    console.error('[ListPaymentMethods] Error:', error instanceof Error ? error.message : error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
-  return;
 });
 
-app.delete('/payments/methods/:userId/:token', async (req: Request, res: Response) => {
+// Borra un metodo de pago SOLO si pertenece al usuario autenticado.
+app.delete('/payments/methods/:userId/:token', requireAuth, requireSelf('userId'), async (req: AuthedRequest, res: Response) => {
   try {
-    const { token } = req.params;
-    
-    // Verify gateway is configured (already checked earlier but double-check)
-    if (!gateway) {
-      console.error('[DeletePaymentMethod] Gateway not initialized - already checked but re-validating');
-      res.status(500).json({ 
-        error: {
-          code: 'PAYMENT_CONFIG_ERROR',
-          message: 'Payment system is not properly configured'
-        }
-      });
-      return;
-    }
-    
-    // Only use mock in explicit Jest test environment
+    const { userId, token } = req.params;
     if (esPruebaUnitariaJest()) {
-      console.warn('[DeleteMethod] Jest test mode active, returning mock success');
       res.json({ success: true });
       return;
     }
-    
-    // Verify gateway is initialized
     if (!gateway) {
-      console.error('[DeletePaymentMethod] Gateway not initialized');
-      res.status(500).json({ 
-        error: {
-          code: 'PAYMENT_CONFIG_ERROR',
-          message: 'Payment system is not properly configured'
-        }
-      });
+      configError(res);
       return;
     }
-    
-    await gateway.paymentMethod.delete(token);
-    
+
+    let owner: string | null = null;
+    try {
+      const pm = await (gateway as any).paymentMethod.find(token);
+      owner = pm?.customerId ?? null;
+    } catch {
+      owner = null;
+    }
+    if (owner !== userId) {
+      res.status(404).json({ success: false, error: 'Payment method not found' });
+      return;
+    }
+
+    await (gateway as any).paymentMethod.delete(token);
     res.json({ success: true });
   } catch (error) {
-    console.error('[DeleteMethod] Error:', error);
-    res.status(500).json({ error: 'Failed to delete payment method' });
+    console.error('[DeleteMethod] Error:', error instanceof Error ? error.message : error);
+    res.status(500).json({ success: false, error: 'Failed to delete payment method' });
+  }
+});
+
+/**
+ * Webhook de Braintree. Sin token de Firebase (lo llama Braintree): se
+ * autentica por la firma bt_signature. Cada payload se procesa UNA vez:
+ * webhook_events/{sha256(bt_payload)} se crea con create(), que falla si ya
+ * existe. Si el procesamiento falla se borra el candado y se responde 500
+ * para que Braintree reintente.
+ */
+app.post('/webhooks/braintree', async (req: Request, res: Response) => {
+  const bt_signature = (req.body?.bt_signature ?? req.query.bt_signature) as string | undefined;
+  const bt_payload = (req.body?.bt_payload ?? req.query.bt_payload) as string | undefined;
+
+  if (typeof bt_signature !== 'string' || typeof bt_payload !== 'string' || !bt_signature || !bt_payload) {
+    res.status(400).json({ error: 'Missing signature or payload' });
+    return;
+  }
+  if (!gateway) {
+    configError(res);
+    return;
+  }
+
+  let webhookNotification: any;
+  try {
+    webhookNotification = await (gateway as any).webhookNotification.parse(bt_signature, bt_payload);
+  } catch {
+    console.error('[Webhook] Signature verification failed');
+    res.status(403).json({ error: 'Invalid webhook signature' });
+    return;
+  }
+
+  const db = admin.firestore();
+  const kind: string = webhookNotification.kind;
+  const eventId = crypto.createHash('sha256').update(bt_payload).digest('hex');
+  const eventRef = db.collection('webhook_events').doc(eventId);
+
+  try {
+    await eventRef.create({ kind, status: 'processing', receivedAt: admin.firestore.FieldValue.serverTimestamp() });
+  } catch (error: any) {
+    if (error?.code === 6 || /already exists/i.test(String(error?.message))) {
+      console.log('[Webhook] Duplicate delivery ignored:', kind, eventId);
+      res.status(200).json({ success: true, duplicate: true });
+      return;
+    }
+    console.error('[Webhook] Could not record event:', error?.message);
+    res.status(500).json({ error: { code: 'WEBHOOK_PROCESSING_FAILED', message: 'Webhook could not be processed' } });
+    return;
+  }
+
+  try {
+    await db.collection('webhook_logs').add({
+      kind,
+      eventId,
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+      subjectId:
+        webhookNotification.transaction?.id ??
+        webhookNotification.dispute?.id ??
+        webhookNotification.subscription?.id ??
+        webhookNotification.disbursement?.id ??
+        null,
+      verified: true,
+    });
+
+    switch (kind) {
+      case 'subscription_charged_successfully':
+        await handleSubscriptionChargedSuccessfully(webhookNotification);
+        break;
+      case 'subscription_charged_unsuccessfully':
+        await handleSubscriptionChargedUnsuccessfully(webhookNotification);
+        break;
+      case 'subscription_canceled':
+        await handleSubscriptionCanceled(webhookNotification);
+        break;
+      case 'subscription_expired':
+        await handleSubscriptionExpired(webhookNotification);
+        break;
+      case 'dispute_opened':
+        await handleDisputeOpened(webhookNotification);
+        break;
+      case 'dispute_lost':
+        await handleDisputeLost(webhookNotification);
+        break;
+      case 'dispute_won':
+        await handleDisputeWon(webhookNotification);
+        break;
+      case 'transaction_settled':
+        await handleTransactionSettled(webhookNotification);
+        break;
+      case 'transaction_settlement_declined':
+        await handleTransactionSettlementDeclined(webhookNotification);
+        break;
+      case 'disbursement':
+        await handleDisbursement(webhookNotification);
+        break;
+      case 'disbursement_exception':
+        await handleDisbursementException(webhookNotification);
+        break;
+      case 'check':
+        break;
+      default:
+        await db.collection('unhandled_webhooks').add({
+          kind,
+          eventId,
+          timestamp: admin.firestore.FieldValue.serverTimestamp(),
+        });
+    }
+
+    await eventRef.set({ status: 'processed', processedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+    res.status(200).json({ success: true });
+  } catch (error) {
+    console.error('[Webhook] Processing error:', error instanceof Error ? error.message : 'Unknown error');
+    await eventRef.delete().catch(() => undefined);
+    res.status(500).json({ error: { code: 'WEBHOOK_PROCESSING_FAILED', message: 'Webhook could not be processed' } });
   }
 });
 
 export { app };
 export const api = onRequest(app);
 
-// === Webhook route moved into Express app to avoid separate Cloud Run service ===
-app.post('/webhooks/braintree', async (req: Request, res: Response) => {
-  try {
-    console.log('[Webhook] Received request');
-    console.log('[Webhook] Headers:', req.headers);
-    console.log('[Webhook] Body:', req.body);
-    console.log('[Webhook] Query:', req.query);
-    
-    const bt_signature = req.body.bt_signature || req.query.bt_signature as string;
-    const bt_payload = req.body.bt_payload || req.query.bt_payload as string;
-    
-    if (!bt_signature || !bt_payload) {
-      console.error('[Webhook] Missing signature or payload');
-      console.log('[Webhook] bt_signature:', bt_signature);
-      console.log('[Webhook] bt_payload:', bt_payload);
-      res.status(400).json({ error: 'Missing signature or payload' });
-      return;
-    }
-    
-    // Verify gateway is initialized
-    if (!gateway) {
-      console.error('[Webhook] Gateway not initialized');
-      res.status(500).json({ 
-        error: {
-          code: 'PAYMENT_CONFIG_ERROR',
-          message: 'Payment system is not properly configured'
-        }
-      });
-      return;
-    }
-    
-    let webhookNotification;
-    try {
-      webhookNotification = await gateway.webhookNotification.parse(
-        bt_signature,
-        bt_payload
-      );
-      console.log('[Webhook] Signature verified successfully');
-    } catch (verificationError) {
-      console.error('[Webhook] Signature verification failed:', verificationError);
-      res.status(403).json({ error: 'Invalid webhook signature' });
-      return;
-    }
-    
-    console.log('[Webhook] Parsed notification:', webhookNotification.kind);
-    
-    const db = admin.firestore();
-    
-    await db.collection('webhook_logs').add({
-      kind: webhookNotification.kind,
-      timestamp: admin.firestore.FieldValue.serverTimestamp(),
-      rawData: JSON.stringify(webhookNotification),
-      verified: true,
-    });
-    
-    // Handle different webhook event types according to Braintree best practices
-    switch (webhookNotification.kind) {
-      case 'subscription_charged_successfully':
-        console.log('[Webhook] Payment successful');
-        await handleSubscriptionChargedSuccessfully(webhookNotification);
-        break;
-        
-      case 'subscription_charged_unsuccessfully':
-        console.log('[Webhook] Payment failed');
-        await handleSubscriptionChargedUnsuccessfully(webhookNotification);
-        break;
-        
-      case 'subscription_canceled':
-        console.log('[Webhook] Subscription canceled');
-        await handleSubscriptionCanceled(webhookNotification);
-        break;
-        
-      case 'subscription_expired':
-        console.log('[Webhook] Subscription expired');
-        await handleSubscriptionExpired(webhookNotification);
-        break;
-        
-      case 'dispute_opened':
-        console.log('[Webhook] Dispute opened - requires attention!');
-        await handleDisputeOpened(webhookNotification);
-        break;
-        
-      case 'dispute_lost':
-        console.log('[Webhook] Dispute lost');
-        await handleDisputeLost(webhookNotification);
-        break;
-        
-      case 'dispute_won':
-        console.log('[Webhook] Dispute won');
-        await handleDisputeWon(webhookNotification);
-        break;
-        
-      case 'disbursement':
-        console.log('[Webhook] Funds disbursed');
-        await handleDisbursement(webhookNotification);
-        break;
-        
-      case 'disbursement_exception':
-        console.log('[Webhook] Disbursement failed');
-        await handleDisbursementException(webhookNotification);
-        break;
-        
-      case 'check':
-        console.log('[Webhook] Check notification received');
-        break;
-        
-      default:
-        console.log('[Webhook] Unhandled notification kind:', webhookNotification.kind);
-        // Log for future implementation
-        await db.collection('unhandled_webhooks').add({
-          kind: webhookNotification.kind,
-          timestamp: admin.firestore.FieldValue.serverTimestamp(),
-          data: JSON.stringify(webhookNotification),
-        });
-    }
-    
-    res.status(200).json({ success: true });
-  } catch (error) {
-    console.error('[Webhook] Processing error:', {
-      error: error instanceof Error ? error.message : 'Unknown error',
-      stack: error instanceof Error ? error.stack : 'No stack',
-      timestamp: new Date().toISOString()
-    });
-    res.status(500).json({ 
-      error: {
-        code: 'WEBHOOK_PROCESSING_FAILED',
-        message: 'Webhook could not be processed'
-      }
-    });
-  }
-});
-
+/**
+ * Semanal: prepara las solicitudes de pago a escoltas. NO mueve dinero (no
+ * hay integracion de dispersion todavia), asi que ya no las marca
+ * 'completed' ni descuenta el saldo del escolta en el ledger: las deja en
+ * 'ready_for_transfer' para que un administrador haga la transferencia y,
+ * al hacerla, marque el pago como completado y registre la salida en el
+ * ledger.
+ */
 export const processPayouts = onSchedule('every monday 09:00', async () => {
-  console.log('[ProcessPayouts] Starting weekly payout processing');
-  
+  const db = admin.firestore();
   try {
-    const db = admin.firestore();
-    
-    const pendingPayoutsSnapshot = await db
-      .collection('payouts')
-      .where('status', '==', 'pending')
-      .get();
-    
-    for (const doc of pendingPayoutsSnapshot.docs) {
-      const payout = doc.data();
-      
+    const pending = await db.collection('payouts').where('status', '==', 'pending').get();
+    for (const doc of pending.docs) {
       try {
-        await db.collection('payouts').doc(doc.id).update({
-          status: 'processing',
-        });
-        
-        console.log('[ProcessPayouts] Processing payout:', doc.id);
-        
-        await db.collection('payouts').doc(doc.id).update({
-          status: 'completed',
-          processedAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
-        
-        await db.collection('ledger').add({
-          guardId: payout.guardId,
-          bookingId: payout.bookingIds[0] || 'multiple',
-          type: 'payout',
-          amount: -payout.amount,
-          description: `Payout ${doc.id}`,
-          createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
-        
-        console.log('[ProcessPayouts] Payout completed:', doc.id);
+        await doc.ref.set({
+          status: 'ready_for_transfer',
+          readyAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, { merge: true });
       } catch (error) {
-        console.error('[ProcessPayouts] Error processing payout:', doc.id, error);
-        
-        await db.collection('payouts').doc(doc.id).update({
-          status: 'failed',
-          failureReason: error instanceof Error ? error.message : 'Unknown error',
-        });
+        console.error('[ProcessPayouts] Error preparing payout:', doc.id, error);
       }
     }
-    
-    console.log('[ProcessPayouts] Weekly payout processing completed');
+    console.log('[ProcessPayouts] Payouts ready for manual transfer:', pending.size);
   } catch (error) {
     console.error('[ProcessPayouts] Error:', error);
   }
 });
 
-export const generateInvoice = onCall(async (request: any) => {
+/**
+ * Factura de una reserva. Las reservas viven en Realtime Database; antes esto
+ * leia la coleccion `bookings` de Firestore (vacia) y cualquier usuario podia
+ * pedir la factura de cualquier reserva.
+ */
+export const generateInvoice = onCall(async (request: CallableRequest) => {
   if (!request.auth) {
     throw new HttpsError('unauthenticated', 'User must be authenticated');
   }
-  
-  const { bookingId } = request.data as { bookingId: string };
-  
-  try {
-    const db = admin.firestore();
-    
-    const bookingDoc = await db.collection('bookings').doc(bookingId).get();
-    if (!bookingDoc.exists) {
-      throw new HttpsError('not-found', 'Booking not found');
-    }
-    
-    const booking = bookingDoc.data();
-    
-    const invoice = {
-      bookingId,
-      clientId: booking?.clientId,
-      guardId: booking?.guardId,
-      amount: booking?.totalAmount,
-      currency: 'MXN',
-      issuedAt: admin.firestore.FieldValue.serverTimestamp(),
-      items: [
-        {
-          description: 'Security Service',
-          quantity: booking?.duration,
-          unitPrice: booking?.totalAmount / booking?.duration,
-          total: booking?.totalAmount,
-        },
-      ],
-    };
-    
-    const invoiceDoc = await db.collection('invoices').add(invoice);
-    
-    console.log('[GenerateInvoice] Invoice created:', invoiceDoc.id);
-    
-    return {
-      invoiceId: invoiceDoc.id,
-      invoice,
-    };
-  } catch (error) {
-    console.error('[GenerateInvoice] Error:', error);
-    throw new HttpsError('internal', 'Failed to generate invoice');
+  const bookingId = (request.data as { bookingId?: unknown })?.bookingId;
+  if (typeof bookingId !== 'string' || !/^[^.#$\[\]\/]{1,768}$/.test(bookingId)) {
+    throw new HttpsError('invalid-argument', 'bookingId is required');
   }
+
+  const snap = await admin.database().ref(`bookings/${bookingId}`).get();
+  const booking = snap.val();
+  if (!booking) throw new HttpsError('not-found', 'Booking not found');
+
+  const isOwner = booking.clientId === request.auth.uid;
+  if (!isOwner && (await roleOf(request.auth.uid)) !== 'admin') {
+    throw new HttpsError('permission-denied', 'This booking is not yours');
+  }
+  if (!['confirmed', 'accepted', 'en_route', 'active', 'completed'].includes(booking.status)) {
+    throw new HttpsError('failed-precondition', 'Only paid bookings can be invoiced');
+  }
+
+  const total = Number(booking.totalAmount);
+  const fee = Number(booking.processingFee) || 0;
+  const service = Math.round((total - fee) * 100) / 100;
+  const hours = Number(booking.duration) || 1;
+
+  const invoice = {
+    bookingId,
+    clientId: booking.clientId,
+    guardId: booking.guardId ?? null,
+    transactionId: booking.transactionId ?? null,
+    amount: total,
+    currency: 'MXN',
+    issuedAt: admin.firestore.FieldValue.serverTimestamp(),
+    items: [
+      {
+        description: 'Servicio de proteccion ejecutiva',
+        quantity: hours,
+        unitPrice: Math.round((service / hours) * 100) / 100,
+        total: service,
+      },
+      { description: 'Cargo por procesamiento de pago', quantity: 1, unitPrice: fee, total: fee },
+    ],
+  };
+
+  // Una factura por reserva: el id del documento es el bookingId.
+  await admin.firestore().collection('invoices').doc(bookingId).set(invoice, { merge: true });
+  return { invoiceId: bookingId, invoice: { ...invoice, issuedAt: new Date().toISOString() } };
 });
 
 export const recordUsageMetrics = onSchedule('every day 00:00', async () => {
-  console.log('[RecordUsageMetrics] Recording daily usage metrics');
-  
   try {
-    const db = admin.firestore();
-    
     const yesterday = new Date();
     yesterday.setDate(yesterday.getDate() - 1);
     const dateStr = yesterday.toISOString().split('T')[0];
-    
-    const metrics = {
+    await admin.firestore().collection('usage_metrics').add({
       date: dateStr,
       reads: 0,
       writes: 0,
@@ -920,234 +537,15 @@ export const recordUsageMetrics = onSchedule('every day 00:00', async () => {
       storageBytes: 0,
       bandwidthBytes: 0,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    };
-    
-    await db.collection('usage_metrics').add(metrics);
-    
-    console.log('[RecordUsageMetrics] Metrics recorded for', dateStr);
+    });
   } catch (error) {
     console.error('[RecordUsageMetrics] Error:', error);
   }
 });
 
-// === DEMO USER SETUP ===
-export const createDemoUsers = onCall(async (request: CallableRequest) => {
-  // ✅ SECURITY: Only allow in development/sandbox environment
-  if (process.env.BRAINTREE_ENV === 'production') {
-    throw new HttpsError('permission-denied', 'Demo user creation is disabled in production');
-  }
-  
-  // ✅ SECURITY: Require authentication (admin only in production-like environments)
-  if (!request.auth) {
-    throw new HttpsError('unauthenticated', 'User must be authenticated');
-  }
-  
-  console.log('[CreateDemoUsers] Creating demo user documents...');
-  
-  const demoUsers = [
-    {
-      email: 'client@demo.com',
-      role: 'client',
-      firstName: 'Demo',
-      lastName: 'Client',
-      phone: '+1234567890',
-      kycStatus: 'approved'
-    },
-    {
-      email: 'bodyguard@demo.com',
-      role: 'guard',
-      firstName: 'Demo',
-      lastName: 'Guard',
-      phone: '+1234567891',
-      kycStatus: 'approved'
-    },
-    {
-      email: 'company@demo.com',
-      role: 'company',
-      firstName: 'Demo',
-      lastName: 'Company',
-      phone: '+1234567892',
-      kycStatus: 'approved'
-    },
-    {
-      email: 'admin@demo.com',
-      role: 'admin',
-      firstName: 'Demo',
-      lastName: 'Admin',
-      phone: '+1234567893',
-      kycStatus: 'approved'
-    },
-    {
-      email: 'guard1@demo.com',
-      role: 'guard',
-      firstName: 'Guard',
-      lastName: 'One',
-      phone: '+1234567894',
-      kycStatus: 'approved'
-    },
-    {
-      email: 'guard2@demo.com',
-      role: 'guard',
-      firstName: 'Guard',
-      lastName: 'Two',
-      phone: '+1234567895',
-      kycStatus: 'approved'
-    }
-  ];
-
-  const db = admin.firestore();
-  const results: any[] = [];
-
-  try {
-    // Get all Firebase Auth users to map emails to UIDs
-    const authUsers = await admin.auth().listUsers();
-    const emailToUid: { [email: string]: string } = {};
-    
-    authUsers.users.forEach(user => {
-      if (user.email) {
-        emailToUid[user.email] = user.uid;
-      }
-    });
-
-    // Create Firestore document for each demo user
-    for (const userData of demoUsers) {
-      const uid = emailToUid[userData.email];
-      
-      if (!uid) {
-        results.push({
-          email: userData.email,
-          status: 'error',
-          message: 'No Firebase Auth account found'
-        });
-        continue;
-      }
-
-      try {
-        const now = new Date().toISOString();
-        const userDoc = {
-          email: userData.email,
-          role: userData.role,
-          firstName: userData.firstName,
-          lastName: userData.lastName,
-          phone: userData.phone,
-          language: 'en',
-          kycStatus: userData.kycStatus,
-          createdAt: now,
-          isActive: true,
-          emailVerified: true,
-          updatedAt: now
-        };
-
-        await db.collection('users').doc(uid).set(userDoc, { merge: true });
-        
-        results.push({
-          email: userData.email,
-          role: userData.role,
-          status: 'success',
-          uid: uid
-        });
-        
-        console.log(`[CreateDemoUsers] ✅ ${userData.email} (${userData.role})`);
-      } catch (error: any) {
-        results.push({
-          email: userData.email,
-          status: 'error',
-          message: error.message
-        });
-        console.error(`[CreateDemoUsers] ❌ ${userData.email}:`, error);
-      }
-    }
-
-    const successCount = results.filter(r => r.status === 'success').length;
-    console.log(`[CreateDemoUsers] Complete: ${successCount}/${demoUsers.length} created`);
-    
-    return {
-      success: true,
-      created: successCount,
-      total: demoUsers.length,
-      results: results
-    };
-  } catch (error: any) {
-    console.error('[CreateDemoUsers] Fatal error:', error);
-    throw new HttpsError('internal', error.message);
-  }
-});
-
-/**
- * Create a single missing demo user (both Auth and Firestore)
- */
-export const createMissingDemoUser = onCall(async (request: CallableRequest) => {
-  // ✅ SECURITY: Only allow in development/sandbox environment
-  if (process.env.BRAINTREE_ENV === 'production') {
-    throw new HttpsError('permission-denied', 'Demo user creation is disabled in production');
-  }
-  
-  // ✅ SECURITY: Require authentication
-  if (!request.auth) {
-    throw new HttpsError('unauthenticated', 'User must be authenticated');
-  }
-  
-  try {
-    const { email, password, role, firstName, lastName } = request.data;
-    
-    if (!email || !password || !role || !firstName || !lastName) {
-      throw new HttpsError('invalid-argument', 'Missing required fields');
-    }
-
-    console.log(`[CreateMissingDemoUser] Creating user: ${email}`);
-    
-    // Step 1: Create Firebase Auth account
-    let uid: string;
-    try {
-      const userRecord = await admin.auth().createUser({
-        email,
-        password,
-        emailVerified: true,
-        disabled: false,
-      });
-      uid = userRecord.uid;
-      console.log(`[CreateMissingDemoUser] Created Auth account: ${uid}`);
-    } catch (authError: any) {
-      if (authError.code === 'auth/email-already-exists') {
-        // Get existing user
-        const existingUser = await admin.auth().getUserByEmail(email);
-        uid = existingUser.uid;
-        console.log(`[CreateMissingDemoUser] Auth account already exists: ${uid}`);
-      } else {
-        throw authError;
-      }
-    }
-
-    // Step 2: Create Firestore document
-    const now = new Date().toISOString();
-    const userDoc = {
-      email,
-      role,
-      firstName,
-      lastName,
-      phone: '+1234567890',
-      language: 'en',
-      kycStatus: role === 'client' ? 'pending' : 'approved',
-      createdAt: now,
-      isActive: true,
-      emailVerified: true,
-      updatedAt: now,
-    };
-
-    await admin.firestore().collection('users').doc(uid).set(userDoc, { merge: true });
-    console.log(`[CreateMissingDemoUser] Created Firestore document for ${email}`);
-
-    return {
-      success: true,
-      email,
-      uid,
-      role,
-    };
-  } catch (error: any) {
-    console.error('[CreateMissingDemoUser] Error:', error);
-    throw new HttpsError('internal', error.message);
-  }
-});
+// createDemoUsers y createMissingDemoUser se eliminaron: cualquier usuario
+// autenticado podia llamarlas y darse rol admin (o crear cuentas admin con
+// contrasena propia) mientras BRAINTREE_ENV no fuera 'production'.
 
 /**
  * Reset Demo Account Passwords
@@ -1343,10 +741,8 @@ export const createCompanyGuards = onCall({ invoker: 'public', ingressSettings: 
         hourlyRate,
         photos: [],
         outfitPhotos: [],
-        governmentIdUrls: [],
-        licenseUrls: [],
-        vehicleDocUrls: [],
-        insuranceUrls: [],
+        // Las URLs de documentos KYC ya no van en el perfil publico: viven
+        // en users/{uid}/private/kyc (CONTRACT §5).
         certifications: [],
         rating: 0,
         completedJobs: 0,
@@ -1372,9 +768,8 @@ export const createCompanyGuards = onCall({ invoker: 'public', ingressSettings: 
   return { results, successCount, totalProcessed: guards.length };
 });
 
-// Avisos en tiempo real por cambio de estado de una reserva. Viven en su
-// propio archivo para no seguir engordando este. Solo llaman a admin.* dentro
-// del cuerpo de cada funcion, asi que no importa que este re-export se evalue
-// antes de admin.initializeApp().
+// Avisos en tiempo real por cambio de estado de una reserva (RTDB), cola de
+// avisos push y emergencias. Solo llaman a admin.* dentro de cada funcion.
 export { avisarCambioDeReserva, enviarAvisoEncolado, avisarEmergencia } from './notificaciones';
 export { espejarRolARealtimeDB, backfillRoleMirrors } from './syncUserRole';
+export { recalcularReputacionEscolta } from './reviews';

@@ -1,3 +1,4 @@
+import i18n from '@/i18n';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { doc, getDoc, setDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { db as getDbInstance } from '@/lib/firebase';
@@ -144,17 +145,7 @@ export const rateLimitService = {
   getRateLimitError(action: keyof typeof RATE_LIMITS, blockedUntil: number): string {
     const minutes = Math.ceil((blockedUntil - Date.now()) / 60000);
     
-    switch (action) {
-      case 'login':
-        return `Too many login attempts. Please try again in ${minutes} minutes.`;
-      case 'startCode':
-        return `Too many incorrect start codes. Please try again in ${minutes} minutes.`;
-      case 'chat':
-        return `You are sending messages too quickly. Please wait ${minutes} minutes.`;
-      case 'booking':
-        return `Too many booking requests. Please try again in ${minutes} minutes.`;
-      default:
-        return `Rate limit exceeded. Please try again in ${minutes} minutes.`;
-    }
+    const key = action === 'login' || action === 'startCode' || action === 'chat' || action === 'booking' ? action : 'generic';
+    return i18n.t(`auth:rateLimit.${key}`, { count: minutes });
   },
 };

@@ -10,6 +10,7 @@ import {
 import { getFirestore, Firestore, connectFirestoreEmulator } from 'firebase/firestore';
 import { getDatabase, Database, connectDatabaseEmulator } from 'firebase/database';
 import { getFunctions, Functions, connectFunctionsEmulator } from 'firebase/functions';
+import { getStorage, connectStorageEmulator } from 'firebase/storage';
 import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 // App Check imports commented out - requires Firebase Console setup first
@@ -18,7 +19,16 @@ import Constants from 'expo-constants';
 
 
 
-const firebaseConfig = {
+// Modo emulador (solo desarrollo, EXPO_PUBLIC_USE_EMULATORS=1): la app usa un
+// proyecto "demo-". Firebase garantiza que un proyecto demo- jamas toca uno
+// real, asi que en este modo es imposible escribir en produccion aunque algo
+// quede mal configurado. Lo usa el acceso rapido de pruebas (ver
+// scripts/emulator/README.md).
+export const USING_EMULATORS = __DEV__ && process.env.EXPO_PUBLIC_USE_EMULATORS === '1';
+const EMULATOR_HOST = process.env.EXPO_PUBLIC_EMULATOR_HOST || '127.0.0.1';
+export const EMULATOR_PROJECT_ID = 'demo-escolta';
+
+const productionConfig = {
   apiKey:
     process.env.EXPO_PUBLIC_FIREBASE_API_KEY ||
     Constants.expoConfig?.extra?.EXPO_PUBLIC_FIREBASE_API_KEY ||
@@ -44,6 +54,17 @@ const firebaseConfig = {
     Constants.expoConfig?.extra?.EXPO_PUBLIC_FIREBASE_APP_ID ||
     '1:919834684647:web:60dad6457ad0f92b068642',
 };
+
+const emulatorConfig = {
+  apiKey: 'demo-api-key',
+  authDomain: `${EMULATOR_PROJECT_ID}.firebaseapp.com`,
+  projectId: EMULATOR_PROJECT_ID,
+  storageBucket: `${EMULATOR_PROJECT_ID}.appspot.com`,
+  databaseURL: `https://${EMULATOR_PROJECT_ID}-default-rtdb.firebaseio.com`,
+  appId: '1:000000000000:web:demo',
+};
+
+const firebaseConfig = USING_EMULATORS ? emulatorConfig : productionConfig;
 
 let app: FirebaseApp | undefined;
 let authInstance: Auth | undefined;
@@ -94,23 +115,17 @@ export const initializeFirebaseServices = async (): Promise<void> => {
         });
         console.log('[Firebase] Auth initialized with browser persistence (web)');
       } else {
-        // React Native: Use custom AsyncStorage persistence
-        // Create a custom persistence object that implements the Persistence interface
-        const customPersistence = {
-          async _get(key: string): Promise<string | null> {
-            return await AsyncStorage.getItem(key);
-          },
-          async _remove(key: string): Promise<void> {
-            await AsyncStorage.removeItem(key);
-          },
-          async _set(key: string, value: string): Promise<void> {
-            await AsyncStorage.setItem(key, value);
-          },
-          type: 'LOCAL' as const,
+        // React Native: persistencia en AsyncStorage con el adaptador oficial.
+        // Antes se pasaba un objeto armado a mano; Firebase exige una clase,
+        // lanzaba, y el respaldo dejaba la sesion SOLO en memoria: cada vez que
+        // se cerraba la app habia que volver a iniciar sesion. La funcion solo
+        // existe en el build de React Native de firebase/auth, de ahi el require.
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { getReactNativePersistence } = require('firebase/auth') as {
+          getReactNativePersistence: (storage: typeof AsyncStorage) => import('firebase/auth').Persistence;
         };
-        
         authInstance = initializeAuth(app as FirebaseApp, {
-          persistence: customPersistence as any,
+          persistence: getReactNativePersistence(AsyncStorage),
         });
         console.log('[Firebase] Auth initialized with AsyncStorage persistence (native)');
       }
@@ -145,39 +160,18 @@ export const initializeFirebaseServices = async (): Promise<void> => {
       console.error('[Firebase] Functions init error:', _e);
     }
 
-    // Connect to emulators in development (only if EXPO_PUBLIC_USE_EMULATORS=1)
-    if (__DEV__ && process.env.EXPO_PUBLIC_USE_EMULATORS === '1' && authInstance && dbInstance && realtimeDbInstance) {
+    // Emuladores locales (solo desarrollo). Ver USING_EMULATORS arriba.
+    if (USING_EMULATORS && authInstance && dbInstance && realtimeDbInstance) {
       try {
-        connectAuthEmulator(authInstance, 'http://127.0.0.1:9099');
-        console.log('[Firebase] Connected to Auth emulator');
-      } catch {
-        console.log('[Firebase] Auth emulator already connected or unavailable');
+        connectAuthEmulator(authInstance, `http://${EMULATOR_HOST}:9099`, { disableWarnings: true });
+        connectFirestoreEmulator(dbInstance, EMULATOR_HOST, 8080);
+        connectDatabaseEmulator(realtimeDbInstance, EMULATOR_HOST, 9000);
+        connectStorageEmulator(getStorage(app as FirebaseApp), EMULATOR_HOST, 9199);
+        if (functionsInstance) connectFunctionsEmulator(functionsInstance, EMULATOR_HOST, 5001);
+        console.log(`[Firebase] Emulator mode: project ${EMULATOR_PROJECT_ID} @ ${EMULATOR_HOST}`);
+      } catch (e) {
+        console.warn('[Firebase] Emulator connection issue:', e);
       }
-
-      try {
-        connectFirestoreEmulator(dbInstance, '127.0.0.1', 8080);
-        console.log('[Firebase] Connected to Firestore emulator');
-      } catch {
-        console.log('[Firebase] Firestore emulator already connected or unavailable');
-      }
-
-      try {
-        connectDatabaseEmulator(realtimeDbInstance, '127.0.0.1', 9000);
-        console.log('[Firebase] Connected to Realtime Database emulator');
-      } catch {
-        console.log('[Firebase] Database emulator already connected or unavailable');
-      }
-
-      if (functionsInstance) {
-        try {
-          connectFunctionsEmulator(functionsInstance, '127.0.0.1', 5001);
-          console.log('[Firebase] Connected to Functions emulator');
-        } catch {
-          console.log('[Firebase] Functions emulator already connected or unavailable');
-        }
-      }
-    } else if (__DEV__) {
-      console.log('[Firebase] Using production Firebase (emulators disabled)');
     }
 
     initialized = true;
@@ -241,6 +235,7 @@ export const functions = (): Functions => {
 const SECONDARY_APP_NAME = 'GuardInviteSecondary';
 let secondaryAuthInstance: Auth | undefined;
 let secondaryDbInstance: Firestore | undefined;
+let secondaryRealtimeDbInstance: Database | undefined;
 
 const getSecondaryApp = (): FirebaseApp => {
   const existing = getApps().find((a) => a.name === SECONDARY_APP_NAME);
@@ -250,11 +245,23 @@ const getSecondaryApp = (): FirebaseApp => {
 export const secondaryAuth = (): Auth => {
   if (secondaryAuthInstance) return secondaryAuthInstance;
   secondaryAuthInstance = initializeAuth(getSecondaryApp(), { persistence: inMemoryPersistence });
+  if (USING_EMULATORS) connectAuthEmulator(secondaryAuthInstance, `http://${EMULATOR_HOST}:9099`, { disableWarnings: true });
   return secondaryAuthInstance;
 };
 
 export const secondaryDb = (): Firestore => {
   if (secondaryDbInstance) return secondaryDbInstance;
   secondaryDbInstance = getFirestore(getSecondaryApp());
+  if (USING_EMULATORS) connectFirestoreEmulator(secondaryDbInstance, EMULATOR_HOST, 8080);
   return secondaryDbInstance;
+};
+
+// Realtime Database de la misma sesion secundaria: el escolta recien creado
+// escribe su propio espejo de rol (role + companyId), que las reglas solo
+// aceptan del propio usuario al crearse.
+export const secondaryRealtimeDb = (): Database => {
+  if (secondaryRealtimeDbInstance) return secondaryRealtimeDbInstance;
+  secondaryRealtimeDbInstance = getDatabase(getSecondaryApp());
+  if (USING_EMULATORS) connectDatabaseEmulator(secondaryRealtimeDbInstance, EMULATOR_HOST, 9000);
+  return secondaryRealtimeDbInstance;
 };

@@ -1,34 +1,34 @@
 /**
- * Respaldo para iOS y Android.
+ * Native fallback for the Stripe form.
  *
- * El pago con Stripe en nativo necesita @stripe/stripe-react-native, que
- * obliga a una compilacion nativa y a configurar Apple Pay y Google Pay. Queda
- * para cuando se publiquen las apps de tienda; hoy el cobro vive en la web.
- *
- * Acepta las mismas props que la version web a proposito: TypeScript resuelve
- * este archivo al comprobar tipos, asi que si las firmas no coincidieran, el
- * uso correcto en web se reportaria como error.
+ * Stripe on iOS/Android needs @stripe/stripe-react-native (a native build with
+ * Apple Pay / Google Pay setup). Until then PaymentSheet uses the Braintree
+ * path on native and never renders this; it exists so both platform files
+ * share one props contract (TypeScript type-checks against this file).
  */
-import { View, Text, StyleSheet } from 'react-native';
+import { StyleSheet, View } from 'react-native';
+import { useTranslation } from 'react-i18next';
 import Colors from '@/constants/colors';
+import { Space } from '@/constants/design';
+import { AppText } from '@/components/ui';
+import type { StripePaymentFormProps } from '@/components/funnel/paymentTypes';
 
-type Props = {
-  bookingId: string;
-  onExito: (intentoId: string) => void;
-  onError?: (mensaje: string) => void;
-};
+export type { StripePaymentFormProps } from '@/components/funnel/paymentTypes';
 
-export default function StripePaymentForm(_props: Props) {
+export default function StripePaymentForm(_props: StripePaymentFormProps) {
+  const { t } = useTranslation('funnel');
   return (
-    <View style={estilos.contenedor}>
-      <Text style={estilos.texto}>
-        El pago con tarjeta esta disponible por ahora en la version web.
-      </Text>
+    <View style={styles.container}>
+      <AppText variant="callout" align="center" color={Colors.textSecondary}>
+        {t('payment.stripeNativeOnly')}
+      </AppText>
     </View>
   );
 }
 
-const estilos = StyleSheet.create({
-  contenedor: { padding: 24, alignItems: 'center' },
-  texto: { color: Colors.textSecondary, fontSize: 14, textAlign: 'center' },
+const styles = StyleSheet.create({
+  container: {
+    paddingVertical: Space.xl,
+    alignItems: 'center',
+  },
 });

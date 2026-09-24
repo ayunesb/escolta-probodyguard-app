@@ -1,5 +1,6 @@
 import * as LocalAuthentication from 'expo-local-authentication';
 import { Platform } from 'react-native';
+import i18n from '@/i18n';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const BIOMETRIC_ENABLED_KEY = '@escolta_biometric_enabled';
@@ -44,7 +45,7 @@ class BiometricAuthService {
     }
   }
 
-  async authenticate(promptMessage: string = 'Authenticate to continue'): Promise<boolean> {
+  async authenticate(promptMessage: string = i18n.t('account:biometric.authenticate')): Promise<boolean> {
     try {
       if (Platform.OS === 'web') {
         console.log('[BiometricAuth] Not supported on web');
@@ -60,9 +61,9 @@ class BiometricAuthService {
 
       const result = await LocalAuthentication.authenticateAsync({
         promptMessage,
-        cancelLabel: 'Cancel',
+        cancelLabel: i18n.t('common:actions.cancel'),
         disableDeviceFallback: false,
-        fallbackLabel: 'Use passcode',
+        fallbackLabel: i18n.t('account:biometric.usePasscode'),
       });
 
       if (result.success) {
@@ -97,7 +98,7 @@ class BiometricAuthService {
         return false;
       }
 
-      const authenticated = await this.authenticate('Enable biometric authentication');
+      const authenticated = await this.authenticate(i18n.t('account:biometric.enableAuth'));
       
       if (authenticated) {
         await AsyncStorage.setItem(BIOMETRIC_ENABLED_KEY, 'true');
@@ -139,13 +140,13 @@ class BiometricAuthService {
   getBiometricTypeName(type: LocalAuthentication.AuthenticationType): string {
     switch (type) {
       case LocalAuthentication.AuthenticationType.FINGERPRINT:
-        return 'Fingerprint';
+        return i18n.t('account:biometric.fingerprint');
       case LocalAuthentication.AuthenticationType.FACIAL_RECOGNITION:
-        return 'Face ID';
+        return i18n.t('account:biometric.faceId');
       case LocalAuthentication.AuthenticationType.IRIS:
-        return 'Iris';
+        return i18n.t('account:biometric.iris');
       default:
-        return 'Biometric';
+        return i18n.t('account:biometric.generic');
     }
   }
 }

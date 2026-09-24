@@ -1,168 +1,213 @@
 /**
- * Formulario de pago de Stripe para web, con el Payment Element.
+ * Stripe Payment Element (web).
  *
- * Usa Stripe.js directamente en lugar de @stripe/react-stripe-js para no
- * meter otra dependencia de React en un proyecto que ya tuvo conflictos de
- * pares con React 19.
+ * Uses Stripe.js directly (no @stripe/react-stripe-js) to avoid another React
+ * peer dependency. Card data never touches this code or our server: the
+ * Payment Element sends it straight to Stripe from Stripe's own iframe.
  *
- * Los datos de la tarjeta NUNCA pasan por este codigo ni por el servidor:
- * el Payment Element los envia directo a Stripe desde un iframe suyo. Eso es
- * lo que mantiene la app fuera del alcance completo de PCI.
+ * The PaymentIntent (and therefore the amount) is created by the parent via
+ * paymentService.createPaymentIntent; this component only mounts the element
+ * and confirms. Every exit path of `pay` resolves the loading state.
  */
 import { useEffect, useRef, useState } from 'react';
-import { View, Text, TouchableOpacity, ActivityIndicator, StyleSheet } from 'react-native';
-import { loadStripe } from '@stripe/stripe-js';
+import { StyleSheet, View } from 'react-native';
+import type { Stripe, StripeElements, StripePaymentElement } from '@stripe/stripe-js';
+import { Lock } from 'lucide-react-native';
+import { useTranslation } from 'react-i18next';
+import i18n, { currentLanguage } from '@/i18n';
 import Colors from '@/constants/colors';
+import { Radius, Space } from '@/constants/design';
+import { AppText, Button, Skeleton } from '@/components/ui';
 import { stripeService } from '@/services/stripeService';
 import { logger } from '@/utils/logger';
+import type { StripePaymentFormProps } from '@/components/funnel/paymentTypes';
 
-type Props = {
-  bookingId: string;
-  onExito: (intentoId: string) => void;
-  onError?: (mensaje: string) => void;
-};
+export type { StripePaymentFormProps } from '@/components/funnel/paymentTypes';
 
-export default function StripePaymentForm({ bookingId, onExito, onError }: Props) {
-  const contenedor = useRef<HTMLDivElement | null>(null);
-  const stripeRef = useRef<any>(null);
-  const elementsRef = useRef<any>(null);
-  const [cargando, setCargando] = useState<boolean>(true);
-  const [pagando, setPagando] = useState<boolean>(false);
-  const [error, setError] = useState<string>('');
-  const [importe, setImporte] = useState<number | null>(null);
+export default function StripePaymentForm({ clientSecret, payLabel, returnUrl, onSucceeded, onError }: StripePaymentFormProps) {
+  const { t } = useTranslation(['funnel', 'common']);
+  const mountRef = useRef<HTMLDivElement | null>(null);
+  const stripeRef = useRef<Stripe | null>(null);
+  const elementsRef = useRef<StripeElements | null>(null);
+  const [ready, setReady] = useState(false);
+  const [paying, setPaying] = useState(false);
+  const [setupError, setSetupError] = useState<string | null>(null);
+  const [payError, setPayError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
-    let cancelado = false;
+    let cancelled = false;
+    let element: StripePaymentElement | null = null;
+    setReady(false);
+    setSetupError(null);
 
     (async () => {
       try {
-        if (!stripeService.estaConfigurado()) {
-          throw new Error('Los pagos con Stripe no estan configurados todavia');
-        }
-
-        const intento = await stripeService.crearIntento(bookingId);
-        if (cancelado) return;
-        setImporte(intento.amount);
-
-        const stripe = await loadStripe(stripeService.llavePublicable());
-        if (cancelado || !stripe) throw new Error('No se pudo cargar Stripe');
+        if (!stripeService.isConfigured()) throw new Error(i18n.t('funnel:payment.errors.notConfigured'));
+        const stripe = await stripeService.load();
+        if (cancelled) return;
+        if (!stripe) throw new Error(i18n.t('funnel:payment.errors.stripeLoad'));
         stripeRef.current = stripe;
 
         const elements = stripe.elements({
-          clientSecret: intento.clientSecret,
+          clientSecret,
+          // Stripe's own labels and card errors follow the app language.
+          locale: currentLanguage(),
           appearance: {
             theme: 'night',
             variables: {
-              colorPrimary: Colors.gold,
-              colorBackground: Colors.surface,
+              colorPrimary: Colors.accent,
+              colorBackground: Colors.surfaceLight,
               colorText: Colors.textPrimary,
-              borderRadius: '12px',
+              colorTextSecondary: Colors.textSecondary,
+              colorDanger: Colors.error,
+              borderRadius: `${Radius.md}px`,
+              fontFamily: 'Geist, system-ui, -apple-system, sans-serif',
             },
           },
         });
         elementsRef.current = elements;
-
-        const paymentElement = elements.create('payment');
-        if (contenedor.current) paymentElement.mount(contenedor.current);
-        if (!cancelado) setCargando(false);
-      } catch (e: any) {
-        if (cancelado) return;
-        const mensaje = e?.message ?? 'No se pudo preparar el pago';
-        logger.error('[Stripe] Error preparando el formulario', { mensaje });
-        setError(mensaje);
-        setCargando(false);
-        onError?.(mensaje);
+        element = elements.create('payment', { layout: 'tabs' });
+        element.on('ready', () => {
+          if (!cancelled) setReady(true);
+        });
+        element.on('loaderror', () => {
+          if (cancelled) return;
+          setSetupError(i18n.t('funnel:payment.errors.formLoad'));
+        });
+        if (mountRef.current) element.mount(mountRef.current);
+      } catch (error) {
+        if (cancelled) return;
+        const message = error instanceof Error ? error.message : i18n.t('funnel:payment.errors.formLoad');
+        logger.error('[Stripe] Payment Element setup failed', { message });
+        setSetupError(message);
+        onError?.(message);
       }
     })();
 
-    return () => { cancelado = true; };
+    return () => {
+      cancelled = true;
+      try {
+        element?.destroy();
+      } catch {
+        // already torn down
+      }
+      elementsRef.current = null;
+    };
+    // onError is a callback prop; re-mounting the element on every render would reset the card form.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bookingId]);
+  }, [clientSecret, attempt]);
 
-  const pagar = async () => {
-    if (!stripeRef.current || !elementsRef.current) return;
-    setPagando(true);
-    setError('');
+  const pay = async () => {
+    const stripe = stripeRef.current;
+    const elements = elementsRef.current;
+    if (!stripe || !elements || paying) return;
+    setPaying(true);
+    setPayError(null);
+    try {
+      const { error, paymentIntent } = await stripe.confirmPayment({
+        elements,
+        redirect: 'if_required',
+        confirmParams: returnUrl ? { return_url: returnUrl } : undefined,
+      });
 
-    const { error: fallo, paymentIntent } = await stripeRef.current.confirmPayment({
-      elements: elementsRef.current,
-      redirect: 'if_required',
-    });
-
-    if (fallo) {
-      const mensaje = fallo.message ?? 'El pago no se pudo completar';
-      logger.error('[Stripe] Pago rechazado', { mensaje });
-      setError(mensaje);
-      setPagando(false);
-      onError?.(mensaje);
-      return;
+      if (error) {
+        const message = error.message ?? t('payment.errors.notCompleted');
+        setPayError(message);
+        onError?.(message);
+        return;
+      }
+      const status = paymentIntent?.status;
+      if (status === 'succeeded') {
+        onSucceeded({ paymentIntentId: paymentIntent!.id, status: 'succeeded' });
+        return;
+      }
+      // Vouchers and bank transfers (OXXO, SPEI) settle later: not an error.
+      if (status === 'processing' || status === 'requires_action' || status === 'requires_capture') {
+        onSucceeded({ paymentIntentId: paymentIntent!.id, status: 'processing' });
+        return;
+      }
+      const message = t('payment.errors.tryAnotherMethod');
+      setPayError(message);
+      onError?.(message);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : t('payment.errors.network');
+      logger.error('[Stripe] confirmPayment threw', { message });
+      setPayError(message);
+      onError?.(message);
+    } finally {
+      setPaying(false);
     }
-
-    if (paymentIntent?.status === 'succeeded') {
-      logger.log('[Stripe] Pago aceptado', { id: paymentIntent.id });
-      onExito(paymentIntent.id);
-      return;
-    }
-
-    // Algunos metodos (OXXO, SPEI) quedan pendientes a proposito: el cliente
-    // todavia tiene que ir a pagar. No es un error.
-    logger.log('[Stripe] Pago pendiente de confirmacion', { estado: paymentIntent?.status });
-    setError('El pago quedo pendiente. Te avisaremos cuando se confirme.');
-    setPagando(false);
   };
 
-  if (error && cargando === false && !elementsRef.current) {
-    return (
-      <View style={estilos.centro}>
-        <Text style={estilos.error}>{error}</Text>
-      </View>
-    );
-  }
-
   return (
-    <View style={estilos.contenedor}>
-      {cargando && (
-        <View style={estilos.centro}>
-          <ActivityIndicator color={Colors.gold} />
-          <Text style={estilos.tenue}>Preparando el pago seguro…</Text>
+    <View style={styles.container}>
+      {setupError ? (
+        <View style={styles.notice}>
+          <AppText variant="callout" color={Colors.error} align="center">
+            {setupError}
+          </AppText>
+          <Button title={t('common:actions.tryAgain')} variant="secondary" size="sm" fullWidth={false} onPress={() => setAttempt((n) => n + 1)} />
         </View>
-      )}
+      ) : !ready ? (
+        <View style={styles.skeleton} accessibilityLabel={t('payment.loadingForm')}>
+          <Skeleton height={48} radius={Radius.md} />
+          <View style={styles.skeletonRow}>
+            <Skeleton height={48} radius={Radius.md} style={styles.flex} />
+            <Skeleton height={48} radius={Radius.md} style={styles.flex} />
+          </View>
+        </View>
+      ) : null}
 
-      <div ref={contenedor} style={{ minHeight: cargando ? 0 : 220 }} />
+      {/* Always mounted so a retry can re-attach the element to the same node. */}
+      <div ref={mountRef} style={{ minHeight: ready && !setupError ? 200 : 0, display: setupError ? 'none' : 'block' }} />
 
-      {!!error && !cargando && <Text style={estilos.error}>{error}</Text>}
+      {payError ? (
+        <AppText variant="callout" color={Colors.error} style={styles.error} accessibilityLiveRegion="polite">
+          {payError}
+        </AppText>
+      ) : null}
 
-      {!cargando && (
-        <TouchableOpacity
-          style={[estilos.boton, pagando && estilos.botonInactivo]}
-          onPress={pagar}
-          disabled={pagando}
-        >
-          {pagando ? (
-            <ActivityIndicator color={Colors.background} />
-          ) : (
-            <Text style={estilos.botonTexto}>
-              Pagar{importe != null ? ` $${importe.toFixed(2)} MXN` : ''}
-            </Text>
-          )}
-        </TouchableOpacity>
+      {setupError ? null : (
+        <Button
+          title={payLabel}
+          icon={Lock}
+          size="lg"
+          onPress={pay}
+          loading={paying}
+          disabled={!ready}
+          style={styles.pay}
+          accessibilityHint={t('payment.payHint')}
+        />
       )}
     </View>
   );
 }
 
-const estilos = StyleSheet.create({
-  contenedor: { width: '100%' },
-  centro: { alignItems: 'center', justifyContent: 'center', paddingVertical: 24, gap: 8 },
-  tenue: { color: Colors.textSecondary, fontSize: 13 },
-  error: { color: Colors.error, fontSize: 14, marginTop: 12, textAlign: 'center' },
-  boton: {
-    backgroundColor: Colors.gold,
-    borderRadius: 12,
-    padding: 16,
-    alignItems: 'center',
-    marginTop: 16,
+const styles = StyleSheet.create({
+  container: {
+    width: '100%',
   },
-  botonInactivo: { opacity: 0.6 },
-  botonTexto: { color: Colors.background, fontSize: 16, fontWeight: '700' as const },
+  flex: {
+    flex: 1,
+  },
+  skeleton: {
+    gap: Space.md,
+    marginBottom: Space.md,
+  },
+  skeletonRow: {
+    flexDirection: 'row',
+    gap: Space.md,
+  },
+  error: {
+    marginTop: Space.md,
+  },
+  pay: {
+    marginTop: Space.xl,
+  },
+  notice: {
+    alignItems: 'center',
+    gap: Space.md,
+    paddingVertical: Space.xl,
+  },
 });

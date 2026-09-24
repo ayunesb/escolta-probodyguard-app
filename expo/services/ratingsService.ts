@@ -2,6 +2,7 @@ import { collection, doc, addDoc, updateDoc, getDocs, query, where, orderBy, lim
 import { db as getDbInstance } from '@/lib/firebase';
 import { RatingBreakdown } from '@/types';
 import { logger } from '@/utils/logger';
+import i18n from '@/i18n';
 
 export interface Review {
   id: string;
@@ -349,12 +350,12 @@ export const ratingsService = {
   },
 
   getRatingLabel(rating: number): string {
-    if (rating >= 4.5) return 'Excellent';
-    if (rating >= 4.0) return 'Very Good';
-    if (rating >= 3.5) return 'Good';
-    if (rating >= 3.0) return 'Average';
-    if (rating >= 2.0) return 'Below Average';
-    return 'Poor';
+    if (rating >= 4.5) return i18n.t('booking:ratingLabel.excellent');
+    if (rating >= 4.0) return i18n.t('booking:ratingLabel.veryGood');
+    if (rating >= 3.5) return i18n.t('booking:ratingLabel.good');
+    if (rating >= 3.0) return i18n.t('booking:ratingLabel.average');
+    if (rating >= 2.0) return i18n.t('booking:ratingLabel.belowAverage');
+    return i18n.t('booking:ratingLabel.poor');
   },
 
   getRatingColor(rating: number): string {

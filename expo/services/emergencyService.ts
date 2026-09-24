@@ -1,85 +1,146 @@
-import { db as getDbInstance } from '@/lib/firebase';
-import { collection, addDoc, updateDoc, doc, getDoc, query, where, getDocs } from 'firebase/firestore';
-import { notificationService } from './notificationService';
+import { addDoc, collection, doc, getDocs, query, updateDoc, where } from 'firebase/firestore';
+import { get, ref } from 'firebase/database';
 import * as Location from 'expo-location';
 import { Platform } from 'react-native';
+import { db as getDbInstance, realtimeDb as getRealtimeDb } from '@/lib/firebase';
 import { logger } from '@/utils/logger';
+import i18n from '@/i18n';
+
+export type EmergencyType = 'panic' | 'sos' | 'medical' | 'security';
+
+export interface EmergencyLocation {
+  latitude: number;
+  longitude: number;
+  accuracy?: number | null;
+  address?: string | null;
+}
 
 export interface EmergencyAlert {
   id: string;
   userId: string;
-  bookingId?: string;
-  type: 'panic' | 'sos' | 'medical' | 'security';
+  bookingId?: string | null;
+  clientId?: string | null;
+  guardId?: string | null;
+  type: EmergencyType;
   status: 'active' | 'resolved' | 'false_alarm';
-  location: {
-    latitude: number;
-    longitude: number;
-    accuracy?: number;
-    address?: string;
-  };
+  // null si el dispositivo no pudo dar ubicacion: la alerta se escribe igual
+  location: EmergencyLocation | null;
+  locationStatus: 'pending' | 'captured' | 'unavailable';
   timestamp: string;
+  platform?: string;
   resolvedAt?: string;
+  resolvedBy?: string;
   notes?: string;
-  responderId?: string;
+}
+
+export interface PanicResult {
+  success: boolean;
+  alertId?: string;
+  locationShared: boolean;
+  error?: string;
+}
+
+const LOCATION_TIMEOUT_MS = 8000;
+const WRITE_TIMEOUT_MS = 12000;
+
+function timeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(fallback), ms);
+    promise
+      .then((v) => resolve(v))
+      .catch(() => resolve(fallback))
+      .finally(() => clearTimeout(timer));
+  });
+}
+
+function timeoutOrThrow<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise.then(resolve, reject).finally(() => clearTimeout(timer));
+  });
+}
+
+// Firestore rechaza `undefined`.
+function compact<T extends Record<string, unknown>>(obj: T): T {
+  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined)) as T;
 }
 
 class EmergencyService {
-  async triggerPanicButton(
-    userId: string,
-    bookingId?: string,
-    type: 'panic' | 'sos' | 'medical' | 'security' = 'panic'
-  ): Promise<{ success: boolean; alertId?: string; error?: string }> {
+  // La alerta SIEMPRE se escribe, con o sin ubicacion. Antes, si el GPS no
+  // respondia no se escribia nada y aun asi la app decia que "los servicios
+  // de emergencia" estaban avisados. Esto solo avisa a la operacion de
+  // Escolta Pro (admins); para policia/ambulancia la UI ofrece llamar al 911.
+  async triggerPanicButton(userId: string, bookingId?: string, type: EmergencyType = 'panic'): Promise<PanicResult> {
+    logger.log('[Emergency] Triggering alert', { type, hasBooking: !!bookingId });
+
+    // En paralelo con la escritura: nada de esperar al GPS para avisar.
+    const locationPromise = this.getCurrentLocation(LOCATION_TIMEOUT_MS);
+    const partiesPromise = bookingId ? timeout(this.getBookingParties(bookingId), 5000, null) : Promise.resolve(null);
+
+    let alertId: string;
     try {
-      logger.log('[Emergency] Triggering panic button:', { userId, type });
-
-      const location = await this.getCurrentLocation();
-      
-      if (!location) {
-        return { success: false, error: 'Unable to get location' };
-      }
-
-      const alert: Omit<EmergencyAlert, 'id'> = {
-        userId,
-        bookingId,
-        type,
-        status: 'active',
-        location,
-        timestamp: new Date().toISOString(),
-      };
-
-      const docRef = await addDoc(collection(getDbInstance(), 'emergencyAlerts'), alert);
-      logger.log('[Emergency] Alert created:', docRef.id);
-
-      await this.notifyEmergencyContacts(docRef.id, alert);
-
-      if (bookingId) {
-        await this.notifyBookingParties(bookingId, docRef.id, alert);
-      }
-
-      return { success: true, alertId: docRef.id };
+      const created = await timeoutOrThrow(
+        addDoc(
+          collection(getDbInstance(), 'emergencyAlerts'),
+          compact({
+            userId,
+            bookingId: bookingId ?? null,
+            type,
+            status: 'active',
+            location: null,
+            locationStatus: 'pending',
+            timestamp: new Date().toISOString(),
+            platform: Platform.OS,
+          })
+        ),
+        WRITE_TIMEOUT_MS,
+        'Timed out writing the emergency alert'
+      );
+      alertId = created.id;
+      logger.log('[Emergency] Alert written', { alertId });
     } catch (error) {
-      logger.error('[Emergency] Error triggering panic button:', error);
-      return { success: false, error: 'Failed to trigger emergency alert' };
+      logger.error('[Emergency] Could not write emergency alert', error);
+      return {
+        success: false,
+        locationShared: false,
+        error: i18n.t('booking:errors.emergencyNotConfirmed'),
+      };
     }
+
+    const [location, parties] = await Promise.all([locationPromise, partiesPromise]);
+    try {
+      await updateDoc(
+        doc(getDbInstance(), 'emergencyAlerts', alertId),
+        compact({
+          location: location ?? null,
+          locationStatus: location ? 'captured' : 'unavailable',
+          clientId: parties?.clientId ?? undefined,
+          guardId: parties?.guardId ?? undefined,
+        })
+      );
+    } catch (error) {
+      // La alerta ya existe; solo falta el detalle.
+      logger.error('[Emergency] Could not attach location to alert', error);
+      return { success: true, alertId, locationShared: false };
+    }
+
+    return { success: true, alertId, locationShared: !!location };
   }
 
   async resolveAlert(
     alertId: string,
     status: 'resolved' | 'false_alarm',
-    notes?: string
+    notes?: string,
+    resolvedBy?: string
   ): Promise<boolean> {
     try {
-      logger.log('[Emergency] Resolving alert:', { alertId, status });
-
-      await updateDoc(doc(getDbInstance(), 'emergencyAlerts', alertId), {
-        status,
-        resolvedAt: new Date().toISOString(),
-        notes,
-      });
-
+      await updateDoc(
+        doc(getDbInstance(), 'emergencyAlerts', alertId),
+        compact({ status, resolvedAt: new Date().toISOString(), notes, resolvedBy })
+      );
       return true;
     } catch (error) {
-      logger.error('[Emergency] Error resolving alert:', error);
+      logger.error('[Emergency] Error resolving alert', error);
       return false;
     }
   }
@@ -91,150 +152,94 @@ class EmergencyService {
         where('userId', '==', userId),
         where('status', '==', 'active')
       );
-
       const snapshot = await getDocs(q);
-      return snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data(),
-      })) as EmergencyAlert[];
+      return snapshot.docs.map((d) => ({ ...(d.data() as Omit<EmergencyAlert, 'id'>), id: d.id }));
     } catch (error) {
-      logger.error('[Emergency] Error getting active alerts:', error);
+      logger.error('[Emergency] Error getting active alerts', error);
       return [];
     }
   }
 
-  private async getCurrentLocation(): Promise<{
-    latitude: number;
-    longitude: number;
-    accuracy?: number;
-    address?: string;
-  } | null> {
-    if (Platform.OS === 'web') {
-      try {
-        if ('geolocation' in navigator) {
-          return new Promise((resolve) => {
-            navigator.geolocation.getCurrentPosition(
-              (position) => {
-                resolve({
-                  latitude: position.coords.latitude,
-                  longitude: position.coords.longitude,
-                  accuracy: position.coords.accuracy,
-                  address: undefined,
-                });
-              },
-              (error) => {
-                logger.error('[Emergency] Web geolocation error:', error);
-                resolve(null);
-              },
-              { enableHighAccuracy: true }
-            );
-          });
-        }
-        return null;
-      } catch (error) {
-        logger.error('[Emergency] Web location error:', error);
-        return null;
-      }
-    }
-
+  // Las reservas viven en Realtime Database (no en Firestore).
+  private async getBookingParties(bookingId: string): Promise<{ clientId?: string; guardId?: string } | null> {
     try {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      
-      if (status !== 'granted') {
-        logger.error('[Emergency] Location permission denied');
-        return null;
-      }
-
-      const location = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.High,
-      });
-
-      let address: string | undefined;
-      try {
-        const [geocode] = await Location.reverseGeocodeAsync({
-          latitude: location.coords.latitude,
-          longitude: location.coords.longitude,
-        });
-        
-        if (geocode) {
-          address = `${geocode.street || ''} ${geocode.city || ''} ${geocode.region || ''}`.trim();
-        }
-      } catch (error) {
-        logger.error('[Emergency] Error getting address:', error);
-      }
-
-      return {
-        latitude: location.coords.latitude,
-        longitude: location.coords.longitude,
-        accuracy: location.coords.accuracy || undefined,
-        address,
-      };
+      const snap = await get(ref(getRealtimeDb(), `bookings/${bookingId}`));
+      if (!snap.exists()) return null;
+      const b = snap.val() as { clientId?: string; guardId?: string };
+      return { clientId: b.clientId, guardId: b.guardId };
     } catch (error) {
-      logger.error('[Emergency] Error getting location:', error);
+      logger.error('[Emergency] Could not read booking for alert', error);
       return null;
     }
   }
 
-  private async notifyEmergencyContacts(
-    alertId: string,
-    alert: Omit<EmergencyAlert, 'id'>
-  ): Promise<void> {
-    try {
-      const userDoc = await getDoc(doc(getDbInstance(), 'users', alert.userId));
-      const userData = userDoc.data();
-
-      if (!userData) return;
-
-      const message = `🚨 EMERGENCY ALERT: ${userData.firstName} ${userData.lastName} has triggered a ${alert.type} alert at ${alert.location.address || 'unknown location'}`;
-
-      const adminsQuery = query(
-        collection(getDbInstance(), 'users'),
-        where('role', '==', 'admin')
-      );
-      const adminsSnapshot = await getDocs(adminsQuery);
-
-      for (const adminDoc of adminsSnapshot.docs) {
-        await notificationService.sendLocalNotification(
-          'Emergency Alert',
-          message,
-          { alertId, type: 'emergency', userId: adminDoc.id }
-        );
-      }
-
-      logger.log('[Emergency] Notified emergency contacts');
-    } catch (error) {
-      logger.error('[Emergency] Error notifying emergency contacts:', error);
-    }
+  private getCurrentLocation(timeoutMs: number): Promise<EmergencyLocation | null> {
+    return timeout(this.readLocation(timeoutMs), timeoutMs, null);
   }
 
-  private async notifyBookingParties(
-    bookingId: string,
-    alertId: string,
-    alert: Omit<EmergencyAlert, 'id'>
-  ): Promise<void> {
-    try {
-      const bookingDoc = await getDoc(doc(getDbInstance(), 'bookings', bookingId));
-      const booking = bookingDoc.data();
-
-      if (!booking) return;
-
-      const message = `🚨 Emergency alert triggered for booking #${bookingId}`;
-
-      const userIds = [booking.clientId, booking.guardId].filter(
-        id => id && id !== alert.userId
-      );
-
-      for (const userId of userIds) {
-        await notificationService.sendLocalNotification(
-          'Emergency Alert',
-          message,
-          { alertId, bookingId, type: 'emergency', userId }
+  private async readLocation(timeoutMs: number): Promise<EmergencyLocation | null> {
+    if (Platform.OS === 'web') {
+      if (typeof navigator === 'undefined' || !('geolocation' in navigator)) return null;
+      return new Promise((resolve) => {
+        navigator.geolocation.getCurrentPosition(
+          (position) =>
+            resolve({
+              latitude: position.coords.latitude,
+              longitude: position.coords.longitude,
+              accuracy: position.coords.accuracy ?? null,
+            }),
+          (error) => {
+            logger.warn('[Emergency] Web geolocation unavailable', { code: error?.code });
+            resolve(null);
+          },
+          { enableHighAccuracy: true, timeout: timeoutMs, maximumAge: 60000 }
         );
+      });
+    }
+
+    try {
+      let { status } = await Location.getForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        ({ status } = await Location.requestForegroundPermissionsAsync());
+      }
+      if (status !== 'granted') {
+        logger.warn('[Emergency] Location permission not granted');
+        return null;
       }
 
-      logger.log('[Emergency] Notified booking parties');
+      // Primero la ultima posicion conocida (instantanea), luego una fresca.
+      const last = await Location.getLastKnownPositionAsync({ maxAge: 120000 }).catch(() => null);
+      const fresh = await timeout(
+        Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High }),
+        Math.max(1000, timeoutMs - 1500),
+        null
+      );
+      const position = fresh ?? last;
+      if (!position) return null;
+
+      let address: string | null = null;
+      try {
+        const [geocode] = await timeout(
+          Location.reverseGeocodeAsync({ latitude: position.coords.latitude, longitude: position.coords.longitude }),
+          1500,
+          []
+        );
+        if (geocode) {
+          address = [geocode.street, geocode.streetNumber, geocode.city, geocode.region].filter(Boolean).join(' ').trim() || null;
+        }
+      } catch {
+        address = null;
+      }
+
+      return {
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude,
+        accuracy: position.coords.accuracy ?? null,
+        address,
+      };
     } catch (error) {
-      logger.error('[Emergency] Error notifying booking parties:', error);
+      logger.error('[Emergency] Error getting location', error);
+      return null;
     }
   }
 }

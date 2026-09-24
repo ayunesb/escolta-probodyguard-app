@@ -1,29 +1,15 @@
-import { View, Text, StyleSheet } from 'react-native';
-import Colors from '@/constants/colors';
-
-const MapView = ({ children, ...props }: any) => {
-  return (
-    <View style={[styles.mapPlaceholder, props.style]}>
-      <Text style={styles.placeholderText}>Map view not available on web</Text>
-      {children}
-    </View>
-  );
-};
-
-export const Marker = ({ children, ...props }: any) => null;
-export const Polyline = (props: any) => null;
-export const PROVIDER_DEFAULT = 'default';
-
-const styles = StyleSheet.create({
-  mapPlaceholder: {
-    backgroundColor: Colors.surfaceLight,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  placeholderText: {
-    color: Colors.textSecondary,
-    fontSize: 14,
-  },
-});
-
-export default MapView;
+// Fachada de tipos. En tiempo de ejecucion Metro elige MapView.web.tsx
+// (Leaflet) o MapView.native.tsx (react-native-maps); este archivo solo lo
+// resuelve TypeScript, que no conoce las extensiones por plataforma. Ambas
+// implementaciones comparten la API que usa la app (ver MapView.web.tsx).
+export { default, Marker, Polyline, PROVIDER_DEFAULT } from './MapView.web';
+export type {
+  EdgePadding,
+  LatLng,
+  MapPressEvent,
+  MapViewHandle,
+  MapViewProps,
+  MarkerProps,
+  PolylineProps,
+  Region,
+} from './MapView.web';

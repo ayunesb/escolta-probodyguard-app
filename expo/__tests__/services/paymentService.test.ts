@@ -1,10 +1,12 @@
 /**
  * Payment Service Unit Tests
- * Tests for client token generation, payment processing, and refunds
+ * Client token, server-confirmed payments (Stripe + Braintree), saved cards, refunds.
+ * Pricing itself lives in utils/pricing (calculatePrice) and is not duplicated here.
  */
 
 import { paymentService } from '@/services/paymentService';
-import { getDocs } from 'firebase/firestore';
+import { formatMXN } from '@/utils/pricing';
+import { getDocs, updateDoc } from 'firebase/firestore';
 
 // Mock ENV config
 jest.mock('@/config/env', () => ({
@@ -33,6 +35,9 @@ jest.mock('firebase/firestore', () => ({
 
 jest.mock('@/lib/firebase', () => ({
   db: jest.fn(() => ({})),
+  auth: jest.fn(() => ({
+    currentUser: { getIdToken: jest.fn().mockResolvedValue('id-token-abc') },
+  })),
 }));
 
 // Mock fetch
@@ -67,65 +72,112 @@ describe('PaymentService - Client Token', () => {
   });
 });
 
-describe('PaymentService - Payment Processing', () => {
+describe('PaymentService - Braintree charge (native)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
 
-  it('should process payment successfully', async () => {
+  const lastBody = () => JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
+
+  it('charges a new card by nonce and sends only bookingId + nonce', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({
       ok: true,
-      json: async () => ({ 
-        success: true,
-        transactionId: 'transaction-123' 
-      }),
+      json: async () => ({ success: true, transactionId: 'transaction-123' }),
     });
 
-    const result = await paymentService.processPayment(
-      'payment-nonce-xyz',
-      150.00,
-      'booking-789',
-      'user-123',
-      true
-    );
+    const result = await paymentService.processBraintreePayment('booking-789', {
+      paymentMethodNonce: 'payment-nonce-xyz',
+    });
 
     expect(result.success).toBe(true);
     expect(result.transactionId).toBe('transaction-123');
+    expect(lastBody()).toEqual({ bookingId: 'booking-789', paymentMethodNonce: 'payment-nonce-xyz' });
+    const headers = (global.fetch as jest.Mock).mock.calls[0][1].headers;
+    expect(headers.Authorization).toBe('Bearer id-token-abc');
   });
 
-  it('should handle payment processing failure', async () => {
+  it('charges a saved card by vault token, not as a nonce', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      json: async () => ({ success: true, transactionId: 'transaction-456' }),
+    });
+
+    await paymentService.processBraintreePayment('booking-789', { paymentMethodToken: 'pm-1' });
+
+    expect(lastBody()).toEqual({ bookingId: 'booking-789', paymentMethodToken: 'pm-1' });
+  });
+
+  it('never flips a successful charge because of client bookkeeping', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      json: async () => ({ success: true, transactionId: 'transaction-789' }),
+    });
+    (updateDoc as jest.Mock).mockRejectedValue(new Error('permission-denied'));
+
+    const result = await paymentService.processBraintreePayment('booking-789', { paymentMethodNonce: 'n' });
+
+    expect(result.success).toBe(true);
+  });
+
+  it('reports a declined charge', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({
       ok: false,
+      status: 400,
       json: async () => ({ error: 'Insufficient funds' }),
     });
 
-    const result = await paymentService.processPayment(
-      'payment-nonce-xyz',
-      150.00,
-      'booking-789',
-      'user-123',
-      false
-    );
+    const result = await paymentService.processBraintreePayment('booking-789', { paymentMethodNonce: 'n' });
 
     expect(result.success).toBe(false);
-    expect(result.error).toBeDefined();
+    expect(result.error).toBe('Insufficient funds');
+  });
+});
+
+describe('PaymentService - Stripe (web)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
   });
 
-  it('should calculate payment breakdown correctly', () => {
-    const hourlyRate = 200;
-    const duration = 5;
-    const breakdown = paymentService.calculateBreakdown(hourlyRate, duration);
+  it('creates a payment intent and returns the server breakdown', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        clientSecret: 'pi_1_secret_2',
+        paymentIntentId: 'pi_1',
+        breakdown: { subtotal: 1000, processingFee: 39, total: 1039, totalCents: 103900 },
+      }),
+    });
 
-    expect(breakdown.subtotal).toBe(1000);
-    expect(breakdown.total).toBeGreaterThan(breakdown.subtotal);
-    expect(breakdown.processingFee).toBeGreaterThan(0);
-    expect(breakdown.platformCut).toBeGreaterThan(0);
-    expect(breakdown.guardPayout).toBeLessThan(breakdown.subtotal);
-    
-    // Verify total calculation
-    expect(breakdown.total).toBe(
-      breakdown.subtotal + breakdown.processingFee
-    );
+    const intent = await paymentService.createPaymentIntent('booking-789');
+
+    expect(intent.clientSecret).toBe('pi_1_secret_2');
+    expect(intent.breakdown.total).toBe(1039);
+    const [url, init] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).toMatch(/\/api\/stripe\/payment-intent$/);
+    expect(JSON.parse(init.body)).toEqual({ bookingId: 'booking-789' });
+    expect(init.headers.Authorization).toBe('Bearer id-token-abc');
+  });
+
+  it('surfaces the HTTP status when the booking is no longer pending', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: false,
+      status: 409,
+      json: async () => ({ error: 'Booking is not pending' }),
+    });
+
+    await expect(paymentService.createPaymentIntent('booking-789')).rejects.toMatchObject({ status: 409 });
+  });
+
+  it('confirms the booking server-side', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      json: async () => ({ status: 'processing' }),
+    });
+
+    const result = await paymentService.confirmBookingPayment('booking-789');
+
+    expect(result.status).toBe('processing');
+    expect((global.fetch as jest.Mock).mock.calls[0][0]).toMatch(/\/api\/stripe\/confirm-booking$/);
   });
 });
 
@@ -261,47 +313,10 @@ describe('PaymentService - Refunds', () => {
   });
 });
 
-describe('PaymentService - Edge Cases', () => {
-  it('should format MXN currency correctly', () => {
-    const formatted = paymentService.formatMXN(1234.56);
-    // Should contain the amount with proper formatting
+describe('PaymentService - Formatting', () => {
+  it('formats MXN currency via utils/pricing', () => {
+    const formatted = formatMXN(1234.56);
     expect(formatted).toContain('1,234.56');
-    // Should be in currency format (may vary by locale, so check for $ or MXN)
     expect(formatted).toMatch(/\$|MXN/);
   });
-
-  it('should calculate booking cost breakdown', async () => {
-    const cost = await paymentService.calculateBookingCost(
-      200, // hourly rate
-      5,   // duration
-      'armored', // vehicle type
-      'armed',   // protection type
-      1 // number of protectees
-    );
-
-    expect(cost.subtotal).toBe(1000);
-    expect(cost.vehicleFee).toBeGreaterThan(0);
-    expect(cost.protectionFee).toBeGreaterThan(0);
-    expect(cost.platformFee).toBeGreaterThan(0);
-    expect(cost.total).toBeGreaterThan(cost.subtotal);
-  });
-
-  it('should validate payment breakdown percentages', () => {
-    const hourlyRate = 200;
-    const duration = 5;
-    const breakdown = paymentService.calculateBreakdown(hourlyRate, duration);
-
-    const subtotal = breakdown.subtotal;
-
-    // Platform cut should be reasonable (5-15% of subtotal)
-    const platformPercentage = (breakdown.platformCut / subtotal) * 100;
-    expect(platformPercentage).toBeGreaterThanOrEqual(5);
-    expect(platformPercentage).toBeLessThanOrEqual(20);
-
-    // Processing fee should be reasonable (2-5% of subtotal)
-    const processingPercentage = (breakdown.processingFee / subtotal) * 100;
-    expect(processingPercentage).toBeGreaterThanOrEqual(2);
-    expect(processingPercentage).toBeLessThanOrEqual(10);
-  });
 });
-

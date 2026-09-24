@@ -64,3 +64,12 @@ GoogleService-Info.plist
 .firebase/
 dist/
 firebase-debug*.log
+
+# Logs: los de emuladores y builds llegaron a traer credenciales de Braintree
+*.log
+
+# Originales 2K generados (≈80 MB); la app usa las versiones comprimidas de assets/brand/img y video
+assets/brand/raw/
+
+# Public demo export
+dist-demo/

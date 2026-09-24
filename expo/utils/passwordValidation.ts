@@ -1,3 +1,5 @@
+import i18n from '@/i18n';
+
 export interface PasswordValidationResult {
   isValid: boolean;
   feedback: string[];
@@ -7,28 +9,28 @@ export const validatePasswordStrength = (password: string): PasswordValidationRe
   const feedback: string[] = [];
   
   if (password.length < 8) {
-    feedback.push('Password must be at least 8 characters long');
+    feedback.push(i18n.t('auth:password.minLength'));
   }
   
   if (!/[A-Z]/.test(password)) {
-    feedback.push('Password must contain at least one uppercase letter');
+    feedback.push(i18n.t('auth:password.uppercase'));
   }
   
   if (!/[a-z]/.test(password)) {
-    feedback.push('Password must contain at least one lowercase letter');
+    feedback.push(i18n.t('auth:password.lowercase'));
   }
   
   if (!/[0-9]/.test(password)) {
-    feedback.push('Password must contain at least one number');
+    feedback.push(i18n.t('auth:password.number'));
   }
   
   if (!/[!@#$%^&*(),.?":{}|<>]/.test(password)) {
-    feedback.push('Password must contain at least one special character');
+    feedback.push(i18n.t('auth:password.special'));
   }
   
   const commonPasswords = ['password', '12345678', 'qwerty', 'abc123', 'password123'];
   if (commonPasswords.some(common => password.toLowerCase().includes(common))) {
-    feedback.push('Password is too common');
+    feedback.push(i18n.t('auth:password.common'));
   }
   
   return {

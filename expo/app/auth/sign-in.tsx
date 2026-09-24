@@ -1,427 +1,557 @@
-import { useState, useEffect } from 'react';
-import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  StyleSheet,
-  KeyboardAvoidingView,
-  Platform,
-  ScrollView,
-  ActivityIndicator,
-} from 'react-native';
+import { useEffect, useState } from 'react';
+import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Stack, useRouter } from 'expo-router';
-import { Shield, Fingerprint } from 'lucide-react-native';
+import {
+  Fingerprint,
+  Lock,
+  Mail,
+  Shield,
+  BriefcaseBusiness,
+  Building2,
+  ShieldCheck,
+  FlaskConical,
+  CircleAlert,
+  CircleCheck,
+} from 'lucide-react-native';
+import type { LucideIcon } from 'lucide-react-native';
 import { useAuth } from '@/contexts/AuthContext';
 import { biometricService } from '@/services/biometricService';
+import { USING_EMULATORS } from '@/lib/firebase';
+import { PUBLIC_DEMO } from '@/constants/demo';
+import { DEV_ACCOUNTS, DEV_PASSWORD, DevRole } from '@/constants/devAccounts';
 import Colors from '@/constants/colors';
+import { Fonts, ICON_STROKE, Radius, Space } from '@/constants/design';
+import { AppText, BackgroundVideo, BrandMark, Button, Card, Input, PressableScale, Scrim } from '@/components/ui';
+import { BrandVideo } from '@/constants/brandMedia';
+import { useTranslation } from 'react-i18next';
+import { LanguageToggle } from '@/components/LanguageToggle';
+
+const ROLE_ICONS: Record<DevRole, LucideIcon> = {
+  client: Shield,
+  guard: BriefcaseBusiness,
+  company: Building2,
+  admin: ShieldCheck,
+};
+
+function Notice({ tone, message }: { tone: 'error' | 'success'; message: string }) {
+  const Icon = tone === 'error' ? CircleAlert : CircleCheck;
+  const color = tone === 'error' ? Colors.error : Colors.success;
+  return (
+    <View
+      style={[styles.notice, { backgroundColor: tone === 'error' ? Colors.errorSoft : Colors.successSoft }]}
+      accessibilityRole="alert"
+      accessibilityLiveRegion="polite"
+    >
+      <Icon size={17} color={color} strokeWidth={ICON_STROKE} />
+      <AppText variant="footnote" color={tone === 'error' ? Colors.textPrimary : Colors.textPrimary} style={styles.noticeText}>
+        {message}
+      </AppText>
+    </View>
+  );
+}
+
+// Acceso rapido por rol. Solo existe con el emulador local (ver
+// scripts/emulator/README.md); en produccion __DEV__ es falso y esto no se monta.
+function TestModePanel({ busyRole, onPick }: { busyRole: DevRole | null; onPick: (role: DevRole) => void }) {
+  const { t } = useTranslation('auth');
+  return (
+    <Card style={styles.testPanel}>
+      <View style={styles.testHeader}>
+        <FlaskConical size={15} color={Colors.accent} strokeWidth={ICON_STROKE} />
+        <AppText variant="overline" color={Colors.accent}>
+          {t(PUBLIC_DEMO ? 'publicDemo.title' : 'testMode.title')}
+        </AppText>
+      </View>
+      <AppText variant="footnote" style={styles.testIntro}>
+        {t(PUBLIC_DEMO ? 'publicDemo.intro' : 'testMode.intro')}
+      </AppText>
+      <View style={styles.testGrid}>
+        {(Object.keys(DEV_ACCOUNTS) as DevRole[]).map((role) => {
+          const label = t(`testMode.roles.${role}.label`);
+          const Icon = ROLE_ICONS[role];
+          const busy = busyRole === role;
+          return (
+            <PressableScale
+              key={role}
+              onPress={() => onPick(role)}
+              disabled={!!busyRole}
+              scaleTo={0.96}
+              haptic="light"
+              accessibilityRole="button"
+              accessibilityLabel={t(PUBLIC_DEMO ? 'publicDemo.a11y' : 'testMode.a11y', { role: label })}
+              hoverStyle={{ borderColor: Colors.accentLine, backgroundColor: Colors.surfaceLight }}
+              style={[styles.roleTile, busy ? styles.roleTileBusy : null, busyRole && !busy ? styles.roleTileDim : null]}
+            >
+              <View style={styles.roleIcon}>
+                <Icon size={17} color={Colors.accent} strokeWidth={ICON_STROKE} />
+              </View>
+              <AppText variant="headline">{busy ? t('testMode.signingIn') : label}</AppText>
+              <AppText variant="caption" color={Colors.textTertiary} numberOfLines={2}>
+                {t(`testMode.roles.${role}.description`)}
+              </AppText>
+            </PressableScale>
+          );
+        })}
+      </View>
+    </Card>
+  );
+}
 
 export default function SignInScreen() {
   const router = useRouter();
-  const { signIn, resendVerificationEmail, user } = useAuth();
-  const insets = useSafeAreaInsets();
+  const { t } = useTranslation('auth');
+  const { signIn, resendVerificationEmail, resetPassword, user, authError, clearAuthError } = useAuth();
   // Precarga solo en desarrollo, y solo si tu .env local las define. Antes
   // estaban escritas aqui, y este repositorio es publico.
   const [email, setEmail] = useState(__DEV__ ? (process.env.EXPO_PUBLIC_DEMO_EMAIL ?? '') : '');
   const [password, setPassword] = useState(__DEV__ ? (process.env.EXPO_PUBLIC_DEMO_PASSWORD ?? '') : '');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [fieldErrors, setFieldErrors] = useState<{ email?: string; password?: string }>({});
   const [showResendVerification, setShowResendVerification] = useState(false);
-  const [biometricAvailable, setBiometricAvailable] = useState(false);
-  const [biometricEnabled, setBiometricEnabled] = useState(false);
-  // Quien enruta despues del acceso.
-  //
-  // Antes esta pantalla decia "index.tsx se encarga" y index.tsx decia "sign-in
-  // se encarga". Ninguno lo hacia, y como index.tsx solo se monta en la ruta "/",
-  // despues de un acceso correcto no pasaba nada: el boton se quedaba girando
-  // para siempre con la sesion ya iniciada.
-  //
-  // Ahora: en cuanto AuthContext tiene usuario, esta pantalla manda a "/" y
-  // index.tsx hace el reparto por rol. No hay ciclo, porque solo se va a "/"
-  // cuando el usuario ya existe, que es justo lo que index.tsx necesita.
+  const [biometricReady, setBiometricReady] = useState(false);
+  const [busyRole, setBusyRole] = useState<DevRole | null>(null);
+  const insets = useSafeAreaInsets();
+  const { width, height } = useWindowDimensions();
+  const isWide = width >= 900;
+  const mediaHeight = Math.max(420, Math.round(height * 0.58));
+
+  // Quien enruta despues del acceso: en cuanto AuthContext tiene usuario,
+  // esta pantalla manda a "/" e index.tsx hace el reparto por rol.
   useEffect(() => {
-    if (user) {
-      console.log('[SignIn] Usuario listo, paso el control al enrutador');
-      router.replace('/');
-    }
+    if (user) router.replace('/');
   }, [user, router]);
 
+  // Si el perfil no se pudo cargar (o la cuenta esta suspendida), AuthContext
+  // lo reporta aqui y el boton deja de girar.
   useEffect(() => {
-    checkBiometric();
+    if (authError) {
+      setIsLoading(false);
+      setBusyRole(null);
+    }
+  }, [authError]);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([biometricService.isAvailable(), biometricService.isBiometricEnabled()])
+      .then(([available, enabled]) => {
+        if (!cancelled) setBiometricReady(available && enabled);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  const checkBiometric = async () => {
-    const available = await biometricService.isAvailable();
-    const enabled = await biometricService.isBiometricEnabled();
-    setBiometricAvailable(available);
-    setBiometricEnabled(enabled);
-    console.log('[SignIn] Biometric available:', available, 'enabled:', enabled);
+  const resetMessages = () => {
+    setError('');
+    setSuccess('');
+    clearAuthError();
   };
 
   const handleSignIn = async () => {
     const trimmedEmail = email.trim();
-    const trimmedPassword = password.trim();
-    
-    if (!trimmedEmail || !trimmedPassword) {
-      setError('Please fill in all fields');
-      return;
-    }
+    const nextErrors: typeof fieldErrors = {};
+    if (!trimmedEmail) nextErrors.email = t('validation.emailRequired');
+    else if (!/^\S+@\S+\.\S+$/.test(trimmedEmail)) nextErrors.email = t('validation.emailInvalid');
+    if (!password) nextErrors.password = t('validation.passwordRequired');
+    setFieldErrors(nextErrors);
+    if (nextErrors.email || nextErrors.password) return;
 
-    setIsLoading(true);
-    setError('');
+    resetMessages();
     setShowResendVerification(false);
-
-    try {
-      const result = await signIn(trimmedEmail, trimmedPassword);
-
-      if (result.success) {
-        // No se apaga el spinner aqui a proposito: sigue girando hasta que
-        // AuthContext entregue el usuario y el efecto de arriba navegue.
-        console.log('[SignIn] Acceso correcto, esperando el usuario');
-      } else if (result.emailNotVerified) {
-        // Show resend verification option
-        setError(result.error || 'Email not verified');
-        setShowResendVerification(true);
-        setIsLoading(false);
-      } else {
-        setError(result.error || 'Failed to sign in');
-        setIsLoading(false);
-      }
-    } catch (error) {
-      console.error('[SignIn] Unexpected error:', error);
-      setError('An unexpected error occurred');
-      setIsLoading(false);
-    }
+    setIsLoading(true);
+    const result = await signIn(trimmedEmail, password);
+    if (result.success) return; // sigue girando hasta que llegue el usuario
+    setError(result.error || t('errors.signInFailedShort'));
+    setShowResendVerification(!!result.emailNotVerified);
+    setIsLoading(false);
   };
 
   const handleResendVerification = async () => {
+    resetMessages();
     setIsLoading(true);
-    setError('');
+    const result = await resendVerificationEmail(email.trim(), password);
+    setIsLoading(false);
+    if (result.success) {
+      setShowResendVerification(false);
+      setSuccess(t('messages.verificationSent', { email: email.trim() }));
+    } else {
+      setError(result.error || t('errors.resendFailed'));
+    }
+  };
 
-    try {
-      const result = await resendVerificationEmail();
-      
-      if (result.success) {
-        setError('');
-        setShowResendVerification(false);
-        alert('Verification email sent! Please check your inbox.');
-      } else {
-        setError(result.error || 'Failed to resend verification email');
-      }
-    } catch (error) {
-      console.error('[SignIn] Resend verification error:', error);
-      setError('Failed to resend verification email');
-    } finally {
-      setIsLoading(false);
+  const handleForgotPassword = async () => {
+    resetMessages();
+    if (!email.trim()) {
+      setFieldErrors({ email: t('validation.forgotNeedsEmail') });
+      return;
+    }
+    setFieldErrors({});
+    const result = await resetPassword(email);
+    if (result.success) {
+      setSuccess(t('messages.resetSent', { email: email.trim() }));
+    } else {
+      setError(result.error || t('errors.resetFailedShort'));
     }
   };
 
   const handleBiometricSignIn = async () => {
+    resetMessages();
     setIsLoading(true);
-    setError('');
-
     try {
-      const authenticated = await biometricService.authenticate('Sign in with biometrics');
-      
-      if (!authenticated) {
-        setError('Biometric authentication failed');
-        setIsLoading(false);
-        return;
-      }
-
-      const credentials = await biometricService.getStoredCredentials();
-      
+      const authenticated = await biometricService.authenticate(t('signIn.biometricPrompt'));
+      const credentials = authenticated ? await biometricService.getStoredCredentials() : null;
       if (!credentials) {
-        setError('No stored credentials found');
+        setError(authenticated ? t('messages.noSavedSignIn') : t('messages.biometricFailed'));
         setIsLoading(false);
         return;
       }
-
       const result = await signIn(credentials.email, credentials.encryptedPassword);
-
-      if (result.success) {
-        console.log('[SignIn] Biometric login successful, waiting for user data to load');
-        // Don't navigate here - let the useEffect handle it when user is loaded
-      } else {
-        setError(result.error || 'Failed to sign in');
+      if (!result.success) {
+        setError(result.error || t('errors.signInFailedShort'));
         setIsLoading(false);
       }
-    } catch (error) {
-      console.error('[SignIn] Biometric sign in error:', error);
-      setError('Biometric sign in failed');
+    } catch {
+      setError(t('messages.biometricSignInFailed'));
       setIsLoading(false);
     }
   };
 
+  const handleQuickLogin = async (role: DevRole) => {
+    resetMessages();
+    setBusyRole(role);
+    const result = await signIn(DEV_ACCOUNTS[role].email, DEV_PASSWORD);
+    if (!result.success) {
+      setError(t('testMode.emulatorHint', { error: result.error ?? t('testMode.failed') }));
+      setBusyRole(null);
+    }
+  };
+
+  const message = error || authError;
+
+  const form = PUBLIC_DEMO ? (
+    <View style={styles.form}>
+      <TestModePanel busyRole={busyRole} onPick={handleQuickLogin} />
+      {message ? <Notice tone="error" message={message} /> : null}
+    </View>
+  ) : (
+    <View style={styles.form}>
+      <Input
+        label={t('signIn.email')}
+        icon={Mail}
+        value={email}
+        onChangeText={(text) => {
+          setEmail(text.trim());
+          if (fieldErrors.email) setFieldErrors((f) => ({ ...f, email: undefined }));
+        }}
+        placeholder={t('signIn.emailPlaceholder')}
+        keyboardType="email-address"
+        autoCapitalize="none"
+        autoCorrect={false}
+        autoComplete="email"
+        textContentType="username"
+        returnKeyType="next"
+        error={fieldErrors.email}
+      />
+      <View>
+        <Input
+          label={t('signIn.password')}
+          icon={Lock}
+          value={password}
+          onChangeText={(text) => {
+            setPassword(text);
+            if (fieldErrors.password) setFieldErrors((f) => ({ ...f, password: undefined }));
+          }}
+          placeholder={t('signIn.passwordPlaceholder')}
+          secureTextEntry
+          autoCapitalize="none"
+          autoComplete="current-password"
+          textContentType="password"
+          returnKeyType="go"
+          onSubmitEditing={handleSignIn}
+          error={fieldErrors.password}
+        />
+        <PressableScale onPress={handleForgotPassword} scaleTo={0.97} style={styles.forgot} accessibilityRole="button" accessibilityLabel={t('signIn.forgotA11y')}>
+          <AppText variant="footnote" color={Colors.accentLight}>
+            {t('signIn.forgot')}
+          </AppText>
+        </PressableScale>
+      </View>
+
+      {message ? <Notice tone="error" message={message} /> : null}
+      {success ? <Notice tone="success" message={success} /> : null}
+
+      {showResendVerification ? (
+        <Button title={t('signIn.resendVerification')} variant="outline" icon={Mail} onPress={handleResendVerification} disabled={isLoading} />
+      ) : null}
+
+      <Button title={t('signIn.submit')} size="lg" onPress={handleSignIn} loading={isLoading} disabled={!!busyRole} />
+
+      {biometricReady ? (
+        <Button title={t('signIn.biometric')} variant="secondary" icon={Fingerprint} onPress={handleBiometricSignIn} disabled={isLoading} />
+      ) : null}
+
+      <View style={styles.dividerRow}>
+        <View style={styles.dividerLine} />
+        <AppText variant="caption" color={Colors.textTertiary}>
+          {t('signIn.newHere')}
+        </AppText>
+        <View style={styles.dividerLine} />
+      </View>
+      <Button title={t('signIn.createAccount')} variant="secondary" onPress={() => router.push('/auth/sign-up')} />
+
+      {USING_EMULATORS ? <TestModePanel busyRole={busyRole} onPick={handleQuickLogin} /> : null}
+
+      {__DEV__ && !!process.env.EXPO_PUBLIC_DEMO_EMAIL && !USING_EMULATORS ? (
+        <AppText variant="caption" color={Colors.textTertiary} align="center">
+          {t('signIn.devPrefilled', { email: process.env.EXPO_PUBLIC_DEMO_EMAIL })}
+        </AppText>
+      ) : null}
+    </View>
+  );
+
+  const brand = (
+    <View style={styles.brandRow}>
+      <BrandMark size={34} color={Colors.textPrimary} />
+      <View style={styles.brandText}>
+        <AppText style={styles.brandName}>ESCOLTA PRO</AppText>
+        <AppText variant="overline" color={Colors.accentLight} style={styles.brandTag}>
+          {t('brandTag')}
+        </AppText>
+      </View>
+      <LanguageToggle />
+    </View>
+  );
+
+  const headline = (
+    <View>
+      <AppText variant="display" color={Colors.white} accessibilityRole="header">
+        {t('hero.line1')}{'\n'}
+        <AppText variant="display" style={styles.heroAccent}>
+          {t('hero.line2')}
+        </AppText>
+      </AppText>
+      <AppText variant="callout" color={Colors.textSecondary} style={styles.heroSub}>
+        {t('hero.sub')}
+      </AppText>
+    </View>
+  );
+
+  // Escritorio (web ancho): video a la izquierda a toda altura, formulario a
+  // la derecha. Telefono: video arriba y el formulario sube en una hoja de vidrio.
+  if (isWide) {
+    return (
+      <View style={styles.root}>
+        <Stack.Screen options={{ headerShown: false }} />
+        <View style={styles.wideRow}>
+          <View style={styles.wideMedia}>
+            <BackgroundVideo source={BrandVideo.loginLoop} poster={BrandVideo.loginPoster} />
+            <Scrim from="top" strength={0.95} start={0.3} />
+            <View style={[styles.wideMediaInner, { paddingTop: insets.top + Space.xxxl }]}>
+              {brand}
+              {headline}
+            </View>
+          </View>
+          <ScrollView style={styles.wideFormCol} contentContainerStyle={styles.wideFormContent} keyboardShouldPersistTaps="handled">
+            <AppText variant="title1" style={styles.formTitle}>
+              {t('signIn.welcome')}
+            </AppText>
+            {form}
+          </ScrollView>
+        </View>
+      </View>
+    );
+  }
+
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-    >
+    <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <Stack.Screen options={{ headerShown: false }} />
-      <ScrollView
-        contentContainerStyle={[styles.scrollContent, { paddingTop: insets.top + 24, paddingBottom: insets.bottom + 24 }]}
-        keyboardShouldPersistTaps="handled"
-      >
-        <View style={styles.header}>
-          <View style={styles.iconContainer}>
-            <Shield size={48} color={Colors.gold} strokeWidth={2} />
-          </View>
-          <Text style={styles.title}>Escolta Pro</Text>
-          <Text style={styles.subtitle}>Executive Protection On-Demand</Text>
+      <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} bounces={false}>
+        <View style={[styles.media, { height: mediaHeight }]}>
+          <BackgroundVideo source={BrandVideo.loginLoop} poster={BrandVideo.loginPoster} />
+          <Scrim from="top" strength={1} start={0.25} />
+          <Scrim from="bottom" strength={0.55} start={0.75} />
+          <View style={[styles.mediaTop, { paddingTop: insets.top + Space.lg }]}>{brand}</View>
+          <View style={styles.mediaBottom}>{headline}</View>
         </View>
-
-        <View style={styles.form}>
-          <View style={styles.inputContainer}>
-            <Text style={styles.label}>Email</Text>
-            <TextInput
-              style={styles.input}
-              value={email}
-              onChangeText={(text) => setEmail(text.trim())}
-              placeholder="your@email.com"
-              placeholderTextColor={Colors.textTertiary}
-              keyboardType="email-address"
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-          </View>
-
-          <View style={styles.inputContainer}>
-            <Text style={styles.label}>Password</Text>
-            <TextInput
-              style={styles.input}
-              value={password}
-              onChangeText={setPassword}
-              placeholder="••••••••"
-              placeholderTextColor={Colors.textTertiary}
-              secureTextEntry
-              autoCapitalize="none"
-            />
-          </View>
-
-          {error ? <Text style={styles.error}>{error}</Text> : null}
-
-          {showResendVerification && (
-            <TouchableOpacity
-              style={[styles.resendButton, isLoading && styles.buttonDisabled]}
-              onPress={handleResendVerification}
-              disabled={isLoading}
-            >
-              <Text style={styles.resendButtonText}>Resend Verification Email</Text>
-            </TouchableOpacity>
-          )}
-
-          <TouchableOpacity
-            style={[styles.button, isLoading && styles.buttonDisabled]}
-            onPress={handleSignIn}
-            disabled={isLoading}
-          >
-            {isLoading ? (
-              <ActivityIndicator color={Colors.background} />
-            ) : (
-              <Text style={styles.buttonText}>Sign In</Text>
-            )}
-          </TouchableOpacity>
-
-          {biometricAvailable && biometricEnabled && (
-            <TouchableOpacity
-              style={[styles.biometricButton, isLoading && styles.buttonDisabled]}
-              onPress={handleBiometricSignIn}
-              disabled={isLoading}
-            >
-              <Fingerprint size={24} color={Colors.gold} />
-              <Text style={styles.biometricButtonText}>Sign in with Biometrics</Text>
-            </TouchableOpacity>
-          )}
-
-          <TouchableOpacity style={styles.linkButton}>
-            <Text style={styles.linkText}>Forgot Password?</Text>
-          </TouchableOpacity>
-
-          <View style={styles.divider}>
-            <View style={styles.dividerLine} />
-            <Text style={styles.dividerText}>OR</Text>
-            <View style={styles.dividerLine} />
-          </View>
-
-          <TouchableOpacity
-            style={styles.secondaryButton}
-            onPress={() => router.push('/auth/sign-up' as any)}
-          >
-            <Text style={styles.secondaryButtonText}>Create Account</Text>
-          </TouchableOpacity>
+        <View style={[styles.sheet, { paddingBottom: insets.bottom + Space.xxxl }]}>
+          <View style={styles.sheetInner}>{form}</View>
         </View>
-
-        {/* Las credenciales demo ya no viven en el codigo. Este repositorio es
-            publico: cualquiera que lo leyera tenia las cuatro cuentas, incluida
-            la de administrador. Ahora salen de tu .env local, que no se sube. */}
-        {__DEV__ && !!process.env.EXPO_PUBLIC_DEMO_EMAIL && (
-          <View style={styles.footer}>
-            <Text style={styles.footerText}>
-              Modo desarrollo: cuenta precargada desde .env
-            </Text>
-            <Text style={styles.footerText}>
-              {process.env.EXPO_PUBLIC_DEMO_EMAIL}
-            </Text>
-          </View>
-        )}
       </ScrollView>
     </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  root: {
     flex: 1,
     backgroundColor: Colors.background,
   },
-  scrollContent: {
+  scroll: {
     flexGrow: 1,
-    justifyContent: 'center',
-    padding: 24,
   },
-  header: {
-    alignItems: 'center',
-    marginBottom: 48,
+  media: {
+    overflow: 'hidden',
+    justifyContent: 'space-between',
   },
-  iconContainer: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: Colors.surface,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 16,
+  mediaTop: {
+    paddingHorizontal: Space.gutter,
   },
-  title: {
-    fontSize: 32,
-    fontWeight: '700' as const,
-    color: Colors.textPrimary,
-    marginBottom: 8,
+  mediaBottom: {
+    paddingHorizontal: Space.gutter,
+    paddingBottom: Space.huge,
   },
-  subtitle: {
-    fontSize: 16,
-    color: Colors.textSecondary,
+  sheet: {
+    flexGrow: 1,
+    marginTop: -Space.xxxl,
+    paddingTop: Space.xxl,
+    paddingHorizontal: Space.gutter,
+    borderTopLeftRadius: Radius.xl,
+    borderTopRightRadius: Radius.xl,
+    backgroundColor: 'rgba(10, 16, 30, 0.92)',
+    borderTopWidth: 1,
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    borderColor: Colors.glassBorder,
   },
-  form: {
+  sheetInner: {
     width: '100%',
+    maxWidth: 480,
+    alignSelf: 'center',
   },
-  inputContainer: {
-    marginBottom: 20,
-  },
-  label: {
-    fontSize: 14,
-    fontWeight: '600' as const,
-    color: Colors.textPrimary,
-    marginBottom: 8,
-  },
-  input: {
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: 12,
-    padding: 16,
-    fontSize: 16,
-    color: Colors.textPrimary,
-  },
-  error: {
-    color: Colors.error,
-    fontSize: 14,
-    marginBottom: 16,
-    textAlign: 'center' as const,
-  },
-  button: {
-    backgroundColor: Colors.gold,
-    borderRadius: 12,
-    padding: 16,
-    alignItems: 'center',
-    marginTop: 8,
-  },
-  buttonDisabled: {
-    opacity: 0.6,
-  },
-  buttonText: {
-    color: Colors.background,
-    fontSize: 16,
-    fontWeight: '700' as const,
-  },
-  linkButton: {
-    alignItems: 'center',
-    marginTop: 16,
-  },
-  linkText: {
-    color: Colors.gold,
-    fontSize: 14,
-    fontWeight: '600' as const,
-  },
-  divider: {
+  brandRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginVertical: 32,
+    gap: Space.md,
+  },
+  brandText: {
+    flex: 1,
+  },
+  brandName: {
+    fontFamily: Fonts.displayHeavy,
+    fontSize: 15,
+    lineHeight: 18,
+    letterSpacing: 3,
+    color: Colors.textPrimary,
+  },
+  brandTag: {
+    fontSize: 8,
+    letterSpacing: 2.4,
+    marginTop: 3,
+  },
+  heroAccent: {
+    fontFamily: Fonts.displayLight,
+    color: Colors.accentLight,
+  },
+  heroSub: {
+    marginTop: Space.md,
+    maxWidth: 340,
+  },
+  form: {
+    gap: Space.lg,
+  },
+  forgot: {
+    alignSelf: 'flex-end',
+    marginTop: Space.sm,
+    paddingVertical: Space.xs,
+  },
+  notice: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: Space.sm,
+    padding: Space.md,
+    borderRadius: Radius.sm,
+  },
+  noticeText: {
+    flex: 1,
+  },
+  dividerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Space.md,
+    marginTop: Space.sm,
   },
   dividerLine: {
     flex: 1,
-    height: 1,
-    backgroundColor: Colors.border,
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: Colors.glassBorder,
   },
-  dividerText: {
-    color: Colors.textSecondary,
-    fontSize: 14,
-    marginHorizontal: 16,
+  // Escritorio
+  wideRow: {
+    flex: 1,
+    flexDirection: 'row',
   },
-  secondaryButton: {
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: 12,
-    padding: 16,
-    alignItems: 'center',
+  wideMedia: {
+    flex: 1.15,
+    overflow: 'hidden',
   },
-  secondaryButtonText: {
-    color: Colors.textPrimary,
-    fontSize: 16,
-    fontWeight: '600' as const,
+  wideMediaInner: {
+    flex: 1,
+    justifyContent: 'space-between',
+    padding: Space.huge,
   },
-  footer: {
-    marginTop: 32,
-    alignItems: 'center',
+  wideFormCol: {
+    flex: 1,
+    borderLeftWidth: 1,
+    borderLeftColor: Colors.glassBorder,
   },
-  footerText: {
-    color: Colors.textTertiary,
-    fontSize: 12,
-    textAlign: 'center' as const,
+  wideFormContent: {
+    flexGrow: 1,
+    justifyContent: 'center',
+    width: '100%',
+    maxWidth: 440,
+    alignSelf: 'center',
+    paddingVertical: Space.huge,
+    paddingHorizontal: Space.xxl,
   },
-  biometricButton: {
+  formTitle: {
+    marginBottom: Space.xl,
+  },
+  testPanel: {
+    marginTop: Space.lg,
+    borderColor: Colors.accentLine,
+    borderStyle: 'dashed',
+  },
+  testHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.gold,
-    borderRadius: 12,
-    padding: 16,
-    marginTop: 16,
-    gap: 8,
+    gap: Space.sm,
   },
-  biometricButtonText: {
-    color: Colors.gold,
-    fontSize: 16,
-    fontWeight: '600' as const,
+  testIntro: {
+    marginTop: Space.xs,
+    marginBottom: Space.md,
   },
-  resendButton: {
-    backgroundColor: Colors.surface,
+  testGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Space.sm,
+  },
+  roleTile: {
+    flexGrow: 1,
+    flexBasis: '46%',
+    gap: 3,
+    padding: Space.md,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.glass,
     borderWidth: 1,
-    borderColor: Colors.gold,
-    borderRadius: 12,
-    padding: 12,
+    borderColor: Colors.glassBorder,
+  },
+  roleTileBusy: {
+    borderColor: Colors.accent,
+  },
+  roleTileDim: {
+    opacity: 0.45,
+  },
+  roleIcon: {
+    width: 30,
+    height: 30,
+    borderRadius: Radius.sm,
+    backgroundColor: Colors.accentSoft,
     alignItems: 'center',
-    marginTop: 12,
-    marginBottom: 8,
-  },
-  resendButtonText: {
-    color: Colors.gold,
-    fontSize: 14,
-    fontWeight: '600' as const,
+    justifyContent: 'center',
+    marginBottom: Space.xs,
   },
 });

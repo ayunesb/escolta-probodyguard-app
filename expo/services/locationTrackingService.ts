@@ -1,152 +1,168 @@
+// Ubicacion en vivo de una reserva.
+//
+// Modelo (CONTRACT §2): el escolta asignado publica su posicion en
+// bookingLocations/{bookingId} mientras la reserva esta accepted/en_route/
+// active; el cliente de esa reserva la lee. Nada se escribe en el perfil
+// publico del escolta (antes se guardaba lat/long en users/{uid}, visible
+// para cualquiera).
+//
+// Aqui solo hay funciones de bajo nivel. Quien decide cuando publicar es
+// LocationTrackingContext (un unico publicador para toda la app).
 import * as Location from 'expo-location';
 import { Platform } from 'react-native';
-import { doc, updateDoc, Timestamp } from 'firebase/firestore';
-import { db } from '@/lib/firebase';
+import { ref, set, onValue } from 'firebase/database';
+import { realtimeDb } from '@/lib/firebase';
+import { logger } from '@/utils/logger';
+import i18n from '@/i18n';
+import { PUBLIC_DEMO } from '@/constants/demo';
 
-export interface LocationData {
+export interface Coordinates {
   latitude: number;
   longitude: number;
-  accuracy: number;
-  timestamp: string;
 }
 
-let locationSubscription: Location.LocationSubscription | null = null;
+export interface DevicePosition extends Coordinates {
+  heading?: number;
+  speed?: number;
+  accuracy?: number;
+  timestamp: number;
+}
 
-export const requestLocationPermissions = async (): Promise<boolean> => {
-  try {
-    console.log('[Location] Requesting permissions');
+// Lo que se guarda en bookingLocations/{bookingId}.
+export type BookingLocation = DevicePosition;
 
-    const { status: foregroundStatus } = await Location.requestForegroundPermissionsAsync();
-    
-    if (foregroundStatus !== 'granted') {
-      console.log('[Location] Foreground permission denied');
-      return false;
-    }
+export type LocationPermission = 'undetermined' | 'granted' | 'denied' | 'unavailable';
 
-    if (Platform.OS !== 'web') {
-      const { status: backgroundStatus } = await Location.requestBackgroundPermissionsAsync();
-      
-      if (backgroundStatus !== 'granted') {
-        console.log('[Location] Background permission denied');
-        return false;
-      }
-    }
-
-    console.log('[Location] Permissions granted');
-    return true;
-  } catch (error) {
-    console.error('[Location] Permission error:', error);
-    return false;
+export class LocationError extends Error {
+  constructor(
+    message: string,
+    public readonly kind: 'denied' | 'unavailable' | 'timeout' | 'unknown'
+  ) {
+    super(message);
   }
-};
+}
 
-export const getCurrentLocation = async (): Promise<LocationData | null> => {
-  try {
-    console.log('[Location] Getting current location');
+const finite = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n);
 
-    const location = await Location.getCurrentPositionAsync({
-      accuracy: Location.Accuracy.High,
-    });
+function toPosition(coords: {
+  latitude: number;
+  longitude: number;
+  heading?: number | null;
+  speed?: number | null;
+  accuracy?: number | null;
+}, timestamp: number): DevicePosition {
+  const pos: DevicePosition = { latitude: coords.latitude, longitude: coords.longitude, timestamp };
+  if (finite(coords.heading) && coords.heading >= 0) pos.heading = coords.heading;
+  if (finite(coords.speed) && coords.speed >= 0) pos.speed = coords.speed;
+  if (finite(coords.accuracy) && coords.accuracy >= 0) pos.accuracy = coords.accuracy;
+  return pos;
+}
 
-    return {
-      latitude: location.coords.latitude,
-      longitude: location.coords.longitude,
-      accuracy: location.coords.accuracy || 0,
-      timestamp: new Date(location.timestamp).toISOString(),
-    };
-  } catch (error) {
-    console.error('[Location] Get current location error:', error);
-    return null;
+// Solo primer plano. Se pide cuando de verdad empieza el seguimiento, nunca
+// al abrir la app.
+export async function requestLocationPermissions(): Promise<LocationPermission> {
+  if (PUBLIC_DEMO) return 'unavailable';
+  if (Platform.OS === 'web') {
+    const nav = typeof navigator !== 'undefined' ? navigator : undefined;
+    if (!nav || !('geolocation' in nav)) return 'unavailable';
+    // En web el aviso del navegador aparece al empezar a vigilar la posicion.
+    try {
+      const status = await nav.permissions?.query({ name: 'geolocation' as PermissionName });
+      if (status?.state === 'denied') return 'denied';
+      if (status?.state === 'granted') return 'granted';
+    } catch {
+      // Safari viejo no tiene permissions.query: se sabra al vigilar.
+    }
+    return 'undetermined';
   }
-};
-
-export const startLocationTracking = async (
-  userId: string,
-  onLocationUpdate?: (location: LocationData) => void
-): Promise<boolean> => {
   try {
-    console.log('[Location] Starting location tracking for user:', userId);
+    const { status } = await Location.requestForegroundPermissionsAsync();
+    return status === 'granted' ? 'granted' : 'denied';
+  } catch (error) {
+    logger.error('[Location] Permission request failed', { error });
+    return 'unavailable';
+  }
+}
 
-    if (locationSubscription) {
-      console.log('[Location] Already tracking');
-      return true;
+// Empieza a vigilar la posicion del dispositivo. Devuelve la funcion para
+// parar. Los errores (permiso denegado, GPS apagado) llegan por onError.
+export async function watchDevicePosition(
+  onPosition: (position: DevicePosition) => void,
+  onError: (error: LocationError) => void
+): Promise<() => void> {
+  if (Platform.OS === 'web') {
+    const geo = typeof navigator !== 'undefined' ? navigator.geolocation : undefined;
+    if (!geo) {
+      onError(new LocationError(i18n.t('booking:location.browserUnavailable'), 'unavailable'));
+      return () => {};
     }
-
-    const hasPermission = await requestLocationPermissions();
-    if (!hasPermission) {
-      return false;
-    }
-
-    locationSubscription = await Location.watchPositionAsync(
-      {
-        accuracy: Location.Accuracy.High,
-        timeInterval: 10000,
-        distanceInterval: 10,
+    const watchId = geo.watchPosition(
+      (p) => onPosition(toPosition(p.coords, p.timestamp || Date.now())),
+      (e) => {
+        if (e.code === 1) onError(new LocationError(i18n.t('booking:location.siteDenied'), 'denied'));
+        else if (e.code === 3) onError(new LocationError(i18n.t('booking:location.timeout'), 'timeout'));
+        else onError(new LocationError(i18n.t('booking:location.cantGet'), 'unavailable'));
       },
-      async (location) => {
-        const locationData: LocationData = {
-          latitude: location.coords.latitude,
-          longitude: location.coords.longitude,
-          accuracy: location.coords.accuracy || 0,
-          timestamp: new Date(location.timestamp).toISOString(),
-        };
-
-        console.log('[Location] Location update:', locationData);
-
-        try {
-          const dbInstance = db();
-          await updateDoc(doc(dbInstance, 'users', userId), {
-            latitude: locationData.latitude,
-            longitude: locationData.longitude,
-            lastLocationUpdate: Timestamp.now(),
-          });
-        } catch (error) {
-          console.error('[Location] Failed to update Firestore:', error);
-        }
-
-        if (onLocationUpdate) {
-          onLocationUpdate(locationData);
-        }
-      }
+      { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 }
     );
-
-    console.log('[Location] Tracking started');
-    return true;
-  } catch (error) {
-    console.error('[Location] Start tracking error:', error);
-    return false;
+    return () => geo.clearWatch(watchId);
   }
-};
 
-export const stopLocationTracking = async (): Promise<void> => {
-  try {
-    console.log('[Location] Stopping location tracking');
+  const subscription = await Location.watchPositionAsync(
+    { accuracy: Location.Accuracy.High, timeInterval: 5000, distanceInterval: 10 },
+    (loc) => onPosition(toPosition(loc.coords, loc.timestamp || Date.now())),
+    (reason) => onError(new LocationError(reason || i18n.t('booking:location.cantGet'), 'unavailable'))
+  );
+  return () => subscription.remove();
+}
 
-    if (locationSubscription) {
-      locationSubscription.remove();
-      locationSubscription = null;
-      console.log('[Location] Tracking stopped');
+export async function publishBookingLocation(bookingId: string, position: DevicePosition): Promise<void> {
+  await set(ref(realtimeDb(), `bookingLocations/${bookingId}`), { ...position, timestamp: Date.now() });
+}
+
+export function subscribeToBookingLocation(
+  bookingId: string,
+  callback: (location: BookingLocation | null) => void,
+  onError?: (error: Error) => void
+): () => void {
+  return onValue(
+    ref(realtimeDb(), `bookingLocations/${bookingId}`),
+    (snap) => {
+      const value = snap.val() as BookingLocation | null;
+      callback(value && finite(value.latitude) && finite(value.longitude) ? value : null);
+    },
+    (error) => {
+      logger.error('[Location] bookingLocations subscription failed', { bookingId, error });
+      onError?.(error);
     }
-  } catch (error) {
-    console.error('[Location] Stop tracking error:', error);
-  }
-};
+  );
+}
 
-export const calculateDistance = (
-  lat1: number,
-  lon1: number,
-  lat2: number,
-  lon2: number
-): number => {
+// Distancia en km (haversine).
+export function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
   const dLon = ((lon2 - lon1) * Math.PI) / 180;
   const a =
     Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLon / 2) *
-      Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
-};
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+export function distanceBetween(a: Coordinates, b: Coordinates): number {
+  return calculateDistance(a.latitude, a.longitude, b.latitude, b.longitude);
+}
+
+// Estimacion urbana simple (sin trafico). Se muestra como aproximada.
+export function estimateEtaMinutes(distanceKm: number, averageSpeedKmh = 28): number {
+  if (!finite(distanceKm) || distanceKm <= 0) return 0;
+  return Math.max(1, Math.round((distanceKm / averageSpeedKmh) * 60));
+}
+
+export const isValidCoordinate = (c?: Partial<Coordinates> | null): c is Coordinates =>
+  !!c &&
+  finite(c.latitude) &&
+  finite(c.longitude) &&
+  Math.abs(c.latitude) <= 90 &&
+  Math.abs(c.longitude) <= 180 &&
+  !(c.latitude === 0 && c.longitude === 0);

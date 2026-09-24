@@ -1,190 +1,294 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    
+
+    // =========================================================================
+    // Ayudantes
+    // =========================================================================
+
     function isAuthenticated() {
       return request.auth != null;
     }
-    
-    function getUserData() {
-      let userDoc = /databases/$(database)/documents/users/$(request.auth.uid);
-      return exists(userDoc) ? get(userDoc).data : null;
+
+    function userPath(uid) {
+      return /databases/$(database)/documents/users/$(uid);
     }
-    
+
+    // Rol guardado en el perfil de Firestore. Es confiable SOLO porque ningun
+    // camino de estas reglas deja a un no-admin escribir `role` (ver /users).
+    function roleOf(uid) {
+      return exists(userPath(uid)) ? get(userPath(uid)).data.get('role', null) : null;
+    }
+
     function hasRole(role) {
-      return isAuthenticated() && getUserData() != null && getUserData().role == role;
+      return isAuthenticated() && roleOf(request.auth.uid) == role;
     }
-    
+
+    function isAdmin() {
+      return hasRole('admin');
+    }
+
     function isOwner(userId) {
       return isAuthenticated() && request.auth.uid == userId;
     }
-    
+
     function isKYCApproved() {
-      return isAuthenticated() && getUserData() != null && getUserData().kycStatus == 'approved';
+      return isAuthenticated() && exists(userPath(request.auth.uid)) &&
+        get(userPath(request.auth.uid)).data.get('kycStatus', null) == 'approved';
     }
 
-    // === USERS COLLECTION ===
+    // La empresa que llama es la empresa de ese escolta.
+    function isCompanyOf(userId) {
+      return isAuthenticated() &&
+        exists(userPath(userId)) &&
+        get(userPath(userId)).data.get('companyId', null) == request.auth.uid &&
+        hasRole('company');
+    }
+
+    // Participantes de una reserva. La reserva vive en Realtime Database, que
+    // estas reglas no pueden leer, asi que el cliente mantiene en Firestore
+    // bookingParticipants/{bookingId} = {clientId, guardId, updatedAt}.
+    function participantsPath(bookingId) {
+      return /databases/$(database)/documents/bookingParticipants/$(bookingId);
+    }
+
+    function isBookingParticipant(bookingId) {
+      return isAuthenticated() && exists(participantsPath(bookingId)) &&
+        request.auth.uid in [
+          get(participantsPath(bookingId)).data.get('clientId', null),
+          get(participantsPath(bookingId)).data.get('guardId', null)
+        ];
+    }
+
+    // Campos que solo cambia un administrador (o el servidor con Admin SDK).
+    function ownerLockedFields() {
+      return ['role', 'isActive', 'suspended', 'companyId', 'rating', 'completedJobs',
+              'ratingBreakdown', 'reviewCount', 'emailVerified', 'pushToken'];
+    }
+
+    // Los documentos KYC ya no viven en el perfil publico (lo lee cualquier
+    // usuario autenticado): van a users/{uid}/private/kyc.
+    function kycUrlFields() {
+      return ['governmentIdUrls', 'licenseUrls', 'vehicleDocUrls', 'insuranceUrls'];
+    }
+
+    function noPublicKycUrls(data) {
+      return data.get('governmentIdUrls', []).size() == 0 &&
+             data.get('licenseUrls', []).size() == 0 &&
+             data.get('vehicleDocUrls', []).size() == 0 &&
+             data.get('insuranceUrls', []).size() == 0;
+    }
+
+    // Lo que una empresa puede editar del perfil de SU escolta.
+    function companyEditableGuardFields() {
+      return ['firstName', 'lastName', 'phone', 'language', 'bio', 'height', 'weight',
+              'languages', 'photos', 'outfitPhotos', 'certifications', 'hourlyRate',
+              'availability', 'isFreelancer', 'kycStatus', 'companyId', 'updatedAt'];
+    }
+
+    // =========================================================================
+    // USERS
+    // =========================================================================
     match /users/{userId} {
-    // `read` cubre get y list en una sola regla. Una consulta que un usuario
-    // hace sobre su propio documento pasa; una lista sin filtro solo la
-    // permiten admin y empresa. Antes eran dos reglas y la de `list` decia
-    // `if isAuthenticated()`, o sea que cualquier registrado descargaba el
-    // padron completo. Se comprobo en vivo: un cliente veia los 8 usuarios.
-    // Este es el mismo patron que usa /bookings mas abajo: la empresa solo
-    // lee SUS escoltas (companyId == su uid), no el padron completo. Antes
-    // `hasRole('company')` bastaba sola, y cualquier empresa listaba a los
-    // clientes y escoltas de las demas.
-    //
-    // El perfil de un escolta (role == 'guard') si es publico para cualquier
-    // autenticado: un cliente tiene que poder listarlos y ver el detalle
-    // antes de reservar. Sin esto la pantalla de "Book Protection" no tiene
-    // forma de mostrar escoltas reales — por eso seguia mostrando datos de
-    // mocks/guards.ts.
-    allow read: if isAuthenticated() && (
-      request.auth.uid == userId ||
-      hasRole('admin') ||
-      resource.data.role == 'guard' ||
-      (hasRole('company') && resource.data.companyId == request.auth.uid)
-    );
-      
-      // Allow users to create their own document with minimum required fields
-      // This is critical for new user sign-up flow
-      allow create: if isAuthenticated() && request.auth.uid == userId && 
-        request.resource.data.keys().hasAll(['email', 'role', 'firstName', 'lastName', 'phone', 'language', 'kycStatus', 'createdAt', 'isActive', 'emailVerified', 'updatedAt']);
-      
-      // Allow update: user can update own document, admin can update any, and
-      // a company can update ONLY the KYC document/photo fields of ITS OWN
-      // guard (companyId == su uid) — es lo que permite que la empresa suba
-      // la documentacion completa de su personal en su nombre, sin poder
-      // tocar role/isActive/companyId/hourlyRate de ese escolta.
-      // Use direct check instead of hasRole() for self-updates to avoid recursion
-      allow update: if isAuthenticated() && (
+      // `read` cubre get y list. El perfil de un escolta es visible para
+      // cualquier autenticado (las pantallas de cliente listan escoltas); los
+      // demas perfiles solo para el dueno, admin y la empresa de ese escolta.
+      allow read: if isAuthenticated() && (
         request.auth.uid == userId ||
-        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin') ||
-        (resource.data.role == 'guard' &&
-         resource.data.companyId == request.auth.uid &&
-         exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'company' &&
-         request.resource.data.diff(resource.data).affectedKeys().hasOnly(
-           ['photos', 'governmentIdUrls', 'licenseUrls', 'insuranceUrls', 'vehicleDocUrls', 'outfitPhotos', 'kycStatus', 'updatedAt']
-         ))
+        resource.data.role == 'guard' ||
+        isAdmin() ||
+        (hasRole('company') && resource.data.get('companyId', null) == request.auth.uid)
       );
-      
-      // Allow delete only for admins
-      allow delete: if isAuthenticated() && 
-        exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+
+      // Alta del propio perfil. Nunca como admin, siempre con KYC pendiente,
+      // activo, sin reputacion inventada y sin suspension.
+      // companyId solo se acepta para un escolta y solo si apunta a una
+      // empresa real: es el alta que hace company-guards.tsx con una sesion
+      // secundaria del escolta nuevo.
+      allow create: if isOwner(userId) &&
+        request.resource.data.keys().hasAll(['email', 'role', 'kycStatus', 'isActive']) &&
+        request.resource.data.role in ['client', 'guard', 'company'] &&
+        request.resource.data.kycStatus == 'pending' &&
+        request.resource.data.isActive == true &&
+        request.resource.data.get('suspended', false) == false &&
+        request.resource.data.get('rating', 0) == 0 &&
+        request.resource.data.get('completedJobs', 0) == 0 &&
+        request.resource.data.get('reviewCount', 0) == 0 &&
+        request.resource.data.get('emailVerified', false) == false &&
+        !('ratingBreakdown' in request.resource.data) &&
+        !('pushToken' in request.resource.data) &&
+        noPublicKycUrls(request.resource.data) &&
+        (
+          request.resource.data.get('companyId', null) == null ||
+          (request.resource.data.role == 'guard' &&
+           roleOf(request.resource.data.companyId) == 'company')
+        );
+
+      allow create: if isAdmin();
+
+      // Dueno: cualquier campo salvo los bloqueados. kycStatus solo puede
+      // volver a 'pending' (reenviar documentos), nunca aprobarse solo.
+      allow update: if isOwner(userId) &&
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(ownerLockedFields()) &&
+        (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['kycStatus']) ||
+          request.resource.data.kycStatus == 'pending') &&
+        (!request.resource.data.diff(resource.data).affectedKeys().hasAny(kycUrlFields()) ||
+          noPublicKycUrls(request.resource.data));
+
+      // Empresa: solo SUS escoltas, solo campos de perfil/foto, kycStatus solo
+      // a 'pending' y companyId solo a null (dar de baja al escolta).
+      allow update: if isAuthenticated() &&
+        resource.data.role == 'guard' &&
+        resource.data.get('companyId', null) == request.auth.uid &&
+        hasRole('company') &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(companyEditableGuardFields()) &&
+        (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['kycStatus']) ||
+          request.resource.data.kycStatus == 'pending') &&
+        (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['companyId']) ||
+          request.resource.data.get('companyId', null) == null);
+
+      allow update, delete: if isAdmin();
+
+      // Datos sensibles del escolta (URLs de documentos KYC). Solo el dueno,
+      // la empresa de ese escolta y admin.
+      match /private/{docId} {
+        allow read, write: if isAuthenticated() && (
+          request.auth.uid == userId ||
+          isAdmin() ||
+          isCompanyOf(userId)
+        );
+      }
     }
 
-    // === BOOKINGS COLLECTION ===
+    // =========================================================================
+    // BOOKING PARTICIPANTS (espejo minimo de la reserva de RTDB para el chat)
+    // =========================================================================
+    // Lo crea el CLIENTE justo despues de crear la reserva, y solo el mismo
+    // cliente puede cambiar guardId (reasignacion).
+    match /bookingParticipants/{bookingId} {
+      allow read: if isAuthenticated() && (
+        resource.data.clientId == request.auth.uid ||
+        resource.data.guardId == request.auth.uid ||
+        isAdmin()
+      );
+      allow create: if isAuthenticated() &&
+        request.resource.data.keys().hasOnly(['clientId', 'guardId', 'updatedAt']) &&
+        request.resource.data.clientId == request.auth.uid &&
+        request.resource.data.guardId is string &&
+        request.resource.data.guardId != request.auth.uid;
+      allow update: if isAuthenticated() &&
+        resource.data.clientId == request.auth.uid &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['guardId', 'updatedAt']) &&
+        request.resource.data.guardId is string &&
+        request.resource.data.guardId != request.auth.uid;
+      allow write: if isAdmin();
+    }
+
+    // =========================================================================
+    // BOOKINGS (legado). Las reservas viven en Realtime Database; este bloque
+    // queda solo para datos viejos y ya no admite altas de clientes.
+    // =========================================================================
     match /bookings/{bookingId} {
       allow read: if isAuthenticated() && (
         resource.data.clientId == request.auth.uid ||
         resource.data.guardId == request.auth.uid ||
-        hasRole('admin') ||
-        (hasRole('company') && get(/databases/$(database)/documents/users/$(resource.data.guardId)).data.companyId == request.auth.uid)
+        isAdmin()
       );
-      
-      // Allow creation if authenticated client or company and required fields exist
-      allow create: if isAuthenticated() && (
-        hasRole('client') || hasRole('company')
-      ) && request.resource.data.clientId == request.auth.uid &&
-        request.resource.data.keys().hasAll(['clientId', 'guardId', 'status', 'createdAt']) &&
-        request.resource.data.status is string &&
-        request.resource.data.clientId is string &&
-        request.resource.data.guardId is string;
-      
-      allow update: if isAuthenticated() && (
-        resource.data.clientId == request.auth.uid ||
-        resource.data.guardId == request.auth.uid ||
-        hasRole('admin') ||
-        (hasRole('company') && get(/databases/$(database)/documents/users/$(resource.data.guardId)).data.companyId == request.auth.uid)
-      );
-      
-      allow delete: if hasRole('admin');
+      allow write: if isAdmin();
     }
 
-    // === MESSAGES COLLECTION ===
+    // =========================================================================
+    // MESSAGES (chat de una reserva)
+    // =========================================================================
+    // La lectura usa participantIds porque el chat se lista con
+    // where(bookingId ==) + where(participantIds array-contains uid), y una
+    // regla de lista solo puede apoyarse en campos del filtro.
+    function validNewMessage() {
+      let msg = request.resource.data;
+      let p = get(participantsPath(msg.bookingId)).data;
+      return msg.senderId == request.auth.uid &&
+        request.auth.uid in [p.clientId, p.guardId] &&
+        msg.clientId == p.clientId &&
+        msg.get('guardId', null) == p.guardId &&
+        msg.participantIds is list &&
+        msg.participantIds.hasOnly([p.clientId, p.guardId]) &&
+        request.auth.uid in msg.participantIds &&
+        msg.senderRole == (request.auth.uid == p.clientId ? 'client' : 'guard') &&
+        msg.text is string && msg.text.size() > 0 && msg.text.size() <= 4000 &&
+        msg.get('read', false) == false;
+    }
+
     match /messages/{messageId} {
-      // Antes decia `resource.data.bookingId != null`, que es cierto en
-      // cualquier mensaje real: cualquier autenticado leia el chat de
-      // cualquier reserva de la plataforma. La reserva vive en Realtime
-      // Database, no en Firestore, asi que estas reglas no pueden
-      // consultarla — por eso el mensaje guarda su propio participantIds.
-      //
-      // Tiene que ser participantIds (array-contains), no clientId/guardId
-      // sueltos: Firestore exige que una consulta de lista solo use en su
-      // regla campos que tambien esten en el filtro de la consulta misma.
-      // El chat se lista filtrando por bookingId + participantIds
-      // array-contains — si la regla usara otro campo, Firestore rechaza la
-      // lista completa con "Property ... is undefined" antes de revisar un
-      // solo documento (comprobado en el emulador).
-      //
-      // Sin `|| hasRole('admin')` a proposito: se probo en produccion y ese
-      // get() adicional envenena el analisis de seguridad de TODA la regla
-      // para efectos de lista, aunque la rama de participantIds sola sea
-      // segura — la consulta del chat volvia a caer en "permission-denied"
-      // en cuanto se agregaba. Ningun admin lista mensajes hoy; el dia que
-      // haga falta, un visor de chat para admin necesita su propia consulta
-      // filtrada (p. ej. por bookingId nada mas, con su propio indice), no
-      // colgarse de esta misma regla.
       allow read: if isAuthenticated() && request.auth.uid in resource.data.participantIds;
 
-      // Allow creating messages if authenticated and sender is current user
       allow create: if isAuthenticated() &&
-        request.resource.data.senderId == request.auth.uid &&
         request.resource.data.bookingId is string &&
-        request.resource.data.senderRole is string &&
-        (request.resource.data.senderId == request.resource.data.clientId ||
-         request.resource.data.senderId == request.resource.data.guardId);
+        exists(participantsPath(request.resource.data.bookingId)) &&
+        validNewMessage();
 
-      allow update, delete: if false;
+      // Solo el destinatario, y solo para marcarlo como leido.
+      allow update: if isAuthenticated() &&
+        request.auth.uid in resource.data.participantIds &&
+        request.auth.uid != resource.data.senderId &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read', 'readAt']) &&
+        request.resource.data.read == true;
+
+      allow delete: if false;
     }
 
-    // === DOCUMENTS COLLECTION ===
+    // === TYPING: indicador efimero de chat (id = bookingId_userId) ===
+    match /typing/{typingId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isAuthenticated() &&
+        request.resource.data.userId == request.auth.uid &&
+        typingId == request.resource.data.bookingId + '_' + request.auth.uid;
+      allow delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+    }
+
+    // =========================================================================
+    // DOCUMENTS
+    // =========================================================================
     match /documents/{documentId} {
       allow read: if isAuthenticated() && (
-        resource.data.userId == request.auth.uid || hasRole('admin')
+        resource.data.userId == request.auth.uid || isAdmin()
       );
       allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
-      allow update: if hasRole('admin');
-      allow delete: if hasRole('admin') || isOwner(resource.data.userId);
+      allow update: if isAdmin();
+      allow delete: if isAdmin() || isOwner(resource.data.userId);
     }
 
-    // === EMERGENCY ALERTS COLLECTION ===
+    // =========================================================================
+    // EMERGENCY ALERTS
+    // =========================================================================
     match /emergencyAlerts/{alertId} {
       allow read: if isAuthenticated() && (
         resource.data.userId == request.auth.uid ||
-        hasRole('admin') ||
-        (exists(/databases/$(database)/documents/bookings/$(resource.data.bookingId)) &&
-         (get(/databases/$(database)/documents/bookings/$(resource.data.bookingId)).data.clientId == request.auth.uid ||
-          get(/databases/$(database)/documents/bookings/$(resource.data.bookingId)).data.guardId == request.auth.uid))
+        isAdmin() ||
+        isBookingParticipant(resource.data.bookingId)
       );
       allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
-      allow update: if hasRole('admin') || isOwner(resource.data.userId);
-      allow delete: if hasRole('admin');
+      allow update: if isAdmin() || isOwner(resource.data.userId);
+      allow delete: if isAdmin();
     }
 
-    // === PAYMENTS COLLECTION ===
+    // =========================================================================
+    // PAYMENTS
+    // =========================================================================
     match /payments/{paymentId} {
       allow read: if isAuthenticated() && (
         resource.data.clientId == request.auth.uid ||
         resource.data.guardId == request.auth.uid ||
-        hasRole('admin')
+        isAdmin()
       );
-      // Allow clients to create their own payments
-      allow create: if isAuthenticated() && (
-        hasRole('client') && request.resource.data.clientId == request.auth.uid
-      );
-      // Allow updates from admins or the backend (for status updates)
-      allow update: if hasRole('admin');
+      allow create: if isAuthenticated() &&
+        hasRole('client') && request.resource.data.clientId == request.auth.uid;
+      allow update: if isAdmin();
       allow delete: if false;
     }
 
-    // === KYC AUDIT LOGS ===
+    // === KYC AUDIT LOGS (legado) ===
     match /kycAuditLog/{logId} {
-      allow read, create: if hasRole('admin');
+      allow read, create: if isAdmin();
       allow update, delete: if false;
     }
 
@@ -193,192 +297,231 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
-    // === SYSTEM LOGS ===
+    // === TELEMETRIA: la escribe el cliente, solo la lee el administrador ===
     match /logs/{logId} {
-      allow read: if hasRole('admin');
+      allow read: if isAdmin();
       allow create: if isAuthenticated();
       allow update, delete: if false;
     }
 
-    // === ERRORS ===
     match /errors/{errorId} {
-      allow read: if hasRole('admin');
+      allow read: if isAdmin();
       allow create: if isAuthenticated();
       allow update, delete: if false;
     }
 
-    // === ANALYTICS ===
     match /analytics/{eventId} {
-      allow read: if hasRole('admin');
+      allow read: if isAdmin();
       allow create: if isAuthenticated();
       allow update, delete: if false;
     }
 
-    // === PERFORMANCE ===
     match /performance/{metricId} {
-      allow read: if hasRole('admin');
+      allow read: if isAdmin();
       allow create: if isAuthenticated();
       allow update, delete: if false;
     }
 
-    // === WEBHOOK LOGS ===
+    // === WEBHOOKS: solo el servidor (Admin SDK ignora estas reglas) ===
     match /webhook_logs/{logId} {
-      allow write: if request.auth == null ||
-                   (request.auth.token.email_verified == false &&
-                    request.auth.token.email.matches('.*@appspot.gserviceaccount.com$'));
-      allow read: if hasRole('admin');
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    match /webhook_events/{eventId} {
+      allow read: if isAdmin();
+      allow write: if false;
     }
 
     // === DEVICE TOKENS (Push Notifications) ===
+    // Consentimientos (LFPDPPP): cada quien lee y cambia solo los suyos; el
+    // historial es de solo alta para que sirva de bitacora. Admin puede leer.
+    match /consents/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create, update: if isOwner(userId);
+      allow delete: if false;
+
+      match /history/{entryId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId);
+        allow update, delete: if false;
+      }
+    }
+
     match /deviceTokens/{tokenId} {
       allow read: if isAuthenticated() && (
-        resource.data.userId == request.auth.uid || hasRole('admin')
+        resource.data.userId == request.auth.uid || isAdmin()
       );
       allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
-      allow update: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow update: if isAuthenticated() &&
+        resource.data.userId == request.auth.uid &&
+        request.resource.data.userId == request.auth.uid;
       allow delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
     }
 
-    // === NOTIFICATIONS ===
+    // =========================================================================
+    // NOTIFICATIONS (cola de avisos push)
+    // =========================================================================
+    // El cliente solo encola {userId, senderId, type, bookingId?, status:
+    // 'pending'}. El titulo y el cuerpo los arma el servidor con una plantilla
+    // por `type` (functions/src/notificaciones.ts); lo que el cliente mande
+    // en title/body se ignora. El destinatario es uno mismo o la otra parte
+    // de una reserva en la que ambos participan.
+    function notificationTypes() {
+      return ['booking_created', 'booking_accepted', 'booking_rejected', 'guard_en_route',
+              'service_started', 'service_completed', 'new_message', 'payment_success',
+              'payment_failed', 'emergency', 'new_booking_request', 'booking_cancelled',
+              'booking_confirmed', 'booking_reassigned'];
+    }
+
     match /notifications/{notificationId} {
       allow read: if isAuthenticated() && (
-        resource.data.userId == request.auth.uid || hasRole('admin')
+        resource.data.userId == request.auth.uid || isAdmin()
       );
-      allow create: if isAuthenticated();
-      allow update: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow create: if isAuthenticated() &&
+        request.resource.data.senderId == request.auth.uid &&
+        request.resource.data.userId is string &&
+        request.resource.data.type in notificationTypes() &&
+        request.resource.data.status == 'pending' &&
+        request.resource.data.get('read', false) == false &&
+        (
+          request.resource.data.userId == request.auth.uid ||
+          (request.resource.data.bookingId is string &&
+           exists(participantsPath(request.resource.data.bookingId)) &&
+           request.auth.uid in [
+             get(participantsPath(request.resource.data.bookingId)).data.clientId,
+             get(participantsPath(request.resource.data.bookingId)).data.guardId
+           ] &&
+           request.resource.data.userId in [
+             get(participantsPath(request.resource.data.bookingId)).data.clientId,
+             get(participantsPath(request.resource.data.bookingId)).data.guardId
+           ])
+        );
+      // El destinatario solo puede marcarla como leida.
+      allow update: if isAuthenticated() &&
+        resource.data.userId == request.auth.uid &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read', 'readAt']);
       allow delete: if false;
     }
 
     // =========================================================================
-    // Once colecciones que el cliente ya usaba y que nunca tuvieron reglas.
-    // Sin bloque, Firestore niega por defecto: el pago al escolta, las
-    // calificaciones, los reportes de incidente y el borrado de cuenta
-    // estaban muertos en produccion. El patron es el mismo que /bookings:
-    // `read` cubre get y list, asi una consulta filtrada por el dueno pasa
-    // y una lista sin filtro se niega.
+    // PAYOUTS / LEDGER: dinero. Solo servidor y administracion.
     // =========================================================================
-
-    // === PAYOUTS: el pago al escolta ===
     match /payouts/{payoutId} {
       allow read: if isAuthenticated() && (
-        resource.data.guardId == request.auth.uid || hasRole('admin')
+        resource.data.guardId == request.auth.uid || isAdmin()
       );
-      // El escolta solo puede pedir SU pago, y solo con KYC aprobado.
-      // Aqui es donde isKYCApproved() deja de ser una funcion muerta.
-      allow create: if isAuthenticated() &&
-        request.resource.data.guardId == request.auth.uid &&
-        isKYCApproved() &&
-        request.resource.data.status == 'pending' &&
-        request.resource.data.keys().hasAll(['guardId', 'amount', 'bookingIds', 'status', 'createdAt']);
-      // Marcar un pago como completado es del administrador, no del cobrador.
-      allow update: if hasRole('admin');
+      // Las solicitudes de pago las crea el servidor (Admin SDK), que calcula
+      // el saldo real. Un cliente no puede inventarse un pago.
+      allow create: if false;
+      allow update: if isAdmin();
       allow delete: if false;
     }
 
-    // === LEDGER: libro de ganancias del escolta ===
     match /ledger/{entryId} {
       allow read: if isAuthenticated() && (
-        resource.data.guardId == request.auth.uid || hasRole('admin')
+        resource.data.guardId == request.auth.uid || isAdmin()
       );
-      // Solo lectura para el escolta: no puede inventarse ganancias.
-      allow create: if hasRole('admin');
+      allow create: if isAdmin();
       allow update, delete: if false;
     }
 
-    // === REVIEWS: las escribe el cliente de esa reserva ===
+    // =========================================================================
+    // REVIEWS: las escribe el cliente de esa reserva, una vez.
+    // =========================================================================
     match /reviews/{reviewId} {
-      // Legibles por cualquier usuario autenticado: son la reputacion publica
-      // del escolta. Contienen clientId, asi que no se abren sin sesion.
+      // Reputacion publica del escolta; solo con sesion.
       allow read: if isAuthenticated();
       allow create: if isAuthenticated() &&
-        request.resource.data.clientId == request.auth.uid &&
         request.resource.data.keys().hasAll(['bookingId', 'guardId', 'clientId', 'rating']) &&
-        request.resource.data.rating is number &&
+        request.resource.data.keys().hasOnly(['bookingId', 'guardId', 'clientId', 'rating',
+          'ratingBreakdown', 'review', 'comment', 'createdAt', 'clientName']) &&
+        request.resource.data.clientId == request.auth.uid &&
+        request.resource.data.rating is int &&
         request.resource.data.rating >= 1 &&
-        request.resource.data.rating <= 5;
-      allow update: if isAuthenticated() && (
-        resource.data.clientId == request.auth.uid || hasRole('admin')
-      );
-      allow delete: if hasRole('admin');
+        request.resource.data.rating <= 5 &&
+        request.resource.data.bookingId is string &&
+        exists(participantsPath(request.resource.data.bookingId)) &&
+        get(participantsPath(request.resource.data.bookingId)).data.clientId == request.auth.uid &&
+        get(participantsPath(request.resource.data.bookingId)).data.guardId == request.resource.data.guardId;
+      allow update, delete: if isAdmin();
     }
 
-    // === INCIDENT REPORTS ===
+    // =========================================================================
+    // INCIDENT REPORTS
+    // =========================================================================
     match /incidentReports/{reportId} {
       allow read: if isAuthenticated() && (
-        resource.data.reportedBy == request.auth.uid || hasRole('admin') || hasRole('company')
+        resource.data.reportedBy == request.auth.uid ||
+        isAdmin() ||
+        isBookingParticipant(resource.data.bookingId)
       );
       allow create: if isAuthenticated() &&
         request.resource.data.reportedBy == request.auth.uid &&
         request.resource.data.keys().hasAll(['bookingId', 'reportedBy', 'type', 'severity', 'status']);
       // Quien reporta puede completar su reporte; cerrarlo es del administrador.
       allow update: if isAuthenticated() && (
-        resource.data.reportedBy == request.auth.uid || hasRole('admin')
+        (resource.data.reportedBy == request.auth.uid &&
+         request.resource.data.reportedBy == request.auth.uid) ||
+        isAdmin()
       );
       allow delete: if false;
     }
 
-    // === DELETION REQUESTS: obligacion legal, no funcion opcional ===
+    // === DELETION REQUESTS: obligacion legal ===
     match /deletion_requests/{requestId} {
       allow read: if isAuthenticated() && (
-        resource.data.userId == request.auth.uid || hasRole('admin')
+        resource.data.userId == request.auth.uid || isAdmin()
       );
       allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
-      allow update: if hasRole('admin');
+      allow update: if isAdmin();
       allow delete: if false;
     }
 
     // === KYC AUDIT LOG: solo se agrega, nunca se edita ni se borra ===
     match /kyc_audit_log/{entryId} {
-      allow read: if hasRole('admin');
-      // Ademas del propio dueno: una empresa que sube documentos por SU
-      // escolta (companyId == su uid) tambien registra la entrada de
-      // auditoria, con el userId del escolta, no el suyo.
+      allow read: if isAdmin();
       allow create: if isAuthenticated() && (
         request.resource.data.userId == request.auth.uid ||
-        hasRole('admin') ||
-        (hasRole('company') &&
-         get(/databases/$(database)/documents/users/$(request.resource.data.userId)).data.companyId == request.auth.uid)
+        isAdmin() ||
+        isCompanyOf(request.resource.data.userId)
       );
       allow update, delete: if false;
     }
 
     // === REFUNDS: solo administracion ===
-    // backend/trpc/routes/payments/braintree/refund/route.ts los escribe con el
-    // SDK de cliente. Si esa ruta no corre autenticada como admin va a seguir
-    // fallando, y la solucion correcta es moverla a Cloud Functions con Admin
-    // SDK, no abrir esta regla a cualquier usuario.
     match /refunds/{refundId} {
-      allow read: if hasRole('admin');
-      allow create: if hasRole('admin');
+      allow read: if isAdmin();
+      allow create: if isAdmin();
       allow update, delete: if false;
     }
 
-    // === TYPING: indicador efimero de chat (id = bookingId_userId) ===
-    match /typing/{typingId} {
-      allow read: if isAuthenticated();
-      allow create, update: if isAuthenticated() &&
-        request.resource.data.userId == request.auth.uid;
-      allow delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+    // === INVOICES: las escribe generateInvoice (Admin SDK) ===
+    match /invoices/{invoiceId} {
+      allow read: if isAuthenticated() && (
+        resource.data.clientId == request.auth.uid || isAdmin()
+      );
+      allow write: if false;
     }
 
-    // === TELEMETRIA: la escribe el cliente, solo la lee el administrador ===
+    // === TELEMETRIA DE COSTOS ===
     match /usage_metrics/{metricId} {
-      allow read: if hasRole('admin');
+      allow read: if isAdmin();
       allow create: if isAuthenticated();
       allow update, delete: if false;
     }
 
     match /cost_alerts/{alertId} {
-      allow read: if hasRole('admin');
+      allow read: if isAdmin();
       allow create: if isAuthenticated();
-      allow update: if hasRole('admin');
+      allow update: if isAdmin();
       allow delete: if false;
     }
 
-    // Nota: el limitador de peticiones vive en el cliente, asi que este registro
-    // es evidencia, no un control. Un control real va en Cloud Functions.
+    // El limitador de peticiones vive en el cliente: este registro es
+    // evidencia, no un control.
     match /rateLimitViolations/{violationId} {
-      allow read: if hasRole('admin');
+      allow read: if isAdmin();
       allow create, update: if isAuthenticated();
       allow delete: if false;
     }

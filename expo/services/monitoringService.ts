@@ -115,10 +115,13 @@ class MonitoringService {
     this.logBuffer = [];
 
     try {
+      // Firestore rechaza `undefined` en cualquier nivel: antes un solo campo
+      // indefinido en el contexto hacia fallar todo el envio de bitacoras.
+      const stripUndefined = (value: unknown) => JSON.parse(JSON.stringify(value ?? {}));
       const batch = logsToFlush.map(entry => ({
         level: entry.level,
         message: entry.message,
-        context: entry.context || {},
+        context: stripUndefined(entry.context),
         userId: entry.userId || getAuthInstance().currentUser?.uid || null,
         timestamp: Timestamp.fromDate(entry.timestamp),
         platform: entry.platform,

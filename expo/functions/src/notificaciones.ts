@@ -1,30 +1,27 @@
 /**
- * Avisos en tiempo real cuando cambia el estado de una reserva.
+ * Avisos push.
  *
- * Antes de este archivo el circuito estaba a medias: la app pedia permiso,
- * obtenia el token de Expo y lo guardaba en `deviceTokens`, y los ayudantes
- * `notifyBookingAccepted`, `notifyGuardEnRoute` y demas escribian un documento
- * en `notifications` con status 'pending'. Nadie leia esa cola. Los avisos se
- * encolaban y no salia ninguno.
+ *  1. `avisarCambioDeReserva` — disparador de Realtime Database sobre
+ *     /bookings/{bookingId}. Las reservas viven en RTDB (CONTRACT §2); antes
+ *     este disparador escuchaba la coleccion `bookings` de Firestore, que
+ *     esta vacia, y nunca se ejecutaba.
+ *  2. `enviarAvisoEncolado` — vacia la cola `notifications`. El titulo y el
+ *     cuerpo de los avisos que encola un CLIENTE se arman aqui con una
+ *     plantilla por `type`: antes se enviaba tal cual el texto del cliente,
+ *     y cualquiera podia mandar un push con cualquier texto (phishing) a
+ *     cualquier usuario. Solo los avisos del propio servidor (senderId
+ *     'system', ver alerts.ts) conservan su texto.
+ *  3. `avisarEmergencia` — alerta de panico a todos los administradores.
  *
- * Aqui viven las dos piezas que faltaban:
+ * Se envia por Expo Push (APNs/FCM por dentro).
  *
- *  1. `avisarCambioDeReserva` — disparador de Firestore sobre bookings. Es la
- *     fuente de verdad: no depende de que la app de nadie este abierta.
- *  2. `enviarAvisoEncolado` — vacia la cola `notifications` que la app ya
- *     escribia, para que los ayudantes existentes empiecen a funcionar.
- *
- * Se envia por Expo Push, que es la capa que la app ya usa
- * (`getExpoPushTokenAsync`) y que por dentro habla con APNs en iOS y con FCM
- * en Android. Enviar FCM crudo obligaria a cambiar el registro del token en el
- * cliente sin ganar nada.
- *
- * REQUISITO DE PLAN: Cloud Functions v2 y las llamadas salientes a exp.host
- * necesitan el plan Blaze. En Spark estas funciones no se despliegan y, aunque
- * se desplegaran, no podrian salir a internet.
+ * REQUISITO DE PLAN: Cloud Functions y las llamadas salientes a exp.host
+ * necesitan el plan Blaze.
  */
-import { onDocumentUpdated, onDocumentCreated } from 'firebase-functions/v2/firestore';
+import { onDocumentCreated } from 'firebase-functions/v2/firestore';
+import { onValueWritten } from 'firebase-functions/v2/database';
 import * as admin from 'firebase-admin';
+import { SYSTEM_SENDER } from './alerts';
 
 const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
 
@@ -33,55 +30,159 @@ interface Aviso {
   cuerpo: string;
 }
 
+// Cada aviso existe en los dos idiomas de la app. Se elige por el idioma
+// guardado en el perfil del destinatario (users/{uid}.language, lo escribe el
+// selector EN | ES de la app); sin dato, espanol.
+type Idioma = 'es' | 'en';
+type Bilingue = Record<Idioma, Aviso>;
+
 /** Que se le dice a cada parte cuando la reserva entra a cada estado. */
-const MENSAJES: Record<string, { cliente?: Aviso; escolta?: Aviso }> = {
+const MENSAJES: Record<string, { cliente?: Bilingue; escolta?: Bilingue }> = {
   confirmed: {
-    cliente: { titulo: 'Reserva confirmada', cuerpo: 'Tu servicio de proteccion quedo confirmado.' },
-    escolta: { titulo: 'Servicio confirmado', cuerpo: 'Se confirmo un servicio asignado a ti.' },
+    cliente: {
+      es: { titulo: 'Reserva confirmada', cuerpo: 'Recibimos su pago y su servicio de protección quedó confirmado.' },
+      en: { titulo: 'Booking confirmed', cuerpo: 'Your payment went through and your protection is confirmed.' },
+    },
+    escolta: {
+      es: { titulo: 'Nuevo servicio', cuerpo: 'Tiene un servicio confirmado. Acéptelo o recházelo en la app.' },
+      en: { titulo: 'New job', cuerpo: 'You have a confirmed job. Accept or decline it in the app.' },
+    },
   },
   accepted: {
-    cliente: { titulo: 'Escolta asignado', cuerpo: 'Un escolta acepto tu solicitud.' },
-    escolta: { titulo: 'Servicio aceptado', cuerpo: 'Aceptaste el servicio. Revisa los detalles.' },
+    cliente: {
+      es: { titulo: 'Escolta asignado', cuerpo: 'Su escolta aceptó el servicio.' },
+      en: { titulo: 'Protector assigned', cuerpo: 'Your protector accepted the job.' },
+    },
   },
   rejected: {
-    cliente: { titulo: 'Solicitud rechazada', cuerpo: 'El escolta no pudo tomar el servicio. Te buscamos otro.' },
+    cliente: {
+      es: { titulo: 'Escolta no disponible', cuerpo: 'Su escolta no pudo tomar el servicio. Elija otro en la app.' },
+      en: { titulo: 'Protector unavailable', cuerpo: "Your protector couldn't take the job. Choose another in the app." },
+    },
   },
   en_route: {
-    cliente: { titulo: 'Tu escolta va en camino', cuerpo: 'Puedes seguir su ubicacion en la app.' },
+    cliente: {
+      es: { titulo: 'Su escolta va en camino', cuerpo: 'Puede seguir su ubicación en la app.' },
+      en: { titulo: 'Your protector is on the way', cuerpo: 'Follow their location live in the app.' },
+    },
   },
   active: {
-    cliente: { titulo: 'Servicio iniciado', cuerpo: 'Tu servicio de proteccion comenzo.' },
-    escolta: { titulo: 'Servicio iniciado', cuerpo: 'Registraste el inicio del servicio.' },
+    cliente: {
+      es: { titulo: 'Servicio iniciado', cuerpo: 'Su servicio de protección comenzó.' },
+      en: { titulo: 'Service started', cuerpo: 'Your protection service has started.' },
+    },
+    escolta: {
+      es: { titulo: 'Servicio iniciado', cuerpo: 'Registró el inicio del servicio.' },
+      en: { titulo: 'Service started', cuerpo: 'You started the service.' },
+    },
   },
   completed: {
-    cliente: { titulo: 'Servicio terminado', cuerpo: 'Tu servicio termino. Puedes calificar a tu escolta.' },
-    escolta: { titulo: 'Servicio terminado', cuerpo: 'El servicio quedo cerrado. Tu pago entra al proceso de liquidacion.' },
+    cliente: {
+      es: { titulo: 'Servicio terminado', cuerpo: 'Su servicio terminó. Puede calificar a su escolta.' },
+      en: { titulo: 'Service complete', cuerpo: 'Your service has ended. You can rate your protector.' },
+    },
+    escolta: {
+      es: { titulo: 'Servicio terminado', cuerpo: 'El servicio quedó cerrado. Su pago entra al proceso de liquidación.' },
+      en: { titulo: 'Service complete', cuerpo: 'The job is closed. Your payout is now being processed.' },
+    },
   },
   cancelled: {
-    cliente: { titulo: 'Reserva cancelada', cuerpo: 'Tu reserva fue cancelada.' },
-    escolta: { titulo: 'Servicio cancelado', cuerpo: 'Se cancelo un servicio que tenias asignado.' },
+    cliente: {
+      es: { titulo: 'Reserva cancelada', cuerpo: 'Su reserva fue cancelada.' },
+      en: { titulo: 'Booking cancelled', cuerpo: 'Your booking was cancelled.' },
+    },
+    escolta: {
+      es: { titulo: 'Servicio cancelado', cuerpo: 'Se canceló un servicio que tenía asignado.' },
+      en: { titulo: 'Job cancelled', cuerpo: 'A job assigned to you was cancelled.' },
+    },
   },
 };
 
-/** Todos los tokens de Expo registrados por un usuario (puede tener varios aparatos). */
+/**
+ * Avisos que la app puede encolar (coleccion `notifications`). El texto lo
+ * pone siempre el servidor: nunca se reenvia lo que escribio el cliente.
+ */
+const PLANTILLAS: Record<string, Bilingue> = {
+  booking_created: {
+    es: { titulo: 'Reserva creada', cuerpo: 'Su solicitud de reserva quedó registrada.' },
+    en: { titulo: 'Booking created', cuerpo: 'Your booking request was received.' },
+  },
+  booking_confirmed: {
+    es: { titulo: 'Reserva confirmada', cuerpo: 'Su servicio de protección quedó confirmado.' },
+    en: { titulo: 'Booking confirmed', cuerpo: 'Your protection service is confirmed.' },
+  },
+  booking_accepted: {
+    es: { titulo: 'Reserva aceptada', cuerpo: 'Su escolta aceptó el servicio.' },
+    en: { titulo: 'Booking accepted', cuerpo: 'Your protector accepted the job.' },
+  },
+  booking_rejected: {
+    es: { titulo: 'Reserva rechazada', cuerpo: 'El escolta no pudo tomar el servicio. Elija otro en la app.' },
+    en: { titulo: 'Booking declined', cuerpo: "The protector couldn't take the job. Choose another in the app." },
+  },
+  booking_cancelled: {
+    es: { titulo: 'Reserva cancelada', cuerpo: 'Se canceló una reserva en la que participa.' },
+    en: { titulo: 'Booking cancelled', cuerpo: "A booking you're part of was cancelled." },
+  },
+  booking_reassigned: {
+    es: { titulo: 'Nuevo servicio', cuerpo: 'Se le asignó un servicio. Revíselo en la app.' },
+    en: { titulo: 'New job', cuerpo: 'A job was assigned to you. Review it in the app.' },
+  },
+  new_booking_request: {
+    es: { titulo: 'Nuevo servicio', cuerpo: 'Tiene una nueva solicitud de servicio. Revísela en la app.' },
+    en: { titulo: 'New job', cuerpo: 'You have a new job request. Review it in the app.' },
+  },
+  guard_en_route: {
+    es: { titulo: 'Su escolta va en camino', cuerpo: 'Puede seguir su ubicación en la app.' },
+    en: { titulo: 'Your protector is on the way', cuerpo: 'Follow their location live in the app.' },
+  },
+  service_started: {
+    es: { titulo: 'Servicio iniciado', cuerpo: 'Su servicio de protección comenzó.' },
+    en: { titulo: 'Service started', cuerpo: 'Your protection service has started.' },
+  },
+  service_completed: {
+    es: { titulo: 'Servicio terminado', cuerpo: 'El servicio terminó. Puede calificarlo en la app.' },
+    en: { titulo: 'Service complete', cuerpo: 'The service has ended. You can rate it in the app.' },
+  },
+  new_message: {
+    es: { titulo: 'Nuevo mensaje', cuerpo: 'Tiene un mensaje nuevo sobre su reserva.' },
+    en: { titulo: 'New message', cuerpo: 'You have a new message about your booking.' },
+  },
+  payment_success: {
+    es: { titulo: 'Pago recibido', cuerpo: 'Su pago se procesó correctamente.' },
+    en: { titulo: 'Payment received', cuerpo: 'Your payment went through.' },
+  },
+  payment_failed: {
+    es: { titulo: 'Pago no procesado', cuerpo: 'No se pudo procesar su pago. Revise su método de pago.' },
+    en: { titulo: 'Payment failed', cuerpo: "We couldn't process your payment. Check your payment method." },
+  },
+  emergency: {
+    es: { titulo: 'ALERTA DE EMERGENCIA', cuerpo: 'Se activó una alerta de emergencia en su reserva. Abra la app.' },
+    en: { titulo: 'EMERGENCY ALERT', cuerpo: 'An emergency alert was raised on your booking. Open the app.' },
+  },
+};
+
+/** Idioma del destinatario segun su perfil; espanol si no hay dato. */
+async function idiomaDe(userId: string): Promise<Idioma> {
+  try {
+    const snap = await admin.firestore().collection('users').doc(userId).get();
+    return snap.get('language') === 'en' ? 'en' : 'es';
+  } catch {
+    return 'es';
+  }
+}
+
 async function tokensDe(userId: string): Promise<string[]> {
   if (!userId) return [];
-  const snap = await admin.firestore()
-    .collection('deviceTokens')
-    .where('userId', '==', userId)
-    .get();
-
+  const snap = await admin.firestore().collection('deviceTokens').where('userId', '==', userId).get();
   const tokens = snap.docs
     .map((d) => d.data().token as string | undefined)
     .filter((t): t is string => typeof t === 'string' && t.startsWith('ExponentPushToken'));
-
   return Array.from(new Set(tokens));
 }
 
 /**
  * Entrega a Expo. Devuelve los tokens que Expo reporta como muertos para que
- * el llamador los limpie: un aparato desinstalado deja un token que falla para
- * siempre y ensucia todos los envios posteriores.
+ * el llamador los limpie.
  */
 async function enviarAExpo(
   tokens: string[],
@@ -125,7 +226,6 @@ async function enviarAExpo(
   return { enviados, tokensMuertos };
 }
 
-/** Borra los tokens que Expo declaro muertos. */
 async function limpiarTokens(tokensMuertos: string[]): Promise<void> {
   if (tokensMuertos.length === 0) return;
   const db = admin.firestore();
@@ -133,17 +233,17 @@ async function limpiarTokens(tokensMuertos: string[]): Promise<void> {
     const snap = await db.collection('deviceTokens').where('token', '==', token).get();
     await Promise.all(snap.docs.map((d) => d.ref.delete()));
   }
-  console.log('[Avisos] Tokens muertos eliminados:', tokensMuertos.length);
 }
 
 /**
- * Deja constancia en `notifications` para la campana dentro de la app.
- * Se escribe con status 'sent' a proposito: si quedara 'pending', el segundo
- * disparador de este archivo lo tomaria como pendiente y lo mandaria otra vez.
+ * Deja constancia en `notifications` para la campana dentro de la app, con
+ * status 'sent' (si quedara 'pending', enviarAvisoEncolado lo mandaria otra vez).
  */
-async function registrarEnApp(userId: string, aviso: Aviso, datos: Record<string, unknown>): Promise<void> {
+async function registrarEnApp(userId: string, tipo: string, aviso: Aviso, datos: Record<string, unknown>): Promise<void> {
   await admin.firestore().collection('notifications').add({
     userId,
+    senderId: SYSTEM_SENDER,
+    type: tipo,
     title: aviso.titulo,
     body: aviso.cuerpo,
     data: datos,
@@ -153,99 +253,111 @@ async function registrarEnApp(userId: string, aviso: Aviso, datos: Record<string
   });
 }
 
-async function notificarA(userId: string, aviso: Aviso, datos: Record<string, unknown>): Promise<void> {
+async function notificarA(
+  userId: string,
+  tipo: string,
+  avisos: Bilingue,
+  datos: Record<string, unknown>
+): Promise<void> {
   if (!userId) return;
+  const aviso = avisos[await idiomaDe(userId)];
   const tokens = await tokensDe(userId);
   const { enviados, tokensMuertos } = await enviarAExpo(tokens, aviso, datos);
   await limpiarTokens(tokensMuertos);
-  await registrarEnApp(userId, aviso, datos);
+  await registrarEnApp(userId, tipo, aviso, datos);
   console.log(`[Avisos] ${userId}: ${enviados} de ${tokens.length} aparatos`);
 }
 
 /**
- * 1) El estado de una reserva cambio. Avisa a quien corresponda.
- *
- * Corre en el servidor con Admin SDK, asi que no lo detienen las reglas de
- * Firestore ni depende de que la app del emisor este abierta. Ese era el
- * defecto de fondo del envio anterior, que vivia en el telefono.
+ * 1) Cambio de estado de una reserva en Realtime Database.
+ * Corre con Admin SDK: no depende de que la app de nadie este abierta.
  */
-export const avisarCambioDeReserva = onDocumentUpdated('bookings/{bookingId}', async (event) => {
-  const antes = event.data?.before.data();
-  const despues = event.data?.after.data();
-  if (!antes || !despues) return;
+export const avisarCambioDeReserva = onValueWritten('/bookings/{bookingId}', async (event) => {
+  const antes = event.data.before.val() as Record<string, any> | null;
+  const despues = event.data.after.val() as Record<string, any> | null;
+  if (!despues) return;
 
-  const estadoAnterior = antes.status as string | undefined;
+  const estadoAnterior = (antes?.status as string | undefined) ?? null;
   const estadoNuevo = despues.status as string | undefined;
   if (!estadoNuevo || estadoAnterior === estadoNuevo) return;
 
   const plantilla = MENSAJES[estadoNuevo];
-  if (!plantilla) {
-    console.log('[Avisos] Estado sin mensaje definido:', estadoNuevo);
-    return;
-  }
+  if (!plantilla) return;
 
   const datos = {
     tipo: 'booking_status',
     bookingId: event.params.bookingId,
     estado: estadoNuevo,
-    estadoAnterior: estadoAnterior ?? null,
+    estadoAnterior,
   };
 
-  console.log(`[Avisos] Reserva ${event.params.bookingId}: ${estadoAnterior} -> ${estadoNuevo}`);
-
+  // Un escolta nunca recibe avisos de reservas sin pagar.
   const pendientes: Promise<void>[] = [];
-  if (plantilla.cliente && despues.clientId) pendientes.push(notificarA(despues.clientId, plantilla.cliente, datos));
-  if (plantilla.escolta && despues.guardId) pendientes.push(notificarA(despues.guardId, plantilla.escolta, datos));
+  if (plantilla.cliente && despues.clientId) {
+    pendientes.push(notificarA(despues.clientId, 'booking_status', plantilla.cliente, datos));
+  }
+  if (plantilla.escolta && despues.guardId && estadoNuevo !== 'pending') {
+    pendientes.push(notificarA(despues.guardId, 'booking_status', plantilla.escolta, datos));
+  }
 
-  // allSettled: que un aparato falle no debe impedir el aviso a la otra parte.
   const r = await Promise.allSettled(pendientes);
-  r.filter((x) => x.status === 'rejected').forEach((x) => console.error('[Avisos] Fallo un envio:', (x as PromiseRejectedResult).reason));
+  r.filter((x) => x.status === 'rejected').forEach((x) =>
+    console.error('[Avisos] Fallo un envio:', (x as PromiseRejectedResult).reason)
+  );
 });
 
 /**
- * 2) Vacia la cola que la app ya escribia.
- *
- * `pushNotificationService` tiene once ayudantes (notifyNewMessage,
- * notifyPaymentSuccess, notifyEmergency...) que escriben en `notifications`
- * con status 'pending'. Nunca hubo quien los enviara. Con esto empiezan a
- * funcionar sin tocar el codigo del cliente.
+ * 2) Vacia la cola `notifications`.
+ * Las reglas de Firestore ya garantizan que senderId == quien escribe y que
+ * el destinatario es uno mismo o la otra parte de una reserva compartida.
  */
 export const enviarAvisoEncolado = onDocumentCreated('notifications/{notificationId}', async (event) => {
   const doc = event.data;
   const datos = doc?.data();
-  if (!datos || datos.status !== 'pending') return;
+  if (!doc || !datos || datos.status !== 'pending') return;
 
   const userId = datos.userId as string | undefined;
   if (!userId) {
-    await doc!.ref.update({ status: 'failed', error: 'sin userId' });
+    await doc.ref.update({ status: 'failed', error: 'sin userId' });
     return;
   }
 
-  const aviso: Aviso = { titulo: datos.title ?? 'Escolta Pro', cuerpo: datos.body ?? '' };
+  const tipo = typeof datos.type === 'string' ? datos.type : '';
+  const delServidor = datos.senderId === SYSTEM_SENDER;
+  const aviso: Aviso | undefined = delServidor
+    ? { titulo: String(datos.title ?? 'Escolta Pro'), cuerpo: String(datos.body ?? '') }
+    : PLANTILLAS[tipo]?.[await idiomaDe(userId)];
+
+  if (!aviso) {
+    await doc.ref.update({ status: 'failed', error: `tipo sin plantilla: ${tipo}` });
+    return;
+  }
+
+  // Nunca se reenvian datos arbitrarios del cliente dentro del push.
+  const payload: Record<string, unknown> = delServidor
+    ? ((datos.data ?? {}) as Record<string, unknown>)
+    : { type: tipo, bookingId: typeof datos.bookingId === 'string' ? datos.bookingId : null };
 
   try {
     const tokens = await tokensDe(userId);
-    const { enviados, tokensMuertos } = await enviarAExpo(tokens, aviso, (datos.data ?? {}) as Record<string, unknown>);
+    const { enviados, tokensMuertos } = await enviarAExpo(tokens, aviso, payload);
     await limpiarTokens(tokensMuertos);
-    await doc!.ref.update({
+    await doc.ref.update({
+      // Lo que ve la campana dentro de la app es la plantilla, no el texto del cliente.
+      title: aviso.titulo,
+      body: aviso.cuerpo,
       status: enviados > 0 ? 'sent' : 'no_devices',
       sentAt: new Date().toISOString(),
       deliveredTo: enviados,
     });
   } catch (error: any) {
     console.error('[Avisos] Error vaciando la cola:', error);
-    await doc!.ref.update({ status: 'failed', error: String(error?.message ?? error) });
+    await doc.ref.update({ status: 'failed', error: String(error?.message ?? error) });
   }
 });
 
 /**
- * 3) Alerta de panico: avisa a todos los administradores.
- *
- * `emergencyService` hacia esto desde el telefono, listando los usuarios con
- * rol admin. Esa lista ahora esta cerrada, y con razon: nadie deberia poder
- * descargar el padron. Pero ademas era el peor lugar posible para ponerlo,
- * porque una alerta de panico no puede depender de que la app de quien la
- * dispara siga viva. Aqui corre en el servidor.
+ * 3) Alerta de panico: avisa a todos los administradores desde el servidor.
  */
 export const avisarEmergencia = onDocumentCreated('emergencyAlerts/{alertId}', async (event) => {
   const alerta = event.data?.data();
@@ -257,9 +369,17 @@ export const avisarEmergencia = onDocumentCreated('emergencyAlerts/{alertId}', a
     return;
   }
 
-  const aviso: Aviso = {
-    titulo: 'ALERTA DE EMERGENCIA',
-    cuerpo: `Se activo una alerta${alerta.type ? ` de tipo ${alerta.type}` : ''}${alerta.location?.address ? ` en ${alerta.location.address}` : ''}.`,
+  const tipoAlerta = typeof alerta.type === 'string' ? alerta.type.slice(0, 40) : '';
+  const direccion = typeof alerta.location?.address === 'string' ? alerta.location.address.slice(0, 120) : '';
+  const avisos: Bilingue = {
+    es: {
+      titulo: 'ALERTA DE EMERGENCIA',
+      cuerpo: `Se activó una alerta${tipoAlerta ? ` de tipo ${tipoAlerta}` : ''}${direccion ? ` en ${direccion}` : ''}.`,
+    },
+    en: {
+      titulo: 'EMERGENCY ALERT',
+      cuerpo: `Emergency alert raised${tipoAlerta ? ` (${tipoAlerta})` : ''}${direccion ? ` at ${direccion}` : ''}.`,
+    },
   };
   const datos = {
     tipo: 'emergency',
@@ -268,7 +388,8 @@ export const avisarEmergencia = onDocumentCreated('emergencyAlerts/{alertId}', a
     userId: alerta.userId ?? null,
   };
 
-  console.log(`[Avisos] Emergencia ${event.params.alertId}: avisando a ${admins.size} administradores`);
-  const r = await Promise.allSettled(admins.docs.map((d) => notificarA(d.id, aviso, datos)));
-  r.filter((x) => x.status === 'rejected').forEach((x) => console.error('[Avisos] Fallo avisar a un admin:', (x as PromiseRejectedResult).reason));
+  const r = await Promise.allSettled(admins.docs.map((d) => notificarA(d.id, 'emergency', avisos, datos)));
+  r.filter((x) => x.status === 'rejected').forEach((x) =>
+    console.error('[Avisos] Fallo avisar a un admin:', (x as PromiseRejectedResult).reason)
+  );
 });
