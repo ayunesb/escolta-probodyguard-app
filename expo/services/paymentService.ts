@@ -14,6 +14,7 @@ import { collection, updateDoc, doc, getDocs, query, where, serverTimestamp } fr
 import { auth as getAuthInstance, db as getDbInstance } from '@/lib/firebase';
 import type { SavedPaymentMethod } from '@/types';
 import type { PriceBreakdown } from '@/utils/pricing';
+import { PUBLIC_DEMO } from '@/constants/demo';
 import { ENV } from '@/config/env';
 import i18n from '@/i18n';
 import { logger } from '@/utils/logger';
@@ -110,6 +111,7 @@ export const paymentService = {
    * PaymentIntent. Returns the client secret plus the breakdown to display.
    */
   async createPaymentIntent(bookingId: string): Promise<PaymentIntentResponse> {
+    if (PUBLIC_DEMO) return (await import('@/demo/firebase')).demoSandbox.createPayment(bookingId);
     const response = await fetch(`${apiBase()}/api/stripe/payment-intent`, {
       method: 'POST',
       headers: await authHeaders(),
@@ -140,6 +142,7 @@ export const paymentService = {
    * PaymentIntent and marks the booking confirmed. Idempotent: safe to retry.
    */
   async confirmBookingPayment(bookingId: string): Promise<{ status: BookingPaymentStatus }> {
+    if (PUBLIC_DEMO) return (await import('@/demo/firebase')).demoSandbox.confirmPayment(bookingId) as Promise<{ status: BookingPaymentStatus }>;
     const response = await fetch(`${apiBase()}/api/stripe/confirm-booking`, {
       method: 'POST',
       headers: await authHeaders(),
@@ -229,6 +232,7 @@ export const paymentService = {
   },
 
   async getSavedPaymentMethods(userId: string): Promise<SavedPaymentMethod[]> {
+    if (PUBLIC_DEMO) return [];
     try {
       const response = await fetch(`${ENV.API_URL}/payments/methods/${userId}`);
       // 404 = no Braintree customer yet (first-time payer).
@@ -243,6 +247,7 @@ export const paymentService = {
   },
 
   async removePaymentMethod(userId: string, token: string): Promise<void> {
+    if (PUBLIC_DEMO) return;
     const response = await fetch(`${ENV.API_URL}/payments/methods/${userId}/${token}`, {
       method: 'DELETE',
     });
@@ -253,6 +258,7 @@ export const paymentService = {
   },
 
   async processRefund(transactionId: string, bookingId: string, amount?: number): Promise<PaymentResult> {
+    if (PUBLIC_DEMO) return (await import('@/demo/firebase')).demoSandbox.refund(transactionId, bookingId);
     let data: Record<string, any>;
     try {
       const response = await fetch(`${ENV.API_URL}/payments/refund`, {

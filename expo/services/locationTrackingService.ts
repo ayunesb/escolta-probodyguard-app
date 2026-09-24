@@ -61,7 +61,7 @@ function toPosition(coords: {
 // Solo primer plano. Se pide cuando de verdad empieza el seguimiento, nunca
 // al abrir la app.
 export async function requestLocationPermissions(): Promise<LocationPermission> {
-  if (PUBLIC_DEMO) return 'unavailable';
+  if (PUBLIC_DEMO) return 'granted';
   if (Platform.OS === 'web') {
     const nav = typeof navigator !== 'undefined' ? navigator : undefined;
     if (!nav || !('geolocation' in nav)) return 'unavailable';
@@ -90,6 +90,10 @@ export async function watchDevicePosition(
   onPosition: (position: DevicePosition) => void,
   onError: (error: LocationError) => void
 ): Promise<() => void> {
+  if (PUBLIC_DEMO) {
+    const tick = () => onPosition({ latitude: 20.6269, longitude: -87.073, accuracy: 8, timestamp: Date.now() });
+    tick(); const timer = setInterval(tick, 4000); return () => clearInterval(timer);
+  }
   if (Platform.OS === 'web') {
     const geo = typeof navigator !== 'undefined' ? navigator.geolocation : undefined;
     if (!geo) {
@@ -125,6 +129,17 @@ export function subscribeToBookingLocation(
   callback: (location: BookingLocation | null) => void,
   onError?: (error: Error) => void
 ): () => void {
+  if (PUBLIC_DEMO) {
+    let booking: { status?: string; pickupLatitude?: number; pickupLongitude?: number } | null = null;
+    const tick = () => {
+      if (!booking || !['accepted', 'en_route', 'active'].includes(booking.status || '')) { callback(null); return; }
+      const phase = (Date.now() % 120000) / 120000;
+      callback({ latitude: (booking.pickupLatitude ?? 20.6269) + Math.sin(phase * Math.PI * 2) * 0.002, longitude: (booking.pickupLongitude ?? -87.073) + Math.cos(phase * Math.PI * 2) * 0.002, accuracy: 8, heading: phase * 360, speed: 4, timestamp: Date.now() });
+    };
+    const unsub = onValue(ref(realtimeDb(), `bookings/${bookingId}`), snap => { booking = snap.val(); tick(); });
+    const timer = setInterval(tick, 4000);
+    return () => { clearInterval(timer); unsub(); };
+  }
   return onValue(
     ref(realtimeDb(), `bookingLocations/${bookingId}`),
     (snap) => {

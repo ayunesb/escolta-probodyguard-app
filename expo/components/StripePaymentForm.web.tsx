@@ -9,6 +9,8 @@
  * paymentService.createPaymentIntent; this component only mounts the element
  * and confirms. Every exit path of `pay` resolves the loading state.
  */
+import { PUBLIC_DEMO } from '@/constants/demo';
+import { DemoPaymentForm } from '@/demo/DemoPaymentForm';
 import { useEffect, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import type { Stripe, StripeElements, StripePaymentElement } from '@stripe/stripe-js';
@@ -24,7 +26,11 @@ import type { StripePaymentFormProps } from '@/components/funnel/paymentTypes';
 
 export type { StripePaymentFormProps } from '@/components/funnel/paymentTypes';
 
-export default function StripePaymentForm({ clientSecret, payLabel, returnUrl, onSucceeded, onError }: StripePaymentFormProps) {
+export default function StripePaymentForm(props: StripePaymentFormProps) {
+  return PUBLIC_DEMO ? <DemoPaymentForm {...props} /> : <LiveStripePaymentForm {...props} />;
+}
+
+function LiveStripePaymentForm({ clientSecret, payLabel, returnUrl, onSucceeded, onError }: StripePaymentFormProps) {
   const { t } = useTranslation(['funnel', 'common']);
   const mountRef = useRef<HTMLDivElement | null>(null);
   const stripeRef = useRef<Stripe | null>(null);

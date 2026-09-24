@@ -92,6 +92,9 @@ function statusCopy(b: Booking, viewer: Viewer, protectorName: string | null): S
   // Con nombre: "Diego R. accepted". Sin nombre, frase propia ("Your
   // protector accepted") para que la mayuscula y el genero salgan bien.
   const t = i18n.t;
+  if (b.paymentStatus === 'refunded') {
+    return { icon: CheckCircle2, title: t('booking:status.refundedTitle'), message: t('booking:status.refundedMessage'), tone: 'default' };
+  }
   const named = (key: 'confirmedClientTitle' | 'acceptedClientTitle' | 'enRouteClientTitle' | 'rejectedClientTitle') =>
     protectorName ? t(`booking:status.${key}`, { name: protectorName }) : t(`booking:status.${key}NoName`);
   switch (b.status) {
@@ -345,9 +348,9 @@ export default function BookingDetailScreen() {
   const statusColor = copy.tone === 'error' ? Colors.error : copy.tone === 'accent' ? Colors.accentLight : Colors.textSecondary;
   const showChat = viewer !== 'observer' && !!booking.guardId && CHAT_STATUSES.has(booking.status) && !!user;
   const canChat = CHAT_WRITABLE.has(booking.status);
-  const canCancel =
+  const canCancel = booking.paymentStatus !== 'refunded' && (
     (viewer === 'client' && CLIENT_CANCELLABLE.has(booking.status)) ||
-    (viewer === 'guard' && GUARD_CANCELLABLE.has(booking.status));
+    (viewer === 'guard' && GUARD_CANCELLABLE.has(booking.status)));
   const subtotal = Math.round((booking.totalAmount ?? 0) * 100 - (booking.processingFee ?? 0) * 100) / 100;
   const openMap = () => router.push(`/tracking/${booking.id}`);
 
@@ -371,7 +374,7 @@ export default function BookingDetailScreen() {
           onPress={() => router.push(`/booking/rate/${booking.id}`)}
         />
       );
-    } else if (booking.status === 'rejected') {
+    } else if (booking.status === 'rejected' && booking.paymentStatus !== 'refunded') {
       actions = (
         <Button
           title={t('booking:shared.chooseAnother')}
@@ -653,7 +656,7 @@ export default function BookingDetailScreen() {
                   <InfoRow label={t('booking:detail.processingFee')} value={formatMXN(booking.processingFee)} />
                   <Divider style={styles.divider} />
                   <InfoRow
-                    label={t(booking.status === 'pending' ? 'booking:detail.totalDue' : 'booking:detail.totalPaid')}
+                    label={t(booking.status === 'pending' ? 'booking:detail.totalDue' : booking.paymentStatus === 'refunded' ? 'booking:detail.totalRefunded' : 'booking:detail.totalPaid')}
                     value={formatMXN(booking.totalAmount)}
                     emphasis
                   />

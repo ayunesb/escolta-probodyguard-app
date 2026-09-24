@@ -29,7 +29,7 @@ import { formatMXN } from '@/utils/pricing';
 type LoadState = 'loading' | 'ready' | 'error' | 'missing-param' | 'not-found';
 
 export default function SelectGuardScreen() {
-  const { t } = useTranslation(['funnel', 'common']);
+  const { t } = useTranslation(['funnel', 'common', 'booking']);
   const { bookingId } = useLocalSearchParams<{ bookingId: string }>();
   const router = useRouter();
   const [booking, setBooking] = useState<Booking | null>(null);
@@ -167,12 +167,12 @@ export default function SelectGuardScreen() {
   }
 
   // Reassignment is only for a paid booking that the previous protector declined.
-  if (booking.status !== 'rejected') {
+  if (booking.status !== 'rejected' || booking.paymentStatus === 'refunded') {
     return shell(
       <EmptyState
         icon={ShieldCheck}
         title={t('select.notNeededTitle')}
-        message={t('select.notNeededMessage')}
+        message={booking.paymentStatus === 'refunded' ? t('booking:status.refundedMessage') : t('select.notNeededMessage')}
         actionLabel={t('shared.viewBooking')}
         onAction={() => router.replace(`/booking/${booking.id}`)}
       />

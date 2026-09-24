@@ -1,3 +1,5 @@
+import { PUBLIC_DEMO } from '@/constants/demo';
+import { paymentService } from '@/services/paymentService';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { RefreshControl, StyleSheet, View } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
@@ -83,7 +85,7 @@ function AdminRefundsRoute() {
 }
 
 function AdminRefundsScreen() {
-  const { t } = useTranslation(['backoffice', 'common']);
+  const { t } = useTranslation(['backoffice', 'common', 'auth']);
   const { user } = useAuth();
   const [bookings, setBookings] = useState<Booking[] | null>(null);
   const [refunds, setRefunds] = useState<Record<string, RefundRecord>>({});
@@ -163,15 +165,19 @@ function AdminRefundsScreen() {
   const recordRefund = async () => {
     if (!selected || !user) return;
     const ok = await confirm(
-      t('refunds.recordTitle'),
-      t('refunds.recordMessage', { amount: formatMXN(selected.totalAmount) }),
-      t('refunds.recordConfirm'),
+      (PUBLIC_DEMO ? t('auth:publicDemo.refundTitle') : t('refunds.recordTitle')),
+      PUBLIC_DEMO ? t('auth:publicDemo.refundHelp') : t('refunds.recordMessage', { amount: formatMXN(selected.totalAmount) }),
+      PUBLIC_DEMO ? t('auth:publicDemo.refundTitle') : t('refunds.recordConfirm'),
       t('common:actions.cancel')
     );
     if (!ok) return;
     setRecording(true);
     setRecordError(null);
     try {
+      if (PUBLIC_DEMO) {
+        const result = await paymentService.processRefund(selected.transactionId || '', selected.id);
+        if (!result.success) throw new Error(result.error);
+      }
       const now = new Date().toISOString();
       const record = {
         bookingId: selected.id,
@@ -180,7 +186,7 @@ function AdminRefundsScreen() {
         reason: selected.cancellationReason ?? selected.rejectionReason ?? null,
         status: 'completed',
         processedBy: user.id,
-        source: 'stripe_dashboard_manual',
+        source: PUBLIC_DEMO ? 'local_demo' : 'stripe_dashboard_manual',
         createdAt: now,
         completedAt: now,
       };
@@ -211,7 +217,7 @@ function AdminRefundsScreen() {
       >
         <View style={styles.header}>
           <AppText variant="title2">{t('refunds.title')}</AppText>
-          <AppText variant="callout">{t('refunds.description')}</AppText>
+          <AppText variant="callout">{PUBLIC_DEMO ? t('auth:publicDemo.refundHelp') : t('refunds.description')}</AppText>
         </View>
 
         {error ? (
@@ -235,7 +241,7 @@ function AdminRefundsScreen() {
                 icon={Receipt}
                 accent={totals.openCount > 0}
               />
-              <StatTile label={t('refunds.recorded')} value={totals.recordedCount} hint={t('refunds.recordedHint')} />
+              <StatTile label={t('refunds.recorded')} value={totals.recordedCount} hint={PUBLIC_DEMO ? t('auth:publicDemo.simulatedRefunds') : t('refunds.recordedHint')} />
             </View>
 
             <Input
@@ -288,7 +294,7 @@ function AdminRefundsScreen() {
                         {recorded ? (
                           <Badge label={t('refunds.refundRecorded')} tone="success" />
                         ) : (
-                          <Badge label={t('refunds.reviewInStripe')} tone="warning" />
+                          <Badge label={(PUBLIC_DEMO ? t('refunds.toReview') : t('refunds.reviewInStripe'))} tone="warning" />
                         )}
                       </View>
                       <AppText variant="caption" color={Colors.textTertiary}>
@@ -315,10 +321,10 @@ function AdminRefundsScreen() {
         footer={
           selected && !selectedRefund ? (
             <Button
-              title={t('refunds.recordTitle')}
+              title={(PUBLIC_DEMO ? t('auth:publicDemo.refundTitle') : t('refunds.recordTitle'))}
               onPress={recordRefund}
               loading={recording}
-              accessibilityLabel={t('refunds.recordA11y')}
+              accessibilityLabel={PUBLIC_DEMO ? t('auth:publicDemo.refundTitle') : t('refunds.recordA11y')}
               style={styles.flex}
             />
           ) : (
@@ -352,7 +358,7 @@ function AdminRefundsScreen() {
             ) : null}
 
             <Card tone="raised" style={styles.txCard}>
-              <AppText variant="overline">{t('refunds.stripeTransaction')}</AppText>
+              <AppText variant="overline">{PUBLIC_DEMO ? t('auth:publicDemo.transaction') : t('refunds.stripeTransaction')}</AppText>
               <AppText variant="numeric" selectable numberOfLines={2}>
                 {selected.transactionId}
               </AppText>
@@ -364,7 +370,7 @@ function AdminRefundsScreen() {
                   size="sm"
                   onPress={copyTransaction}
                   style={styles.flex}
-                  accessibilityLabel={t('refunds.copyA11y')}
+                  accessibilityLabel={PUBLIC_DEMO ? t('refunds.copyId') : t('refunds.copyA11y')}
                 />
                 {selectedStripe ? (
                   <Button
@@ -384,7 +390,7 @@ function AdminRefundsScreen() {
               <Notice
                 tone="warning"
                 message={
-                  selected.status === 'rejected' ? t('refunds.declinedWarning') : t('refunds.refundWarning')
+                  PUBLIC_DEMO ? t('auth:publicDemo.refundHelp') : selected.status === 'rejected' ? t('refunds.declinedWarning') : t('refunds.refundWarning')
                 }
               />
             ) : null}

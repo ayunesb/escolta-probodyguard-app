@@ -49,7 +49,7 @@ export function BookingCard({
   const time = formatTime(booking);
   const needsGuardResponse = viewerRole === 'guard' && booking.status === 'confirmed';
   const canTrack = !!onTrack && isLiveStatus(booking.status);
-  const canReassign = !!onReassign && viewerRole === 'client' && booking.status === 'rejected';
+  const canReassign = !!onReassign && viewerRole === 'client' && booking.status === 'rejected' && booking.paymentStatus !== 'refunded';
 
   return (
     // La tarjeta es un contenedor; la zona pulsable y el boton de accion son

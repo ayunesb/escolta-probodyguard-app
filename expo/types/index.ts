@@ -132,6 +132,7 @@ export interface Booking {
   platformCut: number;
   guardPayout: number;
   transactionId?: string;
+  paymentStatus?: 'paid' | 'refunded';
   paymentIntentId?: string;
   createdAt: string;
   confirmedAt?: string;

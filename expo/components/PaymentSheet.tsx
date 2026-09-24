@@ -1,3 +1,4 @@
+import { PUBLIC_DEMO } from '@/constants/demo';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -49,7 +50,7 @@ function quoteErrorMessage(error: unknown): string {
 }
 
 export default function PaymentSheet({ visible, bookingId, userId, onPaid, onCancel }: PaymentSheetProps) {
-  const { t } = useTranslation(['funnel', 'common']);
+  const { t } = useTranslation(['funnel', 'common', 'auth']);
   const insets = useSafeAreaInsets();
   const mode = resolveMode();
 
@@ -271,7 +272,7 @@ export default function PaymentSheet({ visible, bookingId, userId, onPaid, onCan
     <View style={styles.assurance}>
       <ShieldCheck size={15} color={Colors.textTertiary} strokeWidth={ICON_STROKE} />
       <AppText variant="footnote" color={Colors.textTertiary} style={styles.flex}>
-        {t('payment.assurance')}
+        {PUBLIC_DEMO ? t('auth:publicDemo.paymentHelp') : t('payment.assurance')}
       </AppText>
     </View>
   );

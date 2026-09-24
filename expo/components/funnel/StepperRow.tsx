@@ -1,5 +1,5 @@
 import React from 'react';
-import { StyleSheet, View } from 'react-native';
+import { Platform, StyleSheet, View } from 'react-native';
 import { Minus, Plus } from 'lucide-react-native';
 import { useTranslation } from 'react-i18next';
 import Colors from '@/constants/colors';
@@ -34,9 +34,9 @@ export function StepperRow({ label, hint, value, min, max, onChange, format, uni
   return (
     <View
       style={styles.row}
-      accessible
-      accessibilityRole="adjustable"
-      accessibilityLabel={label}
+      accessible={Platform.OS !== 'web'}
+      accessibilityRole={Platform.OS === 'web' ? undefined : 'adjustable'}
+      accessibilityLabel={Platform.OS === 'web' ? undefined : label}
       accessibilityValue={{ min, max, now: value, text: spoken }}
       accessibilityActions={[{ name: 'increment' }, { name: 'decrement' }]}
       onAccessibilityAction={(e) => {

@@ -1,5 +1,6 @@
+import { openContact } from '@/utils/openContact';
 import { useCallback, useEffect, useState } from 'react';
-import { Linking, StyleSheet, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import { Redirect, Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { CalendarX2, Mail, Phone, Receipt } from 'lucide-react-native';
 import { useTranslation } from 'react-i18next';
@@ -159,7 +160,7 @@ function GuardReassignmentScreen() {
             <SectionTitle title={t('reassign.nextSteps')} />
             <ListGroup>
               {client?.phone ? (
-                <ListRow icon={Phone} title={t('reassign.call')} subtitle={client.phone} onPress={() => Linking.openURL(`tel:${client.phone}`).catch(() => {})} />
+                <ListRow icon={Phone} title={t('reassign.call')} subtitle={client.phone} onPress={() => openContact(`tel:${client.phone}`).catch(() => {})} />
               ) : null}
               {client?.email ? (
                 <ListRow
@@ -167,7 +168,7 @@ function GuardReassignmentScreen() {
                   title={t('reassign.email')}
                   subtitle={client.email}
                   onPress={() =>
-                    Linking.openURL(
+                    openContact(
                       `mailto:${client.email}?subject=${encodeURIComponent(t('reassign.emailSubject', { id: shortId(booking.id) }))}`
                     ).catch(() => {})
                   }
