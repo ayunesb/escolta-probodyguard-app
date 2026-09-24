@@ -91,4 +91,3 @@ export function calculatePrice(input: PricingInput): PriceBreakdown {
 export function amountsMatch(a: number | undefined, b: number): boolean {
   return typeof a === 'number' && Math.abs(toCents(a) - toCents(b)) <= 1;
 }
-

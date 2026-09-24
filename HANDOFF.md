@@ -1,11 +1,28 @@
 # Escolta Pro — premium overhaul (branch `premium-overhaul`)
 
 A full audit and rebuild of the app: security fixes on the backend, the booking loop made to work end
-to end, and a new design system applied to every live screen. Nothing here has been deployed or pushed.
-The live Firebase project was never touched; all testing ran against local emulators.
+to end, and a new design system applied to every live screen. The `premium-overhaul` branch is the
+GitHub handoff for review. Production deployment is still pending.
+The overhaul was tested against local emulators; it has not been deployed to the live Firebase project.
 
 > **Deploy in the order below.** The new security rules and the new app depend on each other. Deploying
 > rules without the app (or the reverse) breaks sign-up, booking and payments.
+
+## Handoff verification - 24 September 2026
+
+The English/Spanish app, brand assets, booking changes, security rules, emulator setup and deployment
+instructions are included in this branch. Review and merge it into `main` before deploying, following
+the deployment order below.
+
+Fresh checks for this handoff:
+- App TypeScript: `cd expo && npx tsc --noEmit` - passed.
+- Cloud Functions TypeScript: `cd expo/functions && npx tsc --noEmit` - passed.
+- App Jest suite: `cd expo && npm test -- --runInBand` - 10 suites, 98 tests passed.
+- Production web export: `npx expo export --platform web` - passed.
+
+The earlier security-rule and browser-flow checks are recorded in Verification done below; they were
+not rerun during the GitHub handoff. Real payments, native device builds and push delivery remain
+unverified. The local preview URL is not a public deployment.
 
 ## What was wrong (and is now fixed)
 
