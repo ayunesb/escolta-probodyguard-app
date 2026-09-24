@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { Stack } from 'expo-router';
+import { useTranslation } from 'react-i18next';
 import { ShieldCheck } from 'lucide-react-native';
 import Colors from '@/constants/colors';
 import { Space } from '@/constants/design';
@@ -25,6 +26,7 @@ export default function KYCDocumentsRoute() {
 
 function KYCDocumentsScreen() {
   const { user, updateUser } = useAuth();
+  const { t } = useTranslation(['account', 'common']);
   const guard = user as UserRecord;
   const [kyc, setKyc] = useState<GuardKycRecord | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -35,9 +37,9 @@ function KYCDocumentsScreen() {
       setKyc(await userService.getGuardKyc(guard.id));
     } catch (error) {
       logger.error('[KYCDocuments] Failed to load private KYC record', error);
-      setLoadError('We could not load your documents.');
+      setLoadError(t('kyc.loadError'));
     }
-  }, [guard.id]);
+  }, [guard.id, t]);
 
   useEffect(() => {
     load();
@@ -68,44 +70,37 @@ function KYCDocumentsScreen() {
 
   return (
     <View style={styles.root}>
-      <NavBar title="My documents" />
+      <NavBar title={t('kyc.navTitle')} />
       <Screen padTop={false} contentStyle={styles.content}>
         <View style={styles.intro}>
-          <AppText variant="title2">Verification</AppText>
-          <AppText variant="callout">
-            ID, license, insurance and vehicle files are private: only you, your company and Escolta Pro reviewers can
-            open them. Your profile and outfit photos are shown to clients.
-          </AppText>
+          <AppText variant="title2">{t('kyc.title')}</AppText>
+          <AppText variant="callout">{t('kyc.intro')}</AppText>
           <Badge label={status.label} tone={status.tone} icon={ShieldCheck} style={styles.badge} />
         </View>
 
         {guard.kycStatus === 'rejected' ? (
           <Notice
             tone="error"
-            title="Your last submission was not approved"
-            message={
-              kyc?.rejectionReason
-                ? `Reviewer note: ${kyc.rejectionReason}. Upload updated files to resubmit.`
-                : 'Upload updated files to resubmit for review.'
-            }
+            title={t('kyc.rejectedTitle')}
+            message={kyc?.rejectionReason ? t('kyc.rejectedWithNote', { reason: kyc.rejectionReason }) : t('kyc.rejected')}
           />
         ) : guard.kycStatus === 'approved' ? (
-          <Notice tone="success" message="You're verified. Changing a verification file sends your profile back for review." />
+          <Notice tone="success" message={t('kyc.approved')} />
         ) : (
-          <Notice tone="info" message="Your documents are waiting for review by Escolta Pro. Keep them up to date here." />
+          <Notice tone="info" message={t('kyc.pending')} />
         )}
 
         {loadError ? (
-          <Notice tone="error" message={loadError} actionLabel="Try again" onAction={load} style={styles.gapTop} />
+          <Notice tone="error" message={loadError} actionLabel={t('common:actions.tryAgain')} onAction={load} style={styles.gapTop} />
         ) : null}
 
-        <SectionTitle title="Shown to clients" />
+        <SectionTitle title={t('kyc.shownToClients')} />
         <KYCDocumentUpload
           userId={guard.id}
           scopeId={scopeId}
           documentType="photo"
-          label="Profile photo"
-          description="A clear, recent photo of your face."
+          label={t('kyc.docs.photo.label')}
+          description={t('kyc.docs.photo.description')}
           maxImages={1}
           initialImages={guard.photos ?? []}
           onUpload={savePublic('photos')}
@@ -114,14 +109,14 @@ function KYCDocumentsScreen() {
           userId={guard.id}
           scopeId={scopeId}
           documentType="outfit"
-          label="Outfit photos"
-          description="Your uniform or work attire."
+          label={t('kyc.docs.outfit.label')}
+          description={t('kyc.docs.outfit.description')}
           maxImages={3}
           initialImages={guard.outfitPhotos ?? []}
           onUpload={savePublic('outfitPhotos')}
         />
 
-        <SectionTitle title="Private — for verification" />
+        <SectionTitle title={t('kyc.private')} />
         {kyc === null && !loadError ? (
           <>
             <SkeletonCard lines={2} />
@@ -133,8 +128,8 @@ function KYCDocumentsScreen() {
               userId={guard.id}
               scopeId={scopeId}
               documentType="id"
-              label="Government ID"
-              description="INE, passport or another valid photo ID. Both sides if applicable."
+              label={t('kyc.docs.id.label')}
+              description={t('kyc.docs.id.description')}
               maxImages={2}
               initialImages={kyc.governmentIdUrls ?? []}
               onUpload={saveKyc('governmentIdUrls')}
@@ -143,8 +138,8 @@ function KYCDocumentsScreen() {
               userId={guard.id}
               scopeId={scopeId}
               documentType="license"
-              label="Security license"
-              description="Your private security license or credential."
+              label={t('kyc.docs.license.label')}
+              description={t('kyc.docs.license.description')}
               maxImages={2}
               initialImages={kyc.licenseUrls ?? []}
               onUpload={saveKyc('licenseUrls')}
@@ -153,8 +148,8 @@ function KYCDocumentsScreen() {
               userId={guard.id}
               scopeId={scopeId}
               documentType="insurance"
-              label="Insurance"
-              description="Proof of liability insurance, if you have it."
+              label={t('kyc.docs.insurance.label')}
+              description={t('kyc.docs.insurance.description')}
               maxImages={2}
               initialImages={kyc.insuranceUrls ?? []}
               onUpload={saveKyc('insuranceUrls')}
@@ -163,8 +158,8 @@ function KYCDocumentsScreen() {
               userId={guard.id}
               scopeId={scopeId}
               documentType="vehicle"
-              label="Vehicle documents"
-              description="Registration and insurance, if you provide a vehicle."
+              label={t('kyc.docs.vehicle.label')}
+              description={t('kyc.docs.vehicle.description')}
               maxImages={3}
               initialImages={kyc.vehicleDocUrls ?? []}
               onUpload={saveKyc('vehicleDocUrls')}
@@ -172,7 +167,7 @@ function KYCDocumentsScreen() {
           </>
         ) : null}
         <AppText variant="caption" color={Colors.textTertiary} style={styles.footnote}>
-          Images only, up to 5 MB each.
+          {t('kyc.footnote')}
         </AppText>
       </Screen>
     </View>

@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useTranslation } from 'react-i18next';
 import { AlertCircle, CheckCircle2, Hourglass, SearchX } from 'lucide-react-native';
 import Colors from '@/constants/colors';
 import { Space } from '@/constants/design';
@@ -20,19 +21,17 @@ import {
 } from '@/components/ui';
 import { useAuth } from '@/contexts/AuthContext';
 import { bookingService } from '@/services/bookingService';
-import { StarRating } from '@/components/booking/StarRating';
+import { StarRating, starCellInset } from '@/components/booking/StarRating';
 import { guardDisplayName, useGuardProfile, useLiveBooking } from '@/components/booking/hooks';
 import { formatLongDate } from '@/components/booking/format';
 import type { RatingBreakdown } from '@/types';
 
-const CATEGORIES: { key: keyof RatingBreakdown; label: string; hint: string }[] = [
-  { key: 'professionalism', label: 'Professionalism', hint: 'Presence, discretion, conduct' },
-  { key: 'punctuality', label: 'Punctuality', hint: 'On time for pickup and every stop' },
-  { key: 'communication', label: 'Communication', hint: 'Clear, timely updates' },
-  { key: 'languageClarity', label: 'Language', hint: 'Easy to understand' },
-];
+// Textos en booking:rate.categories.<key> y booking:rate.verdict.<clave>.
+const CATEGORIES: (keyof RatingBreakdown)[] = ['professionalism', 'punctuality', 'communication', 'languageClarity'];
 
-const VERDICT = ['', 'Poor', 'Fair', 'Good', 'Very good', 'Excellent'];
+const VERDICT = ['poor', 'fair', 'good', 'veryGood', 'excellent'] as const;
+
+const CATEGORY_STAR_SIZE = 24;
 
 const EMPTY_BREAKDOWN: RatingBreakdown = { professionalism: 0, punctuality: 0, communication: 0, languageClarity: 0 };
 
@@ -40,6 +39,7 @@ export default function RateBookingScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const { user } = useAuth();
+  const { t } = useTranslation(['booking', 'common']);
   const { booking, loading, error, notFound, retry } = useLiveBooking(id);
   const { guard } = useGuardProfile(booking?.guardId);
 
@@ -62,7 +62,7 @@ export default function RateBookingScreen() {
   const renderState = () => {
     if (loading) {
       return (
-        <View accessibilityLabel="Loading booking">
+        <View accessibilityLabel={t('booking:shared.loading')}>
           <View style={styles.center}>
             <Skeleton width={72} height={72} radius={22} />
             <Skeleton width={160} height={16} style={styles.skelGap} />
@@ -75,15 +75,23 @@ export default function RateBookingScreen() {
       );
     }
     if (error) {
-      return <EmptyState icon={AlertCircle} title="Couldn't load this booking" message={error} actionLabel="Try again" onAction={retry} />;
+      return (
+        <EmptyState
+          icon={AlertCircle}
+          title={t('booking:shared.loadError')}
+          message={error}
+          actionLabel={t('common:actions.tryAgain')}
+          onAction={retry}
+        />
+      );
     }
     if (notFound || !booking) {
       return (
         <EmptyState
           icon={SearchX}
-          title="Booking unavailable"
-          message="It may have been removed, or you don't have access to it."
-          actionLabel="Go back"
+          title={t('booking:shared.unavailableTitle')}
+          message={t('booking:shared.unavailableMessage')}
+          actionLabel={t('common:actions.goBack')}
           onAction={backToBooking}
         />
       );
@@ -92,9 +100,9 @@ export default function RateBookingScreen() {
       return (
         <EmptyState
           icon={AlertCircle}
-          title="Only the client can rate"
-          message="Ratings come from the person who booked the service."
-          actionLabel="Back to booking"
+          title={t('booking:rate.onlyClientTitle')}
+          message={t('booking:rate.onlyClientMessage')}
+          actionLabel={t('booking:shared.backToBooking')}
           onAction={backToBooking}
         />
       );
@@ -103,9 +111,9 @@ export default function RateBookingScreen() {
       return (
         <EmptyState
           icon={Hourglass}
-          title="Rate after the service"
-          message="You can rate your protector once the service is marked as completed."
-          actionLabel="Back to booking"
+          title={t('booking:rate.notYetTitle')}
+          message={t('booking:rate.notYetMessage')}
+          actionLabel={t('booking:shared.backToBooking')}
           onAction={backToBooking}
         />
       );
@@ -113,14 +121,20 @@ export default function RateBookingScreen() {
     if (typeof booking.rating === 'number' && !submittedRef.current) {
       return (
         <View style={styles.center}>
-          <EmptyState icon={CheckCircle2} title="Thanks, you already rated this service" />
-          <StarRating value={booking.rating} size={26} label="Your rating" />
+          <EmptyState icon={CheckCircle2} title={t('booking:rate.alreadyRated')} />
+          <StarRating value={booking.rating} size={26} label={t('booking:rate.yourRating')} />
           {booking.review ? (
             <AppText variant="callout" align="center" style={styles.pastReview}>
-              “{booking.review}”
+              {t('booking:rate.quoted', { text: booking.review })}
             </AppText>
           ) : null}
-          <Button title="Back to booking" variant="outline" fullWidth={false} onPress={backToBooking} style={styles.pastBack} />
+          <Button
+            title={t('booking:shared.backToBooking')}
+            variant="outline"
+            fullWidth={false}
+            onPress={backToBooking}
+            style={styles.pastBack}
+          />
         </View>
       );
     }
@@ -132,13 +146,13 @@ export default function RateBookingScreen() {
   const submit = async () => {
     if (!booking || submitting) return;
     if (overall === 0) {
-      setFormError('Choose an overall rating from 1 to 5 stars.');
+      setFormError(t('booking:rate.chooseOverall'));
       return;
     }
     const values = Object.values(breakdown);
     const rated = values.filter((v) => v > 0).length;
     if (rated > 0 && rated < values.length) {
-      setFormError('Rate all four categories, or leave them all empty.');
+      setFormError(t('booking:rate.allOrNone'));
       return;
     }
     setSubmitting(true);
@@ -153,14 +167,14 @@ export default function RateBookingScreen() {
       backToBooking();
     } catch (e) {
       submittedRef.current = false;
-      setFormError(e instanceof Error ? e.message : "Your rating wasn't saved. Please try again.");
+      setFormError(e instanceof Error ? e.message : t('booking:rate.notSaved'));
       setSubmitting(false);
     }
   };
 
   return (
     <View style={styles.root}>
-      <NavBar title="Rate service" />
+      <NavBar title={t('booking:rate.title')} />
       <Screen
         padTop={false}
         keyboard
@@ -173,7 +187,7 @@ export default function RateBookingScreen() {
                   {formError}
                 </AppText>
               ) : null}
-              <Button title="Submit rating" onPress={submit} loading={submitting} />
+              <Button title={t('booking:rate.submit')} onPress={submit} loading={submitting} />
             </ActionBar>
           )
         }
@@ -186,45 +200,71 @@ export default function RateBookingScreen() {
                 {booking ? formatLongDate(booking) : ''}
               </AppText>
               <AppText variant="title2" align="center" accessibilityRole="header">
-                {name ? `How did ${name} do?` : 'How was your protection?'}
+                {name ? t('booking:rate.howDidNamed', { name }) : t('booking:rate.howWas')}
               </AppText>
-              <StarRating value={overall} onChange={(v) => { setOverall(v); setFormError(null); }} size={38} label="Overall rating" style={styles.overall} />
+              <StarRating
+                value={overall}
+                onChange={(v) => {
+                  setOverall(v);
+                  setFormError(null);
+                }}
+                size={38}
+                label={t('booking:rate.overall')}
+                style={styles.overall}
+              />
               <AppText variant="callout" color={overall ? Colors.accentLight : Colors.textTertiary} style={styles.verdict}>
-                {overall ? VERDICT[overall] : 'Tap a star to rate'}
+                {overall ? t(`booking:rate.verdict.${VERDICT[overall - 1]}`) : t('booking:rate.tapStar')}
               </AppText>
             </View>
 
-            <SectionTitle title="In detail" action={<AppText variant="caption" color={Colors.textTertiary}>Optional</AppText>} />
+            <SectionTitle
+              title={t('booking:rate.inDetail')}
+              action={
+                <AppText variant="caption" color={Colors.textTertiary}>
+                  {t('booking:rate.optional')}
+                </AppText>
+              }
+            />
             <Card padded={false}>
-              {CATEGORIES.map((c, i) => (
-                <View key={c.key} style={[styles.category, i > 0 ? styles.categoryDivider : null]}>
-                  <View style={styles.flex}>
-                    <AppText variant="bodyMedium">{c.label}</AppText>
+              {CATEGORIES.map((key, i) => {
+                const label = t(`booking:rate.categories.${key}.label`);
+                return (
+                  <View key={key} style={[styles.category, i > 0 ? styles.categoryDivider : null]}>
+                    <AppText variant="bodyMedium">{label}</AppText>
                     <AppText variant="footnote" color={Colors.textTertiary}>
-                      {c.hint}
+                      {t(`booking:rate.categories.${key}.hint`)}
                     </AppText>
+                    {/* Debajo del texto: cada estrella tiene 44 px de area tactil. */}
+                    <StarRating
+                      value={breakdown[key]}
+                      onChange={(v) => {
+                        setBreakdown((prev) => ({ ...prev, [key]: v }));
+                        setFormError(null);
+                      }}
+                      size={CATEGORY_STAR_SIZE}
+                      label={label}
+                      style={styles.categoryStars}
+                    />
                   </View>
-                  <StarRating
-                    value={breakdown[c.key]}
-                    onChange={(v) => {
-                      setBreakdown((prev) => ({ ...prev, [c.key]: v }));
-                      setFormError(null);
-                    }}
-                    size={20}
-                    label={c.label}
-                  />
-                </View>
-              ))}
+                );
+              })}
             </Card>
 
-            <SectionTitle title="Review" action={<AppText variant="caption" color={Colors.textTertiary}>Optional</AppText>} />
+            <SectionTitle
+              title={t('booking:rate.review')}
+              action={
+                <AppText variant="caption" color={Colors.textTertiary}>
+                  {t('booking:rate.optional')}
+                </AppText>
+              }
+            />
             <Input
               value={review}
               onChangeText={setReview}
-              placeholder="What stood out? Your review appears on the protector's profile."
+              placeholder={t('booking:rate.reviewPlaceholder')}
               multiline
               maxLength={1000}
-              accessibilityLabel="Review"
+              accessibilityLabel={t('booking:rate.review')}
             />
           </>
         )}
@@ -264,11 +304,15 @@ const styles = StyleSheet.create({
     marginTop: Space.sm,
   },
   category: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Space.md,
     paddingHorizontal: Space.lg,
-    paddingVertical: Space.md + 2,
+    paddingTop: Space.md + 2,
+    paddingBottom: Space.xs,
+  },
+  // La celda de 44 px deja aire a los lados de la estrella: se compensa para
+  // que la primera quede alineada con el texto.
+  categoryStars: {
+    marginTop: Space.xxs,
+    marginLeft: -starCellInset(CATEGORY_STAR_SIZE),
   },
   categoryDivider: {
     borderTopWidth: StyleSheet.hairlineWidth,

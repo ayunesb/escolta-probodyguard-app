@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import { RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 import { Stack, useFocusEffect } from 'expo-router';
+import { useTranslation } from 'react-i18next';
 import { Pencil, Search, ShieldCheck, UserCheck, Users, UserX } from 'lucide-react-native';
 import Colors from '@/constants/colors';
 import { Space } from '@/constants/design';
@@ -19,7 +20,7 @@ import {
   SkeletonCard,
 } from '@/components/ui';
 import type { Tone } from '@/components/ui';
-import { Notice, RoleGate, Sheet, formatDate, fullName, kycMeta, plural, roleLabel } from '@/components/backoffice';
+import { Notice, RoleGate, Sheet, formatDate, fullName, kycMeta, roleLabel } from '@/components/backoffice';
 import { useAuth } from '@/contexts/AuthContext';
 import { isSuspended, UserRecord, userService } from '@/services/userService';
 import type { UserRole } from '@/types';
@@ -36,13 +37,8 @@ const ROLE_TONE: Record<UserRole, Tone> = {
   admin: 'neutral',
 };
 
-const FILTERS: { value: Filter; label: string }[] = [
-  { value: 'all', label: 'All' },
-  { value: 'client', label: 'Clients' },
-  { value: 'guard', label: 'Guards' },
-  { value: 'company', label: 'Companies' },
-  { value: 'suspended', label: 'Suspended' },
-];
+// La etiqueta de cada filtro es backoffice:adminUsers.filters.<valor>.
+const FILTERS: Filter[] = ['all', 'client', 'guard', 'company', 'suspended'];
 
 const normalize = (s: unknown) =>
   (typeof s === 'string' ? s : '')
@@ -62,9 +58,10 @@ export default function AdminUsersRoute() {
 }
 
 function AdminUsersScreen() {
+  const { t } = useTranslation(['backoffice', 'common']);
   const { user: me } = useAuth();
   const [users, setUsers] = useState<UserRecord[] | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
@@ -79,7 +76,7 @@ function AdminUsersScreen() {
   const [saveError, setSaveError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    setLoadError(null);
+    setLoadError(false);
     try {
       const [clients, guards, companies] = await Promise.all([
         userService.listByRole('client'),
@@ -90,7 +87,7 @@ function AdminUsersScreen() {
       setUsers(all);
     } catch (error) {
       logger.error('[AdminUsers] Failed to load users', error);
-      setLoadError('We could not load accounts.');
+      setLoadError(true);
     }
   }, []);
 
@@ -129,12 +126,10 @@ function AdminUsersScreen() {
     const suspend = !isSuspended(u);
     const name = fullName(u);
     const ok = await confirm(
-      suspend ? `Suspend ${name}?` : `Reinstate ${name}?`,
-      suspend
-        ? 'They will be signed out and blocked from using Escolta Pro until you reinstate them.'
-        : 'They will be able to sign in and use Escolta Pro again.',
-      suspend ? 'Suspend' : 'Reinstate',
-      'Cancel',
+      suspend ? t('adminUsers.suspendTitle', { name }) : t('adminUsers.reinstateTitle', { name }),
+      suspend ? t('adminUsers.suspendMessage') : t('adminUsers.reinstateMessage'),
+      suspend ? t('adminUsers.suspend') : t('adminUsers.reinstate'),
+      t('common:actions.cancel'),
       suspend
     );
     if (!ok) return;
@@ -143,10 +138,16 @@ function AdminUsersScreen() {
     try {
       await userService.setSuspended(u.id, suspend);
       setUsers((prev) => (prev ?? []).map((x) => (x.id === u.id ? { ...x, suspended: suspend, isActive: !suspend } : x)));
-      setNotice({ tone: 'success', message: suspend ? `${name} is suspended.` : `${name} is reinstated.` });
+      setNotice({
+        tone: 'success',
+        message: suspend ? t('adminUsers.suspendedNotice', { name }) : t('adminUsers.reinstatedNotice', { name }),
+      });
     } catch (error) {
       logger.error('[AdminUsers] Failed to change suspension', error);
-      setNotice({ tone: 'error', message: `Could not ${suspend ? 'suspend' : 'reinstate'} ${name}. Nothing changed.` });
+      setNotice({
+        tone: 'error',
+        message: suspend ? t('adminUsers.suspendError', { name }) : t('adminUsers.reinstateError', { name }),
+      });
     } finally {
       setBusyId(null);
     }
@@ -167,13 +168,13 @@ function AdminUsersScreen() {
   const saveEdit = async () => {
     if (!editing) return;
     const errors: typeof formErrors = {};
-    if (!form.firstName.trim()) errors.firstName = 'Required';
-    if (!form.lastName.trim()) errors.lastName = 'Required';
-    if (!form.phone.trim()) errors.phone = 'Required';
+    if (!form.firstName.trim()) errors.firstName = t('shared.required');
+    if (!form.lastName.trim()) errors.lastName = t('shared.required');
+    if (!form.phone.trim()) errors.phone = t('shared.required');
     let hourlyRate: number | undefined;
     if (editing.role === 'guard' && form.hourlyRate.trim()) {
       hourlyRate = Number(form.hourlyRate.replace(',', '.'));
-      if (!Number.isFinite(hourlyRate) || hourlyRate <= 0) errors.hourlyRate = 'Enter a rate in MXN greater than 0';
+      if (!Number.isFinite(hourlyRate) || hourlyRate <= 0) errors.hourlyRate = t('shared.rateInvalid');
     }
     setFormErrors(errors);
     if (Object.keys(errors).length) return;
@@ -189,11 +190,11 @@ function AdminUsersScreen() {
       };
       await userService.updateUserFields(editing.id, updates);
       setUsers((prev) => (prev ?? []).map((x) => (x.id === editing.id ? { ...x, ...updates } : x)));
-      setNotice({ tone: 'success', message: `${updates.firstName} ${updates.lastName} was updated.` });
+      setNotice({ tone: 'success', message: t('adminUsers.updated', { name: `${updates.firstName} ${updates.lastName}` }) });
       setEditing(null);
     } catch (error) {
       logger.error('[AdminUsers] Failed to update user', error);
-      setSaveError('Changes could not be saved. Please try again.');
+      setSaveError(t('adminUsers.saveError'));
     } finally {
       setSaving(false);
     }
@@ -202,41 +203,48 @@ function AdminUsersScreen() {
   return (
     <Screen glow keyboard refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.accent} />}>
       <ScreenHeader
-        eyebrow="Admin · Accounts"
-        title="Members"
-        subtitle={users ? `${plural(counts.all, 'account')} · ${counts.suspended} suspended` : 'Clients, guards and companies'}
+        eyebrow={t('adminUsers.eyebrow')}
+        title={t('adminUsers.title')}
+        subtitle={
+          users
+            ? t('adminUsers.subtitle', {
+                accounts: t('counts.accounts', { count: counts.all }),
+                suspended: t('adminUsers.suspendedCount', { count: counts.suspended }),
+              })
+            : t('adminUsers.subtitleFallback')
+        }
       />
 
       <Input
         icon={Search}
-        placeholder="Search name, email, phone or ID"
+        placeholder={t('adminUsers.search')}
         value={search}
         onChangeText={setSearch}
         autoCapitalize="none"
         autoCorrect={false}
         returnKeyType="search"
-        accessibilityLabel="Search accounts"
+        accessibilityLabel={t('adminUsers.searchA11y')}
         clearButtonMode="while-editing"
       />
 
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips} style={styles.chipsScroll}>
         {FILTERS.map((f) => (
           <Chip
-            key={f.value}
-            label={f.label}
-            count={users ? counts[f.value] : undefined}
-            selected={filter === f.value}
-            onPress={() => setFilter(f.value)}
+            key={f}
+            label={t(`adminUsers.filters.${f}`)}
+            count={users ? counts[f] : undefined}
+            selected={filter === f}
+            onPress={() => setFilter(f)}
           />
         ))}
       </ScrollView>
 
       {notice ? <Notice tone={notice.tone} message={notice.message} onDismiss={() => setNotice(null)} style={styles.notice} /> : null}
 
-      <SectionTitle title={search.trim() ? `${plural(visible.length, 'result')}` : FILTERS.find((f) => f.value === filter)?.label ?? 'All'} />
+      <SectionTitle title={search.trim() ? t('counts.results', { count: visible.length }) : t(`adminUsers.filters.${filter}`)} />
 
       {loadError ? (
-        <Notice tone="error" message={loadError} actionLabel="Try again" onAction={load} />
+        <Notice tone="error" message={t('adminUsers.loadError')} actionLabel={t('common:actions.tryAgain')} onAction={load} />
       ) : users === null ? (
         <>
           <SkeletonCard media />
@@ -246,9 +254,9 @@ function AdminUsersScreen() {
       ) : visible.length === 0 ? (
         <EmptyState
           icon={Users}
-          title={users.length === 0 ? 'No accounts yet' : 'No matches'}
-          message={users.length === 0 ? 'New sign-ups will appear here.' : 'Try another name, or clear the filter.'}
-          actionLabel={users.length > 0 && (search || filter !== 'all') ? 'Clear search' : undefined}
+          title={users.length === 0 ? t('adminUsers.emptyTitle') : t('shared.noMatches')}
+          message={users.length === 0 ? t('adminUsers.emptyMessage') : t('adminUsers.noMatchesMessage')}
+          actionLabel={users.length > 0 && (search || filter !== 'all') ? t('adminUsers.clearSearch') : undefined}
           onAction={() => {
             setSearch('');
             setFilter('all');
@@ -276,7 +284,7 @@ function AdminUsersScreen() {
 
                 <View style={styles.badges}>
                   <Badge label={roleLabel(u.role)} tone={ROLE_TONE[u.role] ?? 'neutral'} />
-                  <Badge label={suspended ? 'Suspended' : 'Active'} tone={suspended ? 'error' : 'success'} />
+                  <Badge label={suspended ? t('adminUsers.suspended') : t('adminUsers.active')} tone={suspended ? 'error' : 'success'} />
                   {u.role === 'guard' ? <Badge label={kyc.label} tone={kyc.tone} icon={ShieldCheck} /> : null}
                 </View>
 
@@ -285,19 +293,27 @@ function AdminUsersScreen() {
                     u.phone || null,
                     u.role === 'guard'
                       ? typeof u.hourlyRate === 'number' && u.hourlyRate > 0
-                        ? `${formatMXN(u.hourlyRate)}/h`
-                        : 'Rate not set'
+                        ? t('shared.ratePerHour', { amount: formatMXN(u.hourlyRate) })
+                        : t('shared.rateNotSet')
                       : null,
-                    `Joined ${formatDate(u.createdAt)}`,
+                    t('shared.joined', { date: formatDate(u.createdAt) }),
                   ]
                     .filter(Boolean)
                     .join(' · ')}
                 </AppText>
 
                 <View style={styles.actions}>
-                  <Button title="Edit" icon={Pencil} variant="secondary" size="sm" onPress={() => startEdit(u)} style={styles.flex} accessibilityLabel={`Edit ${name}`} />
                   <Button
-                    title={suspended ? 'Reinstate' : 'Suspend'}
+                    title={t('common:actions.edit')}
+                    icon={Pencil}
+                    variant="secondary"
+                    size="sm"
+                    onPress={() => startEdit(u)}
+                    style={styles.flex}
+                    accessibilityLabel={t('adminUsers.editA11y', { name })}
+                  />
+                  <Button
+                    title={suspended ? t('adminUsers.reinstate') : t('adminUsers.suspend')}
                     icon={suspended ? UserCheck : UserX}
                     variant={suspended ? 'outline' : 'danger'}
                     size="sm"
@@ -305,7 +321,7 @@ function AdminUsersScreen() {
                     disabled={u.id === me?.id}
                     onPress={() => toggleSuspension(u)}
                     style={styles.flex}
-                    accessibilityLabel={`${suspended ? 'Reinstate' : 'Suspend'} ${name}`}
+                    accessibilityLabel={suspended ? t('adminUsers.reinstateA11y', { name }) : t('adminUsers.suspendA11y', { name })}
                   />
                 </View>
               </Card>
@@ -319,24 +335,42 @@ function AdminUsersScreen() {
         onClose={() => setEditing(null)}
         dismissable={!saving}
         eyebrow={editing ? roleLabel(editing.role) : undefined}
-        title="Edit account"
+        title={t('adminUsers.editTitle')}
         subtitle={editing?.email}
         footer={
           <>
-            <Button title="Cancel" variant="secondary" onPress={() => setEditing(null)} disabled={saving} style={styles.flex} />
-            <Button title="Save changes" onPress={saveEdit} loading={saving} style={styles.flex} />
+            <Button title={t('common:actions.cancel')} variant="secondary" onPress={() => setEditing(null)} disabled={saving} style={styles.flex} />
+            <Button title={t('adminUsers.saveChanges')} onPress={saveEdit} loading={saving} style={styles.flex} />
           </>
         }
       >
-        <Input label="First name" value={form.firstName} onChangeText={(t) => setForm((f) => ({ ...f, firstName: t }))} error={formErrors.firstName} autoCapitalize="words" />
-        <Input label="Last name" value={form.lastName} onChangeText={(t) => setForm((f) => ({ ...f, lastName: t }))} error={formErrors.lastName} autoCapitalize="words" />
-        <Input label="Phone" value={form.phone} onChangeText={(t) => setForm((f) => ({ ...f, phone: t }))} error={formErrors.phone} keyboardType="phone-pad" />
+        <Input
+          label={t('shared.firstName')}
+          value={form.firstName}
+          onChangeText={(v) => setForm((f) => ({ ...f, firstName: v }))}
+          error={formErrors.firstName}
+          autoCapitalize="words"
+        />
+        <Input
+          label={t('shared.lastName')}
+          value={form.lastName}
+          onChangeText={(v) => setForm((f) => ({ ...f, lastName: v }))}
+          error={formErrors.lastName}
+          autoCapitalize="words"
+        />
+        <Input
+          label={t('shared.phone')}
+          value={form.phone}
+          onChangeText={(v) => setForm((f) => ({ ...f, phone: v }))}
+          error={formErrors.phone}
+          keyboardType="phone-pad"
+        />
         {editing?.role === 'guard' ? (
           <Input
-            label="Hourly rate (MXN)"
-            hint="Leave empty to keep the current rate. Bookings already paid keep their price."
+            label={t('shared.hourlyRate')}
+            hint={t('adminUsers.rateHint')}
             value={form.hourlyRate}
-            onChangeText={(t) => setForm((f) => ({ ...f, hourlyRate: t }))}
+            onChangeText={(v) => setForm((f) => ({ ...f, hourlyRate: v }))}
             error={formErrors.hourlyRate}
             keyboardType="decimal-pad"
           />

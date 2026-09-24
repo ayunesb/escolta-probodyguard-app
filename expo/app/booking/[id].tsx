@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useTranslation } from 'react-i18next';
+import i18n from '@/i18n';
+import { formatTimeOfDay } from '@/i18n/format';
 import * as Clipboard from 'expo-clipboard';
 import {
   AlertCircle,
@@ -82,70 +85,136 @@ const GUARD_CANCELLABLE = new Set(['accepted', 'en_route']);
 const clockTime = (iso?: string) => {
   if (!iso) return null;
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? null : d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  return Number.isNaN(d.getTime()) ? null : formatTimeOfDay(d);
 };
 
 function statusCopy(b: Booking, viewer: Viewer, protectorName: string | null): StatusCopy {
-  // Al inicio de frase va en mayuscula; en medio, en minuscula.
-  const Name = protectorName ?? 'Your protector';
-  const name = protectorName ?? 'your protector';
+  // Con nombre: "Diego R. accepted". Sin nombre, frase propia ("Your
+  // protector accepted") para que la mayuscula y el genero salgan bien.
+  const t = i18n.t;
+  const named = (key: 'confirmedClientTitle' | 'acceptedClientTitle' | 'enRouteClientTitle' | 'rejectedClientTitle') =>
+    protectorName ? t(`booking:status.${key}`, { name: protectorName }) : t(`booking:status.${key}NoName`);
   switch (b.status) {
     case 'pending':
       return viewer === 'client'
         ? {
             icon: CreditCard,
-            title: 'Payment not completed',
-            message: "This request isn't confirmed until it's paid. You can cancel it, or book again from the protector's profile.",
+            title: t('booking:status.pendingClientTitle'),
+            message: t('booking:status.pendingClientMessage'),
             tone: 'default',
           }
-        : { icon: CreditCard, title: 'Awaiting payment', tone: 'default' };
+        : { icon: CreditCard, title: t('booking:status.pendingTitle'), tone: 'default' };
     case 'confirmed':
       return viewer === 'guard'
-        ? { icon: Hourglass, title: 'New request', message: 'Review the details, then accept or decline.', tone: 'accent' }
-        : { icon: Hourglass, title: `Waiting for ${name} to accept`, message: 'Your booking is paid. You will see the answer here as soon as they respond.', tone: 'default' };
+        ? {
+            icon: Hourglass,
+            title: t('booking:status.confirmedGuardTitle'),
+            message: t('booking:status.confirmedGuardMessage'),
+            tone: 'accent',
+          }
+        : {
+            icon: Hourglass,
+            title: named('confirmedClientTitle'),
+            message: t('booking:status.confirmedClientMessage'),
+            tone: 'default',
+          };
     case 'accepted':
       return viewer === 'guard'
-        ? { icon: ShieldCheck, title: "You're booked", message: 'When you meet, ask the client for their start code to begin the service.', tone: 'default' }
-        : { icon: ShieldCheck, title: `${Name} accepted`, message: 'Share your start code when you meet. Live location appears 10 minutes before the start.', tone: 'default' };
+        ? {
+            icon: ShieldCheck,
+            title: t('booking:status.acceptedGuardTitle'),
+            message: t('booking:status.acceptedGuardMessage'),
+            tone: 'default',
+          }
+        : {
+            icon: ShieldCheck,
+            title: named('acceptedClientTitle'),
+            message: t('booking:status.acceptedClientMessage'),
+            tone: 'default',
+          };
     case 'en_route':
       return viewer === 'guard'
-        ? { icon: Navigation, title: 'On your way', message: 'The client can follow your live location.', tone: 'default' }
-        : { icon: Navigation, title: `${Name} is on the way`, message: 'Follow their live location on the map.', tone: 'default' };
+        ? {
+            icon: Navigation,
+            title: t('booking:status.enRouteGuardTitle'),
+            message: t('booking:status.enRouteGuardMessage'),
+            tone: 'default',
+          }
+        : {
+            icon: Navigation,
+            title: named('enRouteClientTitle'),
+            message: t('booking:status.enRouteClientMessage'),
+            tone: 'default',
+          };
     case 'active': {
       const since = clockTime(b.startedAt);
-      return { icon: Radio, title: 'Service in progress', message: since ? `Started at ${since}.` : undefined, tone: 'default' };
+      return {
+        icon: Radio,
+        title: t('booking:status.activeTitle'),
+        message: since ? t('booking:status.activeSince', { time: since }) : undefined,
+        tone: 'default',
+      };
     }
     case 'completed': {
       const at = clockTime(b.completedAt);
-      return { icon: CheckCircle2, title: 'Service completed', message: at ? `Finished at ${at}.` : undefined, tone: 'default' };
+      return {
+        icon: CheckCircle2,
+        title: t('booking:status.completedTitle'),
+        message: at ? t('booking:status.completedAt', { time: at }) : undefined,
+        tone: 'default',
+      };
     }
     case 'rejected':
       return viewer === 'client'
         ? {
             icon: UserX,
-            title: `${Name} declined`,
-            message: b.rejectionReason ? `“${b.rejectionReason}” Choose another protector to keep this booking.` : 'Choose another protector to keep this booking.',
+            title: named('rejectedClientTitle'),
+            message: b.rejectionReason
+              ? t('booking:status.rejectedClientReason', { reason: b.rejectionReason })
+              : t('booking:status.rejectedClientMessage'),
             tone: 'error',
           }
-        : { icon: UserX, title: viewer === 'guard' ? 'You declined this job' : 'Declined by the protector', message: b.rejectionReason, tone: 'error' };
+        : {
+            icon: UserX,
+            title: t(viewer === 'guard' ? 'booking:status.rejectedGuardTitle' : 'booking:status.rejectedObserverTitle'),
+            message: b.rejectionReason,
+            tone: 'error',
+          };
     case 'cancelled': {
-      const by = b.cancelledBy === 'guard' ? 'the protector' : b.cancelledBy === 'client' ? 'the client' : null;
+      const by =
+        b.cancelledBy === 'guard'
+          ? t('booking:status.cancelledByGuard')
+          : b.cancelledBy === 'client'
+            ? t('booking:status.cancelledByClient')
+            : null;
       return {
         icon: Ban,
-        title: 'Booking cancelled',
-        message: [by ? `Cancelled by ${by}.` : null, b.cancellationReason ? `“${b.cancellationReason}”` : null].filter(Boolean).join(' ') || undefined,
+        title: t('booking:status.cancelledTitle'),
+        message:
+          [by, b.cancellationReason ? t('booking:status.quoted', { text: b.cancellationReason }) : null]
+            .filter(Boolean)
+            .join(' ') || undefined,
         tone: 'error',
       };
     }
     default:
-      return { icon: AlertCircle, title: 'Status unavailable', tone: 'default' };
+      return { icon: AlertCircle, title: t('booking:status.unknownTitle'), tone: 'default' };
   }
+}
+
+function AddressValue({ text }: { text?: string }) {
+  return (
+    <AppText variant="bodyMedium" numberOfLines={3} style={styles.address}>
+      {text || '—'}
+    </AppText>
+  );
 }
 
 export default function BookingDetailScreen() {
   const { id, focus } = useLocalSearchParams<{ id: string; focus?: string }>();
   const router = useRouter();
   const { user } = useAuth();
+  const { t } = useTranslation(['booking', 'common']);
   const { booking, loading, error, notFound, retry } = useLiveBooking(id);
   const { guard } = useGuardProfile(booking?.guardId);
 
@@ -153,7 +222,7 @@ export default function BookingDetailScreen() {
   const isClient = !!user && !!booking && booking.clientId === user.id;
   const isAssignedGuard = !!user && !!booking && user.role === 'guard' && booking.guardId === user.id;
   const viewer: Viewer = isClient ? 'client' : isAssignedGuard ? 'guard' : 'observer';
-  const protectorName = guardDisplayName(guard) ?? 'your protector';
+  const protectorName = guardDisplayName(guard) ?? t('booking:shared.yourProtectorLower');
 
   // ---- Codigo de inicio (solo el cliente) --------------------------------
   const showStartCode = isClient && !!status && CODE_STATUSES.has(status);
@@ -208,7 +277,7 @@ export default function BookingDetailScreen() {
     try {
       await fn();
     } catch (e) {
-      setActionError(e instanceof Error ? e.message : 'Something went wrong. Please try again.');
+      setActionError(e instanceof Error ? e.message : t('common:errors.generic'));
     } finally {
       setBusy(null);
     }
@@ -234,11 +303,11 @@ export default function BookingDetailScreen() {
   if (loading || error || notFound || !booking) {
     return (
       <View style={styles.root}>
-        <NavBar title="Booking" />
+        <NavBar title={t('booking:shared.title')} />
         <ScrollView contentContainerStyle={styles.scrollContent}>
           <View style={styles.column}>
             {loading ? (
-              <View accessibilityLabel="Loading booking">
+              <View accessibilityLabel={t('booking:shared.loading')}>
                 <Skeleton width={120} height={11} />
                 <Skeleton width="70%" height={30} style={styles.skelTitle} />
                 <Skeleton width="40%" height={14} style={styles.skelLine} />
@@ -249,13 +318,19 @@ export default function BookingDetailScreen() {
                 </View>
               </View>
             ) : error ? (
-              <EmptyState icon={AlertCircle} title="Couldn't load this booking" message={error} actionLabel="Try again" onAction={retry} />
+              <EmptyState
+                icon={AlertCircle}
+                title={t('booking:shared.loadError')}
+                message={error}
+                actionLabel={t('common:actions.tryAgain')}
+                onAction={retry}
+              />
             ) : (
               <EmptyState
                 icon={SearchX}
-                title="Booking unavailable"
-                message="It may have been removed, or you don't have access to it."
-                actionLabel="Back to bookings"
+                title={t('booking:shared.unavailableTitle')}
+                message={t('booking:shared.unavailableMessage')}
+                actionLabel={t('booking:shared.backToBookings')}
                 onAction={goBackToList}
               />
             )}
@@ -280,18 +355,29 @@ export default function BookingDetailScreen() {
   let actions: ReactNode = null;
   if (viewer === 'client') {
     if (isLiveStatus(booking.status)) {
-      actions = <Button title="Track protector" icon={Navigation} onPress={openMap} accessibilityLabel="Track guard location" />;
+      actions = (
+        <Button
+          title={t('booking:shared.trackProtector')}
+          icon={Navigation}
+          onPress={openMap}
+          accessibilityLabel={t('booking:shared.trackA11y')}
+        />
+      );
     } else if (booking.status === 'completed' && typeof booking.rating !== 'number') {
       actions = (
-        <Button title="Rate your protector" icon={Star} onPress={() => router.push(`/booking/rate/${booking.id}`)} />
+        <Button
+          title={t('booking:detail.rateProtector')}
+          icon={Star}
+          onPress={() => router.push(`/booking/rate/${booking.id}`)}
+        />
       );
     } else if (booking.status === 'rejected') {
       actions = (
         <Button
-          title="Choose another protector"
+          title={t('booking:shared.chooseAnother')}
           icon={RefreshCcw}
           onPress={() => router.push(`/booking/select-guard?bookingId=${booking.id}`)}
-          accessibilityLabel="Select another guard"
+          accessibilityLabel={t('booking:shared.chooseAnotherA11y')}
         />
       );
     }
@@ -299,9 +385,15 @@ export default function BookingDetailScreen() {
     if (booking.status === 'confirmed') {
       actions = (
         <View style={styles.actionRow}>
-          <Button title="Decline" variant="secondary" onPress={() => setModal('reject')} disabled={!!busy} style={styles.flex} />
           <Button
-            title="Accept job"
+            title={t('booking:detail.decline')}
+            variant="secondary"
+            onPress={() => setModal('reject')}
+            disabled={!!busy}
+            style={styles.flex}
+          />
+          <Button
+            title={t('booking:detail.acceptJob')}
             icon={Check}
             onPress={() => run('accept', () => bookingService.acceptBooking(booking.id))}
             loading={busy === 'accept'}
@@ -314,23 +406,37 @@ export default function BookingDetailScreen() {
         <View style={styles.actionRow}>
           {booking.status === 'accepted' ? (
             <Button
-              title="I'm on my way"
+              title={t('booking:detail.onMyWay')}
               variant="secondary"
               onPress={() => run('enroute', () => bookingService.markEnRoute(booking.id))}
               loading={busy === 'enroute'}
               style={styles.flex}
             />
           ) : (
-            <Button title="Open map" variant="secondary" icon={MapPin} onPress={openMap} style={styles.flex} />
+            <Button title={t('booking:shared.openMap')} variant="secondary" icon={MapPin} onPress={openMap} style={styles.flex} />
           )}
-          <Button title="Enter start code" icon={KeyRound} onPress={() => setCodeOpen(true)} disabled={!!busy} style={styles.flex} />
+          <Button
+            title={t('booking:shared.enterStartCodeShort')}
+            icon={KeyRound}
+            onPress={() => setCodeOpen(true)}
+            disabled={!!busy}
+            style={styles.flex}
+            accessibilityLabel={t('booking:shared.enterStartCode')}
+          />
         </View>
       );
     } else if (booking.status === 'active') {
       actions = (
         <View style={styles.actionRow}>
-          <Button title="Open map" variant="secondary" icon={MapPin} onPress={openMap} style={styles.flex} />
-          <Button title="Complete service" icon={CheckCircle2} onPress={() => setModal('complete')} disabled={!!busy} style={styles.flex} />
+          <Button title={t('booking:shared.openMap')} variant="secondary" icon={MapPin} onPress={openMap} style={styles.flex} />
+          <Button
+            title={t('booking:detail.completeServiceShort')}
+            icon={CheckCircle2}
+            onPress={() => setModal('complete')}
+            disabled={!!busy}
+            style={styles.flex}
+            accessibilityLabel={t('booking:detail.completeService')}
+          />
         </View>
       );
     }
@@ -350,7 +456,7 @@ export default function BookingDetailScreen() {
 
   return (
     <View style={styles.root}>
-      <NavBar title="Booking" right={<StatusBadge status={booking.status} />} />
+      <NavBar title={t('booking:shared.title')} right={<StatusBadge status={booking.status} />} />
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         {/* ScrollView propio (no <Screen>) para poder desplazar hasta el chat. */}
         <ScrollView
@@ -394,41 +500,49 @@ export default function BookingDetailScreen() {
               <Card tone="accent" style={styles.block}>
                 <View style={styles.codeRow}>
                   <View style={styles.codeMain}>
-                    <View style={styles.codeHeader}>
-                      <AppText variant="overline" color={Colors.accent}>
-                        Start code
-                      </AppText>
-                      {codeState === 'ready' ? (
+                    <AppText variant="overline" color={Colors.accent}>
+                      {t('booking:detail.startCode')}
+                    </AppText>
+                    {codeState === 'ready' && startCode ? (
+                      // Copiar va junto al codigo (antes flotaba a media
+                      // tarjeta, pegado al escudo) y con area tactil de 44 px.
+                      <View style={styles.codeValueRow}>
+                        <AppText
+                          variant="numericLarge"
+                          color={Colors.accentLight}
+                          style={styles.codeDigits}
+                          numberOfLines={1}
+                          adjustsFontSizeToFit
+                          selectable
+                          accessibilityLabel={t('booking:detail.codeA11y', { digits: startCode.split('').join(' ') })}
+                        >
+                          {startCode}
+                        </AppText>
                         <IconButton
                           icon={copied ? Check : Copy}
                           tone="accent"
-                          size={36}
+                          size={44}
                           onPress={copyCode}
-                          accessibilityLabel={copied ? 'Start code copied' : 'Copy start code'}
+                          accessibilityLabel={t(copied ? 'booking:detail.codeCopied' : 'booking:detail.copyCode')}
                         />
-                      ) : null}
-                    </View>
-                    {codeState === 'ready' && startCode ? (
-                      <AppText
-                        variant="numericLarge"
-                        color={Colors.accentLight}
-                        style={styles.code}
-                        numberOfLines={1}
-                        adjustsFontSizeToFit
-                        selectable
-                        accessibilityLabel={`Start code ${startCode.split('').join(' ')}`}
-                      >
-                        {startCode}
-                      </AppText>
+                      </View>
                     ) : codeState === 'error' ? (
                       <View style={styles.codeError}>
-                        <AppText variant="callout">{"Your code couldn't be loaded."}</AppText>
-                        <Button title="Try again" variant="ghost" size="sm" fullWidth={false} onPress={loadStartCode} />
+                        <AppText variant="callout" style={styles.flex}>
+                          {t('booking:detail.codeLoadError')}
+                        </AppText>
+                        <Button
+                          title={t('common:actions.tryAgain')}
+                          variant="ghost"
+                          size="sm"
+                          fullWidth={false}
+                          onPress={loadStartCode}
+                        />
                       </View>
                     ) : (
                       <Skeleton width={180} height={36} style={styles.code} />
                     )}
-                    <AppText variant="footnote">Share this code with your protector when you meet.</AppText>
+                    <AppText variant="footnote">{t('booking:detail.codeShare')}</AppText>
                   </View>
                   <GlassShield size={58} style={styles.codeShield} />
                 </View>
@@ -448,13 +562,19 @@ export default function BookingDetailScreen() {
                   {sharing.error
                     ? sharing.error
                     : sharing.isPublishing
-                      ? 'Sharing your live location with the client.'
+                      ? t('booking:detail.sharing')
                       : shouldPublish
-                        ? 'Starting location sharing…'
-                        : 'Your location is shared from 10 minutes before the start, or once you tap “I’m on my way”.'}
+                        ? t('booking:detail.sharingStarting')
+                        : t('booking:detail.sharingLater')}
                 </AppText>
                 {sharing.error ? (
-                  <Button title="Retry" variant="ghost" size="sm" fullWidth={false} onPress={sharing.retry} />
+                  <Button
+                    title={t('common:actions.retry')}
+                    variant="ghost"
+                    size="sm"
+                    fullWidth={false}
+                    onPress={sharing.retry}
+                  />
                 ) : null}
               </View>
             ) : null}
@@ -462,10 +582,14 @@ export default function BookingDetailScreen() {
             {/* Escolta */}
             {viewer !== 'guard' && booking.guardId ? (
               <>
-                <SectionTitle title={viewer === 'client' ? 'Your protector' : 'Protector'} />
+                <SectionTitle title={t(viewer === 'client' ? 'booking:detail.yourProtector' : 'booking:detail.protector')} />
                 <Card
                   onPress={() => router.push(`/guard/${booking.guardId}`)}
-                  accessibilityLabel={`View ${guardDisplayName(guard) ?? 'protector'} profile`}
+                  accessibilityLabel={
+                    guardDisplayName(guard)
+                      ? t('booking:detail.viewProfile', { name: guardDisplayName(guard) })
+                      : t('booking:detail.viewProfileNoName')
+                  }
                 >
                   <View style={styles.personRow}>
                     <Avatar
@@ -475,12 +599,12 @@ export default function BookingDetailScreen() {
                       verified={guard?.kycStatus === 'approved'}
                     />
                     <View style={styles.flex}>
-                      <AppText variant="headline">{guardDisplayName(guard) ?? 'Protector'}</AppText>
+                      <AppText variant="headline">{guardDisplayName(guard) ?? t('booking:detail.protector')}</AppText>
                       <AppText variant="footnote">
                         {[
-                          guard?.kycStatus === 'approved' ? 'Verified protector' : 'Protector',
+                          t(guard?.kycStatus === 'approved' ? 'booking:detail.verifiedProtector' : 'booking:detail.protector'),
                           guard && guard.rating > 0 && guard.completedJobs > 0
-                            ? `★ ${guard.rating.toFixed(1)} · ${guard.completedJobs} ${guard.completedJobs === 1 ? 'job' : 'jobs'}`
+                            ? t('booking:detail.ratingJobs', { rating: guard.rating.toFixed(1), count: guard.completedJobs })
                             : null,
                         ]
                           .filter(Boolean)
@@ -493,42 +617,56 @@ export default function BookingDetailScreen() {
             ) : null}
 
             {/* Detalles */}
-            <SectionTitle title="Details" />
+            <SectionTitle title={t('booking:detail.details')} />
             <Card>
-              <InfoRow label="Pickup" icon={MapPin} value={booking.pickupAddress || '—'} />
-              {booking.destinationAddress ? <InfoRow label="Destination" value={booking.destinationAddress} /> : null}
+              {/* Direcciones: hasta 3 lineas (con 2 se cortaba el dato que importa). */}
+              <InfoRow label={t('booking:detail.pickup')} icon={MapPin} value={<AddressValue text={booking.pickupAddress} />} />
+              {booking.destinationAddress ? (
+                <InfoRow label={t('booking:detail.destination')} value={<AddressValue text={booking.destinationAddress} />} />
+              ) : null}
               {booking.routeStops?.length ? (
-                <InfoRow label="Stops" value={`${booking.routeStops.length}`} />
+                <InfoRow label={t('booking:detail.stops')} value={`${booking.routeStops.length}`} />
               ) : null}
               <Divider style={styles.divider} />
-              <InfoRow label="Duration" value={formatDuration(booking.duration)} />
-              <InfoRow label="Protection" value={labelOf(PROTECTION_LABEL, booking.protectionType)} />
-              <InfoRow label="Vehicle" value={labelOf(VEHICLE_LABEL, booking.vehicleType)} />
-              <InfoRow label="Dress code" value={labelOf(DRESS_LABEL, booking.dressCode)} />
-              <InfoRow label="People protected" value={`${booking.numberOfProtectees ?? '—'}`} />
-              <InfoRow label="Protectors" value={`${booking.numberOfProtectors ?? '—'}`} />
+              <InfoRow label={t('booking:detail.duration')} value={formatDuration(booking.duration)} />
+              <InfoRow label={t('booking:detail.protection')} value={labelOf(PROTECTION_LABEL, booking.protectionType)} />
+              <InfoRow label={t('booking:detail.vehicle')} value={labelOf(VEHICLE_LABEL, booking.vehicleType)} />
+              <InfoRow label={t('booking:detail.dressCode')} value={labelOf(DRESS_LABEL, booking.dressCode)} />
+              <InfoRow label={t('booking:detail.peopleProtected')} value={`${booking.numberOfProtectees ?? '—'}`} />
+              <InfoRow label={t('booking:detail.protectors')} value={`${booking.numberOfProtectors ?? '—'}`} />
             </Card>
 
             {/* Importes */}
-            <SectionTitle title={viewer === 'guard' ? 'Earnings' : 'Payment'} />
+            <SectionTitle title={t(viewer === 'guard' ? 'booking:detail.earnings' : 'booking:detail.payment')} />
             <Card>
               {viewer === 'guard' ? (
-                <InfoRow label="Your payout" value={formatMXN(booking.guardPayout)} emphasis />
+                <InfoRow label={t('booking:detail.yourPayout')} value={formatMXN(booking.guardPayout)} emphasis />
               ) : viewer === 'client' ? (
                 <>
                   {typeof booking.hourlyRate === 'number' ? (
-                    <InfoRow label="Rate" value={`${formatMXN(booking.hourlyRate)} / hour`} />
+                    <InfoRow
+                      label={t('booking:detail.rate')}
+                      value={t('booking:detail.ratePerHour', { amount: formatMXN(booking.hourlyRate) })}
+                    />
                   ) : null}
-                  <InfoRow label="Service" value={formatMXN(subtotal)} />
-                  <InfoRow label="Processing fee" value={formatMXN(booking.processingFee)} />
+                  <InfoRow label={t('booking:detail.service')} value={formatMXN(subtotal)} />
+                  <InfoRow label={t('booking:detail.processingFee')} value={formatMXN(booking.processingFee)} />
                   <Divider style={styles.divider} />
-                  <InfoRow label={booking.status === 'pending' ? 'Total due' : 'Total paid'} value={formatMXN(booking.totalAmount)} emphasis />
+                  <InfoRow
+                    label={t(booking.status === 'pending' ? 'booking:detail.totalDue' : 'booking:detail.totalPaid')}
+                    value={formatMXN(booking.totalAmount)}
+                    emphasis
+                  />
                 </>
               ) : (
                 <>
-                  {user?.role === 'admin' ? <InfoRow label="Client total" value={formatMXN(booking.totalAmount)} /> : null}
-                  {user?.role === 'admin' ? <InfoRow label="Platform" value={formatMXN(booking.platformCut)} /> : null}
-                  <InfoRow label="Protector payout" value={formatMXN(booking.guardPayout)} emphasis />
+                  {user?.role === 'admin' ? (
+                    <InfoRow label={t('booking:detail.clientTotal')} value={formatMXN(booking.totalAmount)} />
+                  ) : null}
+                  {user?.role === 'admin' ? (
+                    <InfoRow label={t('booking:detail.platform')} value={formatMXN(booking.platformCut)} />
+                  ) : null}
+                  <InfoRow label={t('booking:detail.protectorPayout')} value={formatMXN(booking.guardPayout)} emphasis />
                 </>
               )}
             </Card>
@@ -536,9 +674,9 @@ export default function BookingDetailScreen() {
             {/* Calificacion */}
             {typeof booking.rating === 'number' ? (
               <>
-                <SectionTitle title={viewer === 'client' ? 'Your rating' : 'Client rating'} />
+                <SectionTitle title={t(viewer === 'client' ? 'booking:detail.yourRating' : 'booking:detail.clientRating')} />
                 <Card>
-                  <StarRating value={booking.rating} size={20} label="Rating" />
+                  <StarRating value={booking.rating} size={20} label={t('booking:detail.rating')} />
                   {booking.review ? (
                     <AppText variant="body" style={styles.review}>
                       {booking.review}
@@ -556,7 +694,7 @@ export default function BookingDetailScreen() {
                   scrollToChat();
                 }}
               >
-                <SectionTitle title="Messages" />
+                <SectionTitle title={t('booking:detail.messages')} />
                 <Card>
                   <BookingChat
                     bookingId={booking.id}
@@ -564,7 +702,7 @@ export default function BookingDetailScreen() {
                     guardId={booking.guardId}
                     user={{ id: user.id, role: user.role, language: user.language }}
                     canSend={canChat}
-                    counterpartLabel={viewer === 'guard' ? 'your client' : protectorName}
+                    counterpartLabel={viewer === 'guard' ? t('booking:shared.yourClientLower') : protectorName}
                   />
                 </Card>
               </View>
@@ -574,11 +712,16 @@ export default function BookingDetailScreen() {
             {canCancel || (viewer === 'client' && booking.status === 'active') ? (
               <View style={styles.secondary}>
                 {viewer === 'client' && booking.status === 'active' ? (
-                  <Button title="End service" variant="outline" icon={CheckCircle2} onPress={() => setModal('complete')} />
+                  <Button
+                    title={t('booking:detail.endService')}
+                    variant="outline"
+                    icon={CheckCircle2}
+                    onPress={() => setModal('complete')}
+                  />
                 ) : null}
                 {canCancel ? (
                   <Button
-                    title={viewer === 'guard' ? 'Cancel job' : 'Cancel booking'}
+                    title={t(viewer === 'guard' ? 'booking:detail.cancelJob' : 'booking:detail.cancelBooking')}
                     variant="danger"
                     icon={Ban}
                     onPress={() => setModal('cancel')}
@@ -593,36 +736,38 @@ export default function BookingDetailScreen() {
 
       <ActionModal
         visible={modal === 'reject'}
-        title="Decline this job?"
-        message="The client is told right away and can choose another protector."
-        input={{ label: 'Reason', placeholder: "e.g. I'm not available at that time", required: true }}
-        confirmLabel="Decline job"
+        title={t('booking:modals.declineTitle')}
+        message={t('booking:modals.declineMessage')}
+        input={{ label: t('booking:modals.reason'), placeholder: t('booking:modals.declinePlaceholder'), required: true }}
+        confirmLabel={t('booking:modals.declineConfirm')}
         confirmVariant="danger"
         onConfirm={(reason) => bookingService.rejectBooking(booking.id, reason)}
         onClose={() => setModal(null)}
       />
       <ActionModal
         visible={modal === 'cancel'}
-        title={viewer === 'guard' ? 'Cancel this job?' : 'Cancel this booking?'}
+        title={t(viewer === 'guard' ? 'booking:modals.cancelJobTitle' : 'booking:modals.cancelBookingTitle')}
         message={
           viewer === 'guard'
-            ? 'The client is told right away. This can’t be undone.'
+            ? t('booking:modals.cancelGuardMessage')
             : booking.guardId && booking.status !== 'pending'
-              ? `${guardDisplayName(guard) ?? 'Your protector'} is told right away. This can’t be undone.`
-              : 'This can’t be undone.'
+              ? guardDisplayName(guard)
+                ? t('booking:modals.cancelNamedMessage', { name: guardDisplayName(guard) })
+                : t('booking:modals.cancelProtectorMessage')
+              : t('booking:modals.cannotUndo')
         }
-        input={{ label: 'Reason', placeholder: 'A short note for the record', required: true }}
-        confirmLabel={viewer === 'guard' ? 'Cancel job' : 'Cancel booking'}
+        input={{ label: t('booking:modals.reason'), placeholder: t('booking:modals.cancelPlaceholder'), required: true }}
+        confirmLabel={t(viewer === 'guard' ? 'booking:modals.cancelConfirmJob' : 'booking:modals.cancelConfirmBooking')}
         confirmVariant="danger"
-        cancelLabel="Keep it"
+        cancelLabel={t('booking:modals.keepIt')}
         onConfirm={(reason) => bookingService.cancelBooking(booking.id, viewer === 'guard' ? 'guard' : 'client', reason)}
         onClose={() => setModal(null)}
       />
       <ActionModal
         visible={modal === 'complete'}
-        title="Complete the service?"
-        message="Confirm the protection detail has finished. This can’t be undone."
-        confirmLabel="Complete service"
+        title={t('booking:modals.completeTitle')}
+        message={t('booking:modals.completeMessage')}
+        confirmLabel={t('booking:detail.completeServiceShort')}
         onConfirm={() => bookingService.completeBooking(booking.id)}
         onClose={() => setModal(null)}
       />
@@ -704,16 +849,20 @@ const styles = StyleSheet.create({
   codeShield: {
     marginRight: -Space.md,
   },
-  codeHeader: {
+  code: {
+    marginTop: Space.md,
+    marginBottom: Space.md,
+  },
+  codeValueRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    minHeight: 36,
-  },
-  code: {
-    letterSpacing: 6,
-    marginTop: Space.xs,
+    gap: Space.md,
+    marginTop: Space.sm,
     marginBottom: Space.sm,
+  },
+  codeDigits: {
+    flexShrink: 1,
+    letterSpacing: 6,
   },
   codeError: {
     flexDirection: 'row',
@@ -740,6 +889,10 @@ const styles = StyleSheet.create({
   },
   divider: {
     marginVertical: Space.sm,
+  },
+  address: {
+    flexShrink: 1,
+    textAlign: 'right',
   },
   review: {
     marginTop: Space.md,

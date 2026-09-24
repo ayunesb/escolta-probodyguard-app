@@ -1,6 +1,7 @@
 import React from 'react';
 import { Image, ImageSourcePropType, StyleSheet, View } from 'react-native';
 import { Check } from 'lucide-react-native';
+import { useTranslation } from 'react-i18next';
 import Colors from '@/constants/colors';
 import { Radius, Space } from '@/constants/design';
 import { BrandImages } from '@/constants/brandMedia';
@@ -11,20 +12,7 @@ import { PRICING } from '@/utils/pricing';
 
 const pct = (multiplier: number) => `${Math.round((multiplier - 1) * 100)}%`;
 
-const OPTIONS: { value: VehicleType; label: string; line: string; image: ImageSourcePropType }[] = [
-  {
-    value: 'standard',
-    label: 'Standard',
-    line: 'Executive sedan or SUV.',
-    image: BrandImages.vehicles.standard,
-  },
-  {
-    value: 'armored',
-    label: `Armored · +${pct(PRICING.ARMORED_VEHICLE_MULTIPLIER)}`,
-    line: 'Ballistic-rated, with a trained driver.',
-    image: BrandImages.vehicles.armored,
-  },
-];
+type VehicleOption = { value: VehicleType; label: string; line: string; image: ImageSourcePropType };
 
 export interface VehiclePickerProps {
   value: VehicleType;
@@ -34,9 +22,25 @@ export interface VehiclePickerProps {
 // Two photo tiles side by side. Selected: ice-blue edge, check badge, white
 // label. The other one steps back (dimmed photo, secondary label).
 export function VehiclePicker({ value, onChange }: VehiclePickerProps) {
+  const { t } = useTranslation('funnel');
+  // Built on render so the labels follow the current language.
+  const options: VehicleOption[] = [
+    {
+      value: 'standard',
+      label: t('vehicle.standard'),
+      line: t('vehicle.standardLine'),
+      image: BrandImages.vehicles.standard,
+    },
+    {
+      value: 'armored',
+      label: t('vehicle.armored', { pct: pct(PRICING.ARMORED_VEHICLE_MULTIPLIER) }),
+      line: t('vehicle.armoredLine'),
+      image: BrandImages.vehicles.armored,
+    },
+  ];
   return (
     <View style={styles.row} accessibilityRole="radiogroup">
-      {OPTIONS.map((opt) => {
+      {options.map((opt) => {
         const selected = opt.value === value;
         return (
           <PressableScale

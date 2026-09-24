@@ -4,6 +4,7 @@
 // autocompletado de codigos del sistema.
 import React, { useEffect, useRef, useState } from 'react';
 import { KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, TextInput, View } from 'react-native';
+import { useTranslation } from 'react-i18next';
 import Colors from '@/constants/colors';
 import { Fonts, Radius, Shadow, Space } from '@/constants/design';
 import { AppText, Button } from '@/components/ui';
@@ -20,6 +21,7 @@ interface StartCodeInputProps {
 }
 
 export default function StartCodeInput({ visible, onSubmit, onCancel, clientName }: StartCodeInputProps) {
+  const { t } = useTranslation(['booking', 'common']);
   const [code, setCode] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -37,7 +39,7 @@ export default function StartCodeInput({ visible, onSubmit, onCancel, clientName
   const submit = async (value: string) => {
     if (loading) return;
     if (value.length !== LENGTH) {
-      setError('Enter all 6 digits.');
+      setError(t('booking:startCode.enterAll'));
       return;
     }
     setLoading(true);
@@ -46,7 +48,7 @@ export default function StartCodeInput({ visible, onSubmit, onCancel, clientName
       await onSubmit(value);
       setCode('');
     } catch (e) {
-      setError(e instanceof Error ? e.message : "That code doesn't match.");
+      setError(e instanceof Error ? e.message : t('booking:startCode.noMatch'));
       setCode('');
       inputRef.current?.focus();
     } finally {
@@ -71,16 +73,14 @@ export default function StartCodeInput({ visible, onSubmit, onCancel, clientName
     <Modal visible={visible} animationType="fade" transparent onRequestClose={cancel}>
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <View style={styles.overlay}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={cancel} accessibilityLabel="Close start code entry" />
+          <Pressable style={StyleSheet.absoluteFill} onPress={cancel} accessibilityLabel={t('booking:startCode.close')} />
           <View style={styles.sheet} accessibilityViewIsModal>
             <GlassShield size={78} style={styles.shield} />
             <AppText variant="title2" align="center" accessibilityRole="header">
-              Enter start code
+              {t('booking:startCode.title')}
             </AppText>
-            <AppText variant="callout" style={styles.subtitle}>
-              {clientName
-                ? `Ask ${clientName} for their 6-digit code when you meet. The service starts as soon as it matches.`
-                : 'Ask your client for their 6-digit code when you meet. The service starts as soon as it matches.'}
+            <AppText variant="callout" align="center" style={styles.subtitle}>
+              {clientName ? t('booking:startCode.askNamed', { name: clientName }) : t('booking:startCode.ask')}
             </AppText>
 
             <View style={styles.cells}>
@@ -119,8 +119,8 @@ export default function StartCodeInput({ visible, onSubmit, onCancel, clientName
                 editable={!loading}
                 style={styles.hiddenInput}
                 testID="start-code-input"
-                accessibilityLabel="Start code, 6 digits"
-                accessibilityHint="Enter the 6-digit code your client reads to you"
+                accessibilityLabel={t('booking:startCode.inputA11y')}
+                accessibilityHint={t('booking:startCode.inputHint')}
               />
             </View>
 
@@ -130,27 +130,27 @@ export default function StartCodeInput({ visible, onSubmit, onCancel, clientName
               style={styles.status}
               accessibilityLiveRegion="polite"
             >
-              {error ?? (loading ? 'Checking the code…' : ' ')}
+              {error ?? (loading ? t('booking:startCode.checking') : ' ')}
             </AppText>
 
             <View style={styles.footer}>
               <Button
-                title="Cancel"
+                title={t('common:actions.cancel')}
                 variant="secondary"
                 onPress={cancel}
                 disabled={loading}
                 style={styles.action}
-                accessibilityLabel="Cancel start code entry"
-                accessibilityHint="Closes the start code dialog"
+                accessibilityLabel={t('booking:startCode.cancelA11y')}
+                accessibilityHint={t('booking:startCode.cancelHint')}
               />
               <Button
-                title="Start service"
+                title={t('booking:startCode.submit')}
                 onPress={() => submit(code)}
                 loading={loading}
                 disabled={code.length !== LENGTH}
                 style={styles.action}
-                accessibilityLabel="Verify start code"
-                accessibilityHint="Submits the 6-digit start code to verify"
+                accessibilityLabel={t('booking:startCode.submitA11y')}
+                accessibilityHint={t('booking:startCode.submitHint')}
               />
             </View>
           </View>

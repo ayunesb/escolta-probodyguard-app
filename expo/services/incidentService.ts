@@ -2,6 +2,7 @@ import { db as getDbInstance } from '@/lib/firebase';
 import { collection, addDoc, updateDoc, doc, getDoc, query, where, getDocs, orderBy } from 'firebase/firestore';
 import * as ImagePicker from 'expo-image-picker';
 import { Platform } from 'react-native';
+import i18n from '@/i18n';
 
 export interface IncidentReport {
   id: string;
@@ -71,7 +72,7 @@ class IncidentService {
       return { success: true, reportId: docRef.id };
     } catch (error) {
       console.error('[Incident] Error creating report:', error);
-      return { success: false, error: 'Failed to create incident report' };
+      return { success: false, error: i18n.t('booking:errors.incidentFailed') };
     }
   }
 

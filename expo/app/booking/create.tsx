@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { useTranslation } from 'react-i18next';
 import {
   AlertTriangle,
   CreditCard,
@@ -53,7 +54,6 @@ import { VehiclePicker } from '@/components/funnel/VehiclePicker';
 import { geocodeAddress, getDeviceCoords, type Coords } from '@/components/funnel/deviceLocation';
 import {
   DRESS_CODE_LABELS,
-  formatDateLong,
   formatTime,
   guardDisplayName,
   hasRating,
@@ -62,6 +62,7 @@ import {
   toTimeInputValue,
 } from '@/components/funnel/format';
 import { calculatePrice, formatMXN, PRICING } from '@/utils/pricing';
+import { formatDate } from '@/i18n/format';
 import { logger } from '@/utils/logger';
 
 const MAX_PROTECTEES = 10;
@@ -84,12 +85,11 @@ const nextFullHour = () => {
 const pct = (multiplier: number) => `${Math.round((multiplier - 1) * 100)}%`;
 
 // On web, card payments need a Stripe publishable key. Without it we say so
-// up front instead of creating a booking that can't be paid.
-const PAYMENTS_UNCONFIGURED_MESSAGE =
-  'Payments are not configured. Card payments aren’t enabled in this environment yet, so bookings can’t be completed here.';
+// up front (create.paymentsOff) instead of creating a booking that can't be paid.
 const paymentsUnavailable = () => stripeService.isSupportedOnThisPlatform() && !stripeService.isConfigured();
 
 export default function CreateBookingScreen() {
+  const { t } = useTranslation(['funnel', 'common']);
   const { guardId } = useLocalSearchParams<{ guardId: string }>();
   const router = useRouter();
   const { user } = useAuth();
@@ -167,7 +167,7 @@ export default function CreateBookingScreen() {
   }, [guard, duration, vehicleType, protectionType, numberOfProtectors]);
 
   const startInPast = start.getTime() < Date.now() - 60_000;
-  const scheduleError = errors.schedule ?? (startInPast ? 'Choose a start time in the future.' : null);
+  const scheduleError = errors.schedule ?? (startInPast ? t('create.errors.pastStart') : null);
   const end = new Date(start.getTime() + duration * 3_600_000);
 
   // ---------------------------------------------------------------- pickup location
@@ -193,16 +193,14 @@ export default function CreateBookingScreen() {
       if (current && current.source === 'map') {
         const next: Pin = { ...current, forAddress: text };
         setPin(next);
-        setPickupNotice("We couldn't find this address on the map, so the point you set on the map will be used.");
+        setPickupNotice(t('create.notices.usingMapPoint'));
         return { pin: next, fellBack: false };
       }
       const device = await getDeviceCoords({ prompt: true });
       if (device) {
         const next: Pin = { ...device, source: 'device', forAddress: text };
         setPin(next);
-        setPickupNotice(
-          "We couldn't place this address on the map, so your current location is set as the pickup point. Open the map to adjust it if needed."
-        );
+        setPickupNotice(t('create.notices.usingDevice'));
         return { pin: next, fellBack: true };
       }
       setPin(null);
@@ -211,7 +209,7 @@ export default function CreateBookingScreen() {
     } finally {
       setLocating(false);
     }
-  }, []);
+  }, [t]);
 
   const onPickupBlur = () => {
     const text = pickupAddress.trim();
@@ -234,14 +232,14 @@ export default function CreateBookingScreen() {
   };
 
   const pickupHint = locating
-    ? 'Locating address…'
+    ? t('create.hints.locating')
     : pin && pin.forAddress === pickupAddress.trim()
       ? pin.source === 'address'
-        ? 'Located on the map.'
+        ? t('create.hints.located')
         : pin.source === 'map'
-          ? 'Pickup point set on the map.'
+          ? t('create.hints.setOnMap')
           : undefined
-      : 'Street, number, neighbourhood and city.';
+      : t('create.hints.default');
 
   // ---------------------------------------------------------------- stops
 
@@ -275,10 +273,10 @@ export default function CreateBookingScreen() {
     if (paymentsUnavailable()) return; // explained in the action bar and under the price
     const text = pickupAddress.trim();
     const nextErrors: typeof errors = {};
-    if (!text) nextErrors.pickup = 'Enter the pickup address.';
-    if (start.getTime() < Date.now() - 60_000) nextErrors.schedule = 'Choose a start time in the future.';
-    if (!user?.id) nextErrors.form = 'Please sign in to book.';
-    else if (!guard || !quote) nextErrors.form = 'This protector cannot be booked right now.';
+    if (!text) nextErrors.pickup = t('create.errors.pickupRequired');
+    if (start.getTime() < Date.now() - 60_000) nextErrors.schedule = t('create.errors.pastStart');
+    if (!user?.id) nextErrors.form = t('create.errors.signIn');
+    else if (!guard || !quote) nextErrors.form = t('create.errors.notBookable');
     if (Object.keys(nextErrors).length > 0) {
       setErrors(nextErrors);
       return;
@@ -293,7 +291,7 @@ export default function CreateBookingScreen() {
       if (!resolved) {
         const result = await locatePickup(text);
         if (!result.pin) {
-          setErrors({ pickup: "We couldn't find this address. Open the map and tap the pickup point." });
+          setErrors({ pickup: t('create.errors.addressNotFound') });
           setShowMap(true);
           return;
         }
@@ -353,7 +351,7 @@ export default function CreateBookingScreen() {
               if (current.status === 'cancelled') {
                 pendingRef.current = null;
                 setBookingId(null);
-                setErrors({ form: 'That booking was cancelled. Tap again to create a new one.' });
+                setErrors({ form: t('create.errors.cancelled') });
                 return;
               }
               // Already paid (e.g. confirmed by the payment webhook): show it.
@@ -374,7 +372,7 @@ export default function CreateBookingScreen() {
       setShowPayment(true);
     } catch (error) {
       logger.error('[Booking] Could not prepare booking for payment', error);
-      setErrors({ form: error instanceof Error ? error.message : 'We could not save your booking. Please try again.' });
+      setErrors({ form: error instanceof Error ? error.message : t('create.errors.saveFailed') });
     } finally {
       submittingRef.current = false;
       setSubmitting(false);
@@ -415,7 +413,7 @@ export default function CreateBookingScreen() {
 
   const handlePaymentCancel = () => {
     setShowPayment(false);
-    setSavedNotice('Your booking is saved as pending. Nothing has been charged — continue to payment whenever you are ready.');
+    setSavedNotice(t('create.notices.saved'));
   };
 
   // ================================================================ render
@@ -423,7 +421,7 @@ export default function CreateBookingScreen() {
   const frame = (content: React.ReactNode, footer?: React.ReactNode, hideBack?: boolean) => (
     <View style={styles.root}>
       <Stack.Screen options={{ headerShown: false }} />
-      <NavBar title="Book protection" hideBack={hideBack} />
+      <NavBar title={t('create.title')} hideBack={hideBack} />
       <Screen padTop={false} keyboard contentStyle={styles.content} footer={footer}>
         {content}
       </Screen>
@@ -446,10 +444,10 @@ export default function CreateBookingScreen() {
           <ShieldCheck size={28} color={Colors.accent} strokeWidth={1.5} />
         </View>
         <AppText variant="title2" align="center">
-          Confirming your booking
+          {t('create.phases.confirmingTitle')}
         </AppText>
         <AppText variant="callout" align="center" style={styles.phaseText}>
-          Payment received. We’re securing your protector — this takes a few seconds.
+          {t('create.phases.confirmingMessage')}
         </AppText>
         <ActivityIndicator color={Colors.accent} style={styles.phaseSpinner} />
       </View>,
@@ -462,9 +460,9 @@ export default function CreateBookingScreen() {
     return frame(
       <EmptyState
         icon={Hourglass}
-        title="Payment processing"
-        message="We'll confirm your booking shortly. You'll get a notification as soon as it's confirmed — there's no need to pay again."
-        actionLabel="View booking"
+        title={t('create.phases.processingTitle')}
+        message={t('create.phases.processingMessage')}
+        actionLabel={t('shared.viewBooking')}
         onAction={() => router.replace(`/booking/${bookingId}`)}
       />
     );
@@ -477,15 +475,16 @@ export default function CreateBookingScreen() {
           <ShieldAlert size={28} color={Colors.accent} strokeWidth={1.5} />
         </View>
         <AppText variant="title2" align="center">
-          Payment received
+          {t('create.phases.receivedTitle')}
         </AppText>
         <AppText variant="callout" align="center" style={styles.phaseText}>
-          We couldn’t finish confirming your booking yet{confirmError ? ` (${confirmError})` : ''}. Your payment is safe
-          — please don’t pay again. It will be confirmed automatically, or you can retry now.
+          {confirmError
+            ? t('create.phases.receivedMessageWithError', { error: confirmError })
+            : t('create.phases.receivedMessage')}
         </AppText>
         <View style={styles.phaseActions}>
-          <Button title="Retry confirmation" onPress={() => confirmWithServer(bookingId)} />
-          <Button title="View booking" variant="outline" onPress={() => router.replace(`/booking/${bookingId}`)} />
+          <Button title={t('create.phases.retry')} onPress={() => confirmWithServer(bookingId)} />
+          <Button title={t('shared.viewBooking')} variant="outline" onPress={() => router.replace(`/booking/${bookingId}`)} />
         </View>
       </View>,
       undefined,
@@ -495,7 +494,7 @@ export default function CreateBookingScreen() {
 
   if (guardState === 'loading') {
     return frame(
-      <View accessibilityLabel="Loading booking options">
+      <View accessibilityLabel={t('create.loading')}>
         <SkeletonCard media lines={1} />
         <Skeleton width="30%" height={11} style={styles.skeletonGap} />
         <Skeleton height={38} radius={Radius.sm} style={styles.skeletonGap} />
@@ -510,9 +509,9 @@ export default function CreateBookingScreen() {
     return frame(
       <EmptyState
         icon={AlertTriangle}
-        title="Couldn't load this protector"
-        message="Check your connection and try again."
-        actionLabel="Try again"
+        title={t('create.errorTitle')}
+        message={t('shared.checkConnection')}
+        actionLabel={t('common:actions.tryAgain')}
         onAction={loadGuard}
       />
     );
@@ -522,9 +521,9 @@ export default function CreateBookingScreen() {
     return frame(
       <EmptyState
         icon={UserX}
-        title="Protector not found"
-        message="Choose a protector to start a booking."
-        actionLabel="Browse protectors"
+        title={t('create.missingTitle')}
+        message={t('create.missingMessage')}
+        actionLabel={t('shared.browseProtectors')}
         onAction={() => router.replace('/home')}
       />
     );
@@ -534,13 +533,13 @@ export default function CreateBookingScreen() {
     return frame(
       <EmptyState
         icon={Shield}
-        title="Not taking bookings"
+        title={t('create.unavailableTitle')}
         message={
           !quote
-            ? `${guardDisplayName(guard)} hasn't set a rate yet.`
-            : `${guardDisplayName(guard)} isn't available for new bookings right now.`
+            ? t('create.noRate', { name: guardDisplayName(guard) })
+            : t('create.notAvailable', { name: guardDisplayName(guard) })
         }
-        actionLabel="Browse protectors"
+        actionLabel={t('shared.browseProtectors')}
         onAction={() => router.replace('/home')}
       />
     );
@@ -550,25 +549,30 @@ export default function CreateBookingScreen() {
     <ActionBar>
       <View style={styles.actionRow}>
         <View style={styles.totalBlock}>
-          <AppText variant="overline">Total</AppText>
-          <AppText variant="numeric" color={Colors.accentLight} style={styles.total} accessibilityLabel={`Total ${formatMXN(quote.total)}`}>
+          <AppText variant="overline">{t('create.total')}</AppText>
+          <AppText
+            variant="numeric"
+            color={Colors.accentLight}
+            style={styles.total}
+            accessibilityLabel={t('create.totalA11y', { amount: formatMXN(quote.total) })}
+          >
             {formatMXN(quote.total)}
           </AppText>
         </View>
         <Button
-          title="Proceed to payment"
+          title={t('create.proceed')}
           icon={CreditCard}
           size="lg"
           onPress={handleProceed}
           loading={submitting}
           disabled={!user?.id || paymentsUnavailable()}
           style={styles.flex}
-          accessibilityHint="Saves your booking and opens secure payment"
+          accessibilityHint={t('create.proceedHint')}
         />
       </View>
       {paymentsUnavailable() ? (
         <AppText variant="caption" color={Colors.warning} style={styles.actionNote}>
-          Payments are not configured in this environment.
+          {t('create.paymentsOffShort')}
         </AppText>
       ) : null}
     </ActionBar>
@@ -581,7 +585,7 @@ export default function CreateBookingScreen() {
         <Avatar name={`${guard.firstName} ${guard.lastName}`} uri={guard.photos[0]} size={64} verified={isVerified(guard)} />
         <View style={styles.flex}>
           <AppText variant="overline" color={Colors.accent}>
-            Your protector
+            {t('create.yourProtector')}
           </AppText>
           <AppText variant="title2" numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8} style={styles.guardName}>
             {guardDisplayName(guard)}
@@ -599,72 +603,70 @@ export default function CreateBookingScreen() {
               </>
             ) : null}
             <AppText variant="caption" color={Colors.textSecondary} tabular>
-              {formatMXN(guard.hourlyRate)} per hour
+              {t('shared.rateA11y', { rate: formatMXN(guard.hourlyRate) })}
             </AppText>
           </View>
         </View>
       </Card>
 
       {/* Service */}
-      <SectionTitle title="Protection" />
+      <SectionTitle title={t('create.protection')} />
       <SegmentedControl<ProtectionType>
         value={protectionType}
         onChange={setProtectionType}
         options={[
-          { value: 'unarmed', label: 'Unarmed', icon: Shield },
-          { value: 'armed', label: `Armed · +${pct(PRICING.ARMED_PROTECTION_MULTIPLIER)}`, icon: ShieldCheck },
+          { value: 'unarmed', label: t('format.unarmed'), icon: Shield },
+          { value: 'armed', label: t('create.armedOption', { pct: pct(PRICING.ARMED_PROTECTION_MULTIPLIER) }), icon: ShieldCheck },
         ]}
         style={styles.segmented}
       />
       <AppText variant="footnote" color={Colors.textTertiary} style={styles.caption}>
-        {protectionType === 'armed'
-          ? 'Licensed, armed close protection.'
-          : 'Discreet close protection without firearms.'}
+        {protectionType === 'armed' ? t('create.armedCaption') : t('create.unarmedCaption')}
       </AppText>
 
-      <SectionTitle title="Vehicle" />
+      <SectionTitle title={t('create.vehicle')} />
       <VehiclePicker value={vehicleType} onChange={setVehicleType} />
 
-      <SectionTitle title="Dress code" />
+      <SectionTitle title={t('create.dressCode')} />
       <View style={styles.wrap}>
         {(Object.keys(DRESS_CODE_LABELS) as DressCode[]).map((code) => (
           <Chip key={code} label={DRESS_CODE_LABELS[code]} selected={dressCode === code} onPress={() => setDressCode(code)} />
         ))}
       </View>
 
-      <SectionTitle title="Team and duration" />
+      <SectionTitle title={t('create.team')} />
       <ListGroup>
         <StepperRow
-          label="Protectors"
-          hint={`Up to ${PRICING.MAX_PROTECTORS}`}
+          label={t('create.protectors')}
+          hint={t('create.upTo', { max: PRICING.MAX_PROTECTORS })}
           value={numberOfProtectors}
           min={PRICING.MIN_PROTECTORS}
           max={PRICING.MAX_PROTECTORS}
           onChange={setNumberOfProtectors}
-          unit="protector"
+          formatSpoken={(n) => t('create.protectorsSpoken', { count: n })}
         />
         <StepperRow
-          label="People protected"
-          hint={`Up to ${MAX_PROTECTEES}`}
+          label={t('create.people')}
+          hint={t('create.upTo', { max: MAX_PROTECTEES })}
           value={numberOfProtectees}
           min={1}
           max={MAX_PROTECTEES}
           onChange={setNumberOfProtectees}
         />
         <StepperRow
-          label="Duration"
-          hint={`${PRICING.MIN_DURATION_HOURS}–${PRICING.MAX_DURATION_HOURS} hours`}
+          label={t('create.duration')}
+          hint={t('create.durationRange', { min: PRICING.MIN_DURATION_HOURS, max: PRICING.MAX_DURATION_HOURS })}
           value={duration}
           min={PRICING.MIN_DURATION_HOURS}
           max={PRICING.MAX_DURATION_HOURS}
           onChange={setDuration}
-          format={(n) => `${n} h`}
-          unit="hour"
+          format={(n) => t('common:units.hoursShort', { count: n })}
+          formatSpoken={(n) => t('create.hoursSpoken', { count: n })}
         />
       </ListGroup>
 
       {/* When */}
-      <SectionTitle title="Schedule" />
+      <SectionTitle title={t('create.schedule')} />
       <ScheduleFields
         value={start}
         onChange={(next) => {
@@ -675,17 +677,21 @@ export default function CreateBookingScreen() {
       />
       {!scheduleError ? (
         <AppText variant="footnote" color={Colors.textTertiary} style={styles.caption}>
-          Ends around {formatTime(end)}
-          {end.toDateString() !== start.toDateString() ? ` on ${formatDateLong(end)}` : ''}.
+          {end.toDateString() !== start.toDateString()
+            ? t('create.endsAtOn', {
+                time: formatTime(end),
+                date: formatDate(end, { weekday: 'short', day: 'numeric', month: 'short' }),
+              })
+            : t('create.endsAt', { time: formatTime(end) })}
         </AppText>
       ) : null}
 
       {/* Where */}
       <SectionTitle
-        title="Pickup"
+        title={t('create.pickup')}
         action={
           <Button
-            title={showMap ? 'Hide map' : 'Set on map'}
+            title={showMap ? t('create.hideMap') : t('create.setOnMap')}
             icon={MapIcon}
             variant="ghost"
             size="sm"
@@ -695,9 +701,9 @@ export default function CreateBookingScreen() {
         }
       />
       <Input
-        label="Pickup address"
+        label={t('create.pickupAddress')}
         icon={MapPin}
-        placeholder="e.g. Av. Juárez 42, Centro, Playa del Carmen"
+        placeholder={t('create.pickupPlaceholder')}
         value={pickupAddress}
         onChangeText={(t) => {
           setPickupAddress(t);
@@ -710,7 +716,7 @@ export default function CreateBookingScreen() {
         textContentType="fullStreetAddress"
         error={errors.pickup}
         hint={pickupHint}
-        accessibilityLabel="Pickup address"
+        accessibilityLabel={t('create.pickupAddress')}
       />
       {pickupNotice ? <Notice icon={Info} tone="warning" text={pickupNotice} /> : null}
       {showMap ? (
@@ -722,28 +728,28 @@ export default function CreateBookingScreen() {
               initialRegion={{ ...(pin ?? DEFAULT_CENTER), latitudeDelta: 0.01, longitudeDelta: 0.01 }}
               onPress={onMapPress}
             >
-              {pin ? <Marker coordinate={{ latitude: pin.latitude, longitude: pin.longitude }} title="Pickup" /> : null}
+              {pin ? <Marker coordinate={{ latitude: pin.latitude, longitude: pin.longitude }} title={t('create.pickup')} /> : null}
             </MapView>
           </View>
           <AppText variant="footnote" color={Colors.textTertiary} style={styles.caption}>
-            Tap the map to set the exact pickup point.
+            {t('create.mapHint')}
           </AppText>
         </>
       ) : null}
 
-      <SectionTitle title="Destination" />
+      <SectionTitle title={t('create.destination')} />
       <Input
-        label="Destination (optional)"
+        label={t('create.destinationLabel')}
         icon={Flag}
-        placeholder="Where are you going?"
+        placeholder={t('create.destinationPlaceholder')}
         value={destinationAddress}
         onChangeText={setDestinationAddress}
         autoComplete="street-address"
         textContentType="fullStreetAddress"
-        accessibilityLabel="Destination address, optional"
+        accessibilityLabel={t('create.destinationA11y')}
       />
 
-      <SectionTitle title={stops.length > 0 ? `Stops · ${stops.length}` : 'Stops'} />
+      <SectionTitle title={stops.length > 0 ? t('create.stopsCount', { count: stops.length }) : t('create.stops')} />
       {stops.length > 0 ? (
         <ListGroup style={styles.stops}>
           {stops.map((stop, index) => (
@@ -758,7 +764,7 @@ export default function CreateBookingScreen() {
                   {stop.address}
                 </AppText>
                 <AppText variant="caption" color={Colors.textTertiary}>
-                  {typeof stop.latitude === 'number' ? 'Located on the map' : 'Address only'}
+                  {typeof stop.latitude === 'number' ? t('create.stopLocated') : t('create.stopAddressOnly')}
                 </AppText>
               </View>
               <IconButton
@@ -766,7 +772,7 @@ export default function CreateBookingScreen() {
                 size={32}
                 tone="danger"
                 onPress={() => setStops((prev) => prev.filter((s) => s.key !== stop.key))}
-                accessibilityLabel={`Remove stop ${index + 1}`}
+                accessibilityLabel={t('create.removeStop', { index: index + 1 })}
               />
             </View>
           ))}
@@ -775,38 +781,38 @@ export default function CreateBookingScreen() {
       {stops.length < MAX_STOPS ? (
         <View style={styles.addStop}>
           <Input
-            placeholder="Add a stop along the way"
+            placeholder={t('create.stopPlaceholder')}
             icon={MapPin}
             value={newStop}
             onChangeText={setNewStop}
             onSubmitEditing={addStop}
             returnKeyType="done"
             containerStyle={styles.flex}
-            accessibilityLabel="Stop address"
+            accessibilityLabel={t('create.stopA11y')}
           />
           <Button
-            title="Add"
+            title={t('create.add')}
             icon={Plus}
             variant="secondary"
             fullWidth={false}
             onPress={addStop}
             loading={addingStop}
             disabled={!newStop.trim()}
-            accessibilityLabel="Add stop"
+            accessibilityLabel={t('create.addStop')}
           />
         </View>
       ) : null}
 
       {/* How much */}
-      <SectionTitle title="Price" />
+      <SectionTitle title={t('create.price')} />
       <Card tone="raised">
         <PriceReceipt breakdown={quote} duration={duration} protectors={numberOfProtectors} />
       </Card>
       <AppText variant="footnote" color={Colors.textTertiary} style={styles.caption}>
-        The final amount is verified by our server before you pay. Nothing is charged until you confirm payment.
+        {t('create.priceNote')}
       </AppText>
 
-      {paymentsUnavailable() ? <Notice icon={CreditCard} tone="warning" text={PAYMENTS_UNCONFIGURED_MESSAGE} /> : null}
+      {paymentsUnavailable() ? <Notice icon={CreditCard} tone="warning" text={t('create.paymentsOff')} /> : null}
       {savedNotice ? <Notice icon={Info} tone="info" text={savedNotice} /> : null}
       {errors.form ? <Notice icon={AlertTriangle} tone="error" text={errors.form} /> : null}
     </>,

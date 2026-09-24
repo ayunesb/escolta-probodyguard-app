@@ -16,6 +16,7 @@ import type { Booking, BookingStatus, BookingType, RatingBreakdown } from '@/typ
 import { rateLimitService } from './rateLimitService';
 import { userService } from './userService';
 import { logger } from '@/utils/logger';
+import i18n from '@/i18n';
 
 export type BookingListener = (bookings: Booking[]) => void;
 export type BookingErrorListener = (error: Error) => void;
@@ -96,19 +97,38 @@ export const LIVE_BOOKING_STATUSES: readonly BookingStatus[] = ['accepted', 'en_
 export const isLiveStatus = (status?: BookingStatus | string): boolean =>
   LIVE_BOOKING_STATUSES.includes(status as BookingStatus);
 
-const STATUS_PHRASE: Record<BookingStatus, string> = {
-  pending: 'still awaiting payment',
-  confirmed: 'waiting for the protector to respond',
-  accepted: 'already accepted',
-  rejected: 'declined',
-  en_route: 'already under way',
-  active: 'already in progress',
-  completed: 'completed',
-  cancelled: 'cancelled',
-};
+const KNOWN_STATUSES: readonly BookingStatus[] = [
+  'pending',
+  'confirmed',
+  'accepted',
+  'rejected',
+  'en_route',
+  'active',
+  'completed',
+  'cancelled',
+];
 
+// Frase del estado para los mensajes de error, en el idioma activo
+// ("still awaiting payment" / "aun esta pendiente de pago").
 const describeStatus = (status?: string): string =>
-  STATUS_PHRASE[status as BookingStatus] ?? `in an unexpected state (${status ?? 'unknown'})`;
+  KNOWN_STATUSES.includes(status as BookingStatus)
+    ? i18n.t(`booking:errors.statusPhrase.${status as BookingStatus}`)
+    : i18n.t('booking:errors.statusPhrase.unexpected', { status: status ?? 'unknown' });
+
+// Verbo de cada transicion (clave de booking:errors.verbs). Tambien sirve de
+// etiqueta en los logs.
+type TransitionVerb =
+  | 'accept'
+  | 'decline'
+  | 'markEnRoute'
+  | 'start'
+  | 'complete'
+  | 'cancel'
+  | 'rate'
+  | 'change'
+  | 'reassign';
+
+const verbText = (verb: TransitionVerb): string => i18n.t(`booking:errors.verbs.${verb}`);
 
 // ---------------------------------------------------------------------------
 // Utilidades internas
@@ -188,9 +208,9 @@ function friendlyWriteError(error: unknown, deniedMessage: string): Error {
   if (isPermissionDenied(error)) return new Error(deniedMessage);
   const message = String((error as { message?: unknown } | null)?.message ?? '');
   if (/network|offline|unavailable|disconnect/i.test(message)) {
-    return new Error('No connection. Check your internet and try again.');
+    return new Error(i18n.t('common:errors.network'));
   }
-  return new Error('Something went wrong. Please try again.');
+  return new Error(i18n.t('common:errors.generic'));
 }
 
 async function readBooking(bookingId: string): Promise<Booking> {
@@ -199,28 +219,24 @@ async function readBooking(bookingId: string): Promise<Booking> {
     snap = await get(ref(db(), `bookings/${bookingId}`));
   } catch (error) {
     logger.error('[Booking] Read failed', { bookingId, error });
-    throw friendlyWriteError(error, "You don't have access to this booking.");
+    throw friendlyWriteError(error, i18n.t('booking:errors.noAccess'));
   }
-  if (!snap.exists()) throw new Error('This booking no longer exists.');
+  if (!snap.exists()) throw new Error(i18n.t('booking:errors.gone'));
   return normalize(snap);
 }
 
 type Actor = 'client' | 'guard' | 'participant';
 
-function assertActor(booking: Booking, actor: Actor, verb: string): void {
+function assertActor(booking: Booking, actor: Actor, verb: TransitionVerb): void {
   const uid = currentUid();
   if (!uid) return; // sin sesion conocida (tests, arranque): deciden las reglas
   const isClient = booking.clientId === uid;
   const isGuard = !!booking.guardId && booking.guardId === uid;
   const ok = actor === 'client' ? isClient : actor === 'guard' ? isGuard : isClient || isGuard;
   if (!ok) {
-    throw new Error(
-      actor === 'guard'
-        ? `Only the assigned protector can ${verb} this booking.`
-        : actor === 'client'
-          ? `Only the client who booked can ${verb} this booking.`
-          : `Only the client or the assigned protector can ${verb} this booking.`
-    );
+    const key =
+      actor === 'guard' ? 'booking:errors.onlyGuard' : actor === 'client' ? 'booking:errors.onlyClient' : 'booking:errors.onlyParticipant';
+    throw new Error(i18n.t(key, { verb: verbText(verb) }));
   }
 }
 
@@ -228,7 +244,7 @@ interface TransitionSpec {
   from: readonly BookingStatus[];
   to?: BookingStatus;
   actor: Actor;
-  verb: string; // "accept", "decline"... para los mensajes
+  verb: TransitionVerb; // "accept", "decline"... para los mensajes
   patch?: Record<string, unknown>;
   deniedMessage?: string;
   // Comprobaciones extra sobre el estado leido; lanzan Error si no procede.
@@ -238,7 +254,9 @@ interface TransitionSpec {
 async function transition(bookingId: string, spec: TransitionSpec): Promise<Booking> {
   const current = await readBooking(bookingId);
   if (!spec.from.includes(current.status)) {
-    throw new Error(`Can't ${spec.verb}: this booking is ${describeStatus(current.status)}.`);
+    throw new Error(
+      i18n.t('booking:errors.cantTransition', { verb: verbText(spec.verb), status: describeStatus(current.status) })
+    );
   }
   spec.check?.(current);
   assertActor(current, spec.actor, spec.verb);
@@ -250,7 +268,7 @@ async function transition(bookingId: string, spec: TransitionSpec): Promise<Book
     await update(ref(db(), `bookings/${bookingId}`), stripUndefined(patch));
   } catch (error) {
     logger.error(`[Booking] ${spec.verb} failed`, { bookingId, error });
-    throw friendlyWriteError(error, spec.deniedMessage ?? `This booking can't be updated right now. Pull to refresh and try again.`);
+    throw friendlyWriteError(error, spec.deniedMessage ?? i18n.t('booking:errors.cantUpdateNow'));
   }
   return { ...current, ...(patch as Partial<Booking>) };
 }
@@ -299,7 +317,7 @@ function subscribeViaIndex(
     patient = false;
     if (closed) return;
     if (!indexReady) {
-      if (onError) onError(new Error('Still connecting. Check your internet connection.'));
+      if (onError) onError(new Error(i18n.t('booking:shared.stillConnecting')));
     } else {
       emit();
     }
@@ -358,7 +376,7 @@ function subscribeViaIndex(
     },
     (error) => {
       logger.error(`[Booking] ${indexPath} subscription failed`, { ownerId, error });
-      if (onError) onError(new Error("We couldn't load your bookings. Check your connection and try again."));
+      if (onError) onError(new Error(i18n.t('booking:errors.loadYours')));
       else onChange([]);
     }
   );
@@ -424,8 +442,8 @@ export const bookingService = {
         if (onError) {
           onError(
             isPermissionDenied(error)
-              ? new Error("You don't have access to this booking.")
-              : new Error("We couldn't load this booking. Check your connection and try again.")
+              ? new Error(i18n.t('booking:errors.noAccess'))
+              : new Error(i18n.t('booking:errors.loadOne'))
           );
         } else {
           callback(null);
@@ -448,7 +466,7 @@ export const bookingService = {
       },
       (error) => {
         logger.error('[Booking] subscribeToBookings failed', { error });
-        if (onError) onError(new Error("We couldn't load bookings. Check your connection and try again."));
+        if (onError) onError(new Error(i18n.t('booking:errors.loadAll')));
         else callback([]);
       }
     );
@@ -507,7 +525,7 @@ export const bookingService = {
       })
       .catch((error) => {
         logger.error('[Booking] Failed to load company guards', { companyId, error });
-        if (onError) onError(new Error("We couldn't load your team's bookings."));
+        if (onError) onError(new Error(i18n.t('booking:errors.loadTeam')));
         else callback([]);
       });
 
@@ -549,12 +567,12 @@ export const bookingService = {
   // ---- Creacion (cliente) --------------------------------------------------
 
   async createBooking(input: CreateBookingInput): Promise<Booking> {
-    if (!input?.clientId) throw new Error('You need to be signed in to book.');
-    if (!input.guardId) throw new Error('Choose a protector before booking.');
+    if (!input?.clientId) throw new Error(i18n.t('booking:errors.signInToBook'));
+    if (!input.guardId) throw new Error(i18n.t('booking:errors.chooseProtectorFirst'));
     const uid = currentUid();
-    if (uid && uid !== input.clientId) throw new Error('You can only book for your own account.');
+    if (uid && uid !== input.clientId) throw new Error(i18n.t('booking:errors.ownAccountOnly'));
     for (const key of ['hourlyRate', 'totalAmount', 'processingFee', 'platformCut', 'guardPayout'] as const) {
-      if (!Number.isFinite(input[key])) throw new Error('The price of this booking is incomplete. Please review it and try again.');
+      if (!Number.isFinite(input[key])) throw new Error(i18n.t('booking:errors.priceIncomplete'));
     }
 
     const rateLimit = await rateLimitService.checkRateLimit('booking', input.clientId);
@@ -564,7 +582,7 @@ export const bookingService = {
 
     const database = db();
     const id = push(ref(database, 'bookings')).key;
-    if (!id) throw new Error('Something went wrong. Please try again.');
+    if (!id) throw new Error(i18n.t('common:errors.generic'));
     const startCode = generateStartCode();
 
     const node = stripUndefined({
@@ -584,7 +602,7 @@ export const bookingService = {
       });
     } catch (error) {
       logger.error('[Booking] createBooking failed', { error });
-      throw friendlyWriteError(error, "We couldn't save your booking. Please sign in again and retry.");
+      throw friendlyWriteError(error, i18n.t('booking:errors.saveFailed'));
     }
 
     await writeParticipants(id, input.clientId, input.guardId);
@@ -598,7 +616,7 @@ export const bookingService = {
   async updatePendingBooking(bookingId: string, patch: Partial<CreateBookingInput>): Promise<void> {
     const current = await readBooking(bookingId);
     if (current.status !== 'pending') {
-      throw new Error(`This booking can't be changed: it is ${describeStatus(current.status)}.`);
+      throw new Error(i18n.t('booking:errors.cantChange', { status: describeStatus(current.status) }));
     }
     assertActor(current, 'client', 'change');
 
@@ -627,7 +645,7 @@ export const bookingService = {
       await update(ref(db()), updates);
     } catch (error) {
       logger.error('[Booking] updatePendingBooking failed', { bookingId, error });
-      throw friendlyWriteError(error, "We couldn't update this booking. Please try again.");
+      throw friendlyWriteError(error, i18n.t('booking:errors.updateFailed'));
     }
     if (guardChanged && fields.guardId) {
       await writeParticipants(bookingId, current.clientId, fields.guardId);
@@ -636,14 +654,14 @@ export const bookingService = {
 
   // rejected -> confirmed con otro escolta. Los importes no cambian.
   async reassignGuard(bookingId: string, newGuardId: string): Promise<void> {
-    if (!newGuardId) throw new Error('Choose a protector first.');
+    if (!newGuardId) throw new Error(i18n.t('booking:errors.chooseProtector'));
     const current = await readBooking(bookingId);
     if (current.status !== 'rejected') {
-      throw new Error(`Can't choose another protector: this booking is ${describeStatus(current.status)}.`);
+      throw new Error(i18n.t('booking:errors.cantReassign', { status: describeStatus(current.status) }));
     }
     assertActor(current, 'client', 'reassign');
     if (current.guardId === newGuardId) {
-      throw new Error('That protector already declined this booking. Please choose someone else.');
+      throw new Error(i18n.t('booking:errors.alreadyDeclined'));
     }
 
     try {
@@ -656,7 +674,7 @@ export const bookingService = {
       });
     } catch (error) {
       logger.error('[Booking] reassignGuard failed', { bookingId, error });
-      throw friendlyWriteError(error, "We couldn't assign that protector. Please try again.");
+      throw friendlyWriteError(error, i18n.t('booking:errors.assignFailed'));
     }
     await writeParticipants(bookingId, current.clientId, newGuardId);
   },
@@ -672,14 +690,14 @@ export const bookingService = {
       verb: 'accept',
       patch: { acceptedAt: new Date().toISOString() },
       check: (current) => {
-        if (guardId && current.guardId !== guardId) throw new Error('This job is assigned to another protector.');
+        if (guardId && current.guardId !== guardId) throw new Error(i18n.t('booking:errors.otherProtector'));
       },
     });
   },
 
   async rejectBooking(bookingId: string, reason: string): Promise<void> {
     const trimmed = (reason ?? '').trim();
-    if (!trimmed) throw new Error('Please add a short reason for declining.');
+    if (!trimmed) throw new Error(i18n.t('booking:errors.declineReason'));
     await transition(bookingId, {
       from: ['confirmed'],
       to: 'rejected',
@@ -694,7 +712,7 @@ export const bookingService = {
       from: ['accepted'],
       to: 'en_route',
       actor: 'guard',
-      verb: 'mark as en route',
+      verb: 'markEnRoute',
     });
   },
 
@@ -702,7 +720,7 @@ export const bookingService = {
   // comparan con bookingSecrets/{id}/startCode.
   async startBooking(bookingId: string, code: string): Promise<void> {
     const clean = (code ?? '').replace(/\D/g, '');
-    if (clean.length !== 6) throw new Error('Enter the 6-digit code.');
+    if (clean.length !== 6) throw new Error(i18n.t('booking:errors.codeLength'));
 
     const limiterKey = `${bookingId}_${currentUid() ?? 'guard'}`;
     const limit = await rateLimitService.checkRateLimit('startCode', limiterKey);
@@ -716,7 +734,7 @@ export const bookingService = {
       actor: 'guard',
       verb: 'start',
       patch: { startedAt: new Date().toISOString(), startCodeAttempt: clean },
-      deniedMessage: "That code doesn't match. Ask your client to read it again.",
+      deniedMessage: i18n.t('booking:errors.codeMismatch'),
     });
 
     try {
@@ -738,7 +756,7 @@ export const bookingService = {
 
   async cancelBooking(bookingId: string, by: 'client' | 'guard', reason: string): Promise<void> {
     const trimmed = (reason ?? '').trim();
-    if (!trimmed) throw new Error('Please add a short reason for cancelling.');
+    if (!trimmed) throw new Error(i18n.t('booking:errors.cancelReason'));
     await transition(bookingId, {
       from: by === 'client' ? ['pending', 'confirmed', 'accepted', 'rejected'] : ['accepted', 'en_route'],
       to: 'cancelled',
@@ -756,12 +774,12 @@ export const bookingService = {
   // publica en Firestore (reviews/{bookingId}) para el perfil del escolta.
   async rateBooking(bookingId: string, input: RateBookingInput): Promise<void> {
     const rating = Number(input?.rating);
-    if (!Number.isInteger(rating) || rating < 1 || rating > 5) throw new Error('Choose a rating from 1 to 5 stars.');
+    if (!Number.isInteger(rating) || rating < 1 || rating > 5) throw new Error(i18n.t('booking:errors.ratingRange'));
     const breakdown = input.ratingBreakdown ?? undefined;
     if (breakdown) {
       const values = [breakdown.professionalism, breakdown.punctuality, breakdown.communication, breakdown.languageClarity];
       if (values.some((v) => !Number.isInteger(v) || v < 1 || v > 5)) {
-        throw new Error('Rate each category from 1 to 5 stars.');
+        throw new Error(i18n.t('booking:errors.categoryRange'));
       }
     }
     const review = (input.review ?? '').trim().slice(0, 1000);
@@ -771,9 +789,9 @@ export const bookingService = {
       actor: 'client',
       verb: 'rate',
       patch: { rating, ratingBreakdown: breakdown, review: review || undefined },
-      deniedMessage: 'This service has already been rated.',
+      deniedMessage: i18n.t('booking:errors.alreadyRatedDenied'),
       check: (b) => {
-        if (typeof b.rating === 'number') throw new Error('You already rated this service.');
+        if (typeof b.rating === 'number') throw new Error(i18n.t('booking:errors.alreadyRated'));
       },
     });
 
@@ -807,13 +825,13 @@ export const bookingService = {
   getBookingTypeLabel(bookingType: BookingType): string {
     switch (bookingType) {
       case 'instant':
-        return 'Instant';
+        return i18n.t('booking:bookingType.instant');
       case 'scheduled':
-        return 'Scheduled';
+        return i18n.t('booking:bookingType.scheduled');
       case 'cross-city':
-        return 'Cross-city';
+        return i18n.t('booking:bookingType.crossCity');
       default:
-        return 'Unknown';
+        return i18n.t('booking:bookingType.unknown');
     }
   },
 };

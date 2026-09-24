@@ -1,6 +1,7 @@
 import React from 'react';
 import { View } from 'react-native';
 import { useRouter } from 'expo-router';
+import { useTranslation } from 'react-i18next';
 import { Lock } from 'lucide-react-native';
 import Colors from '@/constants/colors';
 import { Space } from '@/constants/design';
@@ -8,26 +9,22 @@ import { EmptyState, NavBar, Screen, SkeletonCard } from '@/components/ui';
 import { useAuth } from '@/contexts/AuthContext';
 import type { UserRole } from '@/types';
 
-const AUDIENCE: Record<UserRole, string> = {
-  admin: 'administrators',
-  company: 'security company accounts',
-  guard: 'guard accounts',
-  client: 'client accounts',
-};
-
 export function AccessDenied({ roles, nav = false }: { roles: UserRole[]; nav?: boolean }) {
   const router = useRouter();
   const { user } = useAuth();
-  const audience = roles.map((r) => AUDIENCE[r]).join(' and ');
+  const { t } = useTranslation('backoffice');
+  const names = roles.map((r) => t(`accessDenied.audience.${r}`));
+  const audience =
+    names.length > 1 ? t('accessDenied.list', { first: names.slice(0, -1).join(', '), last: names[names.length - 1] }) : names[0] ?? '';
   return (
     <View style={{ flex: 1, backgroundColor: Colors.background }}>
       {nav ? <NavBar title="" /> : null}
       <Screen padTop={!nav} contentStyle={{ justifyContent: 'center', paddingTop: Space.huge }}>
         <EmptyState
           icon={Lock}
-          title="Restricted area"
-          message={`This part of Escolta Pro is only available to ${audience}.`}
-          actionLabel={user ? 'Go to my home' : 'Sign in'}
+          title={t('accessDenied.title')}
+          message={t('accessDenied.message', { audience })}
+          actionLabel={user ? t('accessDenied.goHome') : t('accessDenied.signIn')}
           onAction={() => router.replace(user ? '/' : '/auth/sign-in')}
         />
       </Screen>

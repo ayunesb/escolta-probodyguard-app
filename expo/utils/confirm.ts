@@ -1,4 +1,5 @@
 import { Alert } from 'react-native';
+import i18n from '@/i18n';
 
 // Confirmacion de dos botones. Usa Alert.alert en todas las plataformas: en
 // web lo dibuja <AlertHost/> con el diseno de la app (antes era el
@@ -6,8 +7,8 @@ import { Alert } from 'react-native';
 export async function confirm(
   title: string,
   message: string,
-  confirmLabel: string = 'OK',
-  cancelLabel: string = 'Cancel',
+  confirmLabel: string = i18n.t('common:actions.ok'),
+  cancelLabel: string = i18n.t('common:actions.cancel'),
   destructive: boolean = false
 ): Promise<boolean> {
   return new Promise<boolean>((resolve) => {

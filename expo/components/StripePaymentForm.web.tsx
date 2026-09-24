@@ -13,6 +13,8 @@ import { useEffect, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import type { Stripe, StripeElements, StripePaymentElement } from '@stripe/stripe-js';
 import { Lock } from 'lucide-react-native';
+import { useTranslation } from 'react-i18next';
+import i18n, { currentLanguage } from '@/i18n';
 import Colors from '@/constants/colors';
 import { Radius, Space } from '@/constants/design';
 import { AppText, Button, Skeleton } from '@/components/ui';
@@ -23,6 +25,7 @@ import type { StripePaymentFormProps } from '@/components/funnel/paymentTypes';
 export type { StripePaymentFormProps } from '@/components/funnel/paymentTypes';
 
 export default function StripePaymentForm({ clientSecret, payLabel, returnUrl, onSucceeded, onError }: StripePaymentFormProps) {
+  const { t } = useTranslation(['funnel', 'common']);
   const mountRef = useRef<HTMLDivElement | null>(null);
   const stripeRef = useRef<Stripe | null>(null);
   const elementsRef = useRef<StripeElements | null>(null);
@@ -40,14 +43,16 @@ export default function StripePaymentForm({ clientSecret, payLabel, returnUrl, o
 
     (async () => {
       try {
-        if (!stripeService.isConfigured()) throw new Error('Payments are not configured.');
+        if (!stripeService.isConfigured()) throw new Error(i18n.t('funnel:payment.errors.notConfigured'));
         const stripe = await stripeService.load();
         if (cancelled) return;
-        if (!stripe) throw new Error('Stripe could not be loaded.');
+        if (!stripe) throw new Error(i18n.t('funnel:payment.errors.stripeLoad'));
         stripeRef.current = stripe;
 
         const elements = stripe.elements({
           clientSecret,
+          // Stripe's own labels and card errors follow the app language.
+          locale: currentLanguage(),
           appearance: {
             theme: 'night',
             variables: {
@@ -68,12 +73,12 @@ export default function StripePaymentForm({ clientSecret, payLabel, returnUrl, o
         });
         element.on('loaderror', () => {
           if (cancelled) return;
-          setSetupError('The secure card form could not load.');
+          setSetupError(i18n.t('funnel:payment.errors.formLoad'));
         });
         if (mountRef.current) element.mount(mountRef.current);
       } catch (error) {
         if (cancelled) return;
-        const message = error instanceof Error ? error.message : 'The secure card form could not load.';
+        const message = error instanceof Error ? error.message : i18n.t('funnel:payment.errors.formLoad');
         logger.error('[Stripe] Payment Element setup failed', { message });
         setSetupError(message);
         onError?.(message);
@@ -107,7 +112,7 @@ export default function StripePaymentForm({ clientSecret, payLabel, returnUrl, o
       });
 
       if (error) {
-        const message = error.message ?? 'The payment could not be completed.';
+        const message = error.message ?? t('payment.errors.notCompleted');
         setPayError(message);
         onError?.(message);
         return;
@@ -122,11 +127,11 @@ export default function StripePaymentForm({ clientSecret, payLabel, returnUrl, o
         onSucceeded({ paymentIntentId: paymentIntent!.id, status: 'processing' });
         return;
       }
-      const message = 'The payment was not completed. Please try another method.';
+      const message = t('payment.errors.tryAnotherMethod');
       setPayError(message);
       onError?.(message);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Network error. You were not charged.';
+      const message = error instanceof Error ? error.message : t('payment.errors.network');
       logger.error('[Stripe] confirmPayment threw', { message });
       setPayError(message);
       onError?.(message);
@@ -142,10 +147,10 @@ export default function StripePaymentForm({ clientSecret, payLabel, returnUrl, o
           <AppText variant="callout" color={Colors.error} align="center">
             {setupError}
           </AppText>
-          <Button title="Try again" variant="secondary" size="sm" fullWidth={false} onPress={() => setAttempt((n) => n + 1)} />
+          <Button title={t('common:actions.tryAgain')} variant="secondary" size="sm" fullWidth={false} onPress={() => setAttempt((n) => n + 1)} />
         </View>
       ) : !ready ? (
-        <View style={styles.skeleton} accessibilityLabel="Loading secure card form">
+        <View style={styles.skeleton} accessibilityLabel={t('payment.loadingForm')}>
           <Skeleton height={48} radius={Radius.md} />
           <View style={styles.skeletonRow}>
             <Skeleton height={48} radius={Radius.md} style={styles.flex} />
@@ -172,7 +177,7 @@ export default function StripePaymentForm({ clientSecret, payLabel, returnUrl, o
           loading={paying}
           disabled={!ready}
           style={styles.pay}
-          accessibilityHint="Charges your card and confirms the booking"
+          accessibilityHint={t('payment.payHint')}
         />
       )}
     </View>

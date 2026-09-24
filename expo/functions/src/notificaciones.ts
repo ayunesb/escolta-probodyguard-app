@@ -30,57 +30,147 @@ interface Aviso {
   cuerpo: string;
 }
 
+// Cada aviso existe en los dos idiomas de la app. Se elige por el idioma
+// guardado en el perfil del destinatario (users/{uid}.language, lo escribe el
+// selector EN | ES de la app); sin dato, espanol.
+type Idioma = 'es' | 'en';
+type Bilingue = Record<Idioma, Aviso>;
+
 /** Que se le dice a cada parte cuando la reserva entra a cada estado. */
-const MENSAJES: Record<string, { cliente?: Aviso; escolta?: Aviso }> = {
+const MENSAJES: Record<string, { cliente?: Bilingue; escolta?: Bilingue }> = {
   confirmed: {
-    cliente: { titulo: 'Reserva confirmada', cuerpo: 'Tu pago se recibio y tu servicio de proteccion quedo confirmado.' },
-    escolta: { titulo: 'Nuevo servicio', cuerpo: 'Tienes un servicio confirmado. Aceptalo o rechazalo en la app.' },
+    cliente: {
+      es: { titulo: 'Reserva confirmada', cuerpo: 'Recibimos su pago y su servicio de protección quedó confirmado.' },
+      en: { titulo: 'Booking confirmed', cuerpo: 'Your payment went through and your protection is confirmed.' },
+    },
+    escolta: {
+      es: { titulo: 'Nuevo servicio', cuerpo: 'Tiene un servicio confirmado. Acéptelo o recházelo en la app.' },
+      en: { titulo: 'New job', cuerpo: 'You have a confirmed job. Accept or decline it in the app.' },
+    },
   },
   accepted: {
-    cliente: { titulo: 'Escolta asignado', cuerpo: 'Tu escolta acepto el servicio.' },
+    cliente: {
+      es: { titulo: 'Escolta asignado', cuerpo: 'Su escolta aceptó el servicio.' },
+      en: { titulo: 'Protector assigned', cuerpo: 'Your protector accepted the job.' },
+    },
   },
   rejected: {
-    cliente: { titulo: 'Escolta no disponible', cuerpo: 'Tu escolta no pudo tomar el servicio. Elige otro en la app.' },
+    cliente: {
+      es: { titulo: 'Escolta no disponible', cuerpo: 'Su escolta no pudo tomar el servicio. Elija otro en la app.' },
+      en: { titulo: 'Protector unavailable', cuerpo: "Your protector couldn't take the job. Choose another in the app." },
+    },
   },
   en_route: {
-    cliente: { titulo: 'Tu escolta va en camino', cuerpo: 'Puedes seguir su ubicacion en la app.' },
+    cliente: {
+      es: { titulo: 'Su escolta va en camino', cuerpo: 'Puede seguir su ubicación en la app.' },
+      en: { titulo: 'Your protector is on the way', cuerpo: 'Follow their location live in the app.' },
+    },
   },
   active: {
-    cliente: { titulo: 'Servicio iniciado', cuerpo: 'Tu servicio de proteccion comenzo.' },
-    escolta: { titulo: 'Servicio iniciado', cuerpo: 'Registraste el inicio del servicio.' },
+    cliente: {
+      es: { titulo: 'Servicio iniciado', cuerpo: 'Su servicio de protección comenzó.' },
+      en: { titulo: 'Service started', cuerpo: 'Your protection service has started.' },
+    },
+    escolta: {
+      es: { titulo: 'Servicio iniciado', cuerpo: 'Registró el inicio del servicio.' },
+      en: { titulo: 'Service started', cuerpo: 'You started the service.' },
+    },
   },
   completed: {
-    cliente: { titulo: 'Servicio terminado', cuerpo: 'Tu servicio termino. Puedes calificar a tu escolta.' },
-    escolta: { titulo: 'Servicio terminado', cuerpo: 'El servicio quedo cerrado. Tu pago entra al proceso de liquidacion.' },
+    cliente: {
+      es: { titulo: 'Servicio terminado', cuerpo: 'Su servicio terminó. Puede calificar a su escolta.' },
+      en: { titulo: 'Service complete', cuerpo: 'Your service has ended. You can rate your protector.' },
+    },
+    escolta: {
+      es: { titulo: 'Servicio terminado', cuerpo: 'El servicio quedó cerrado. Su pago entra al proceso de liquidación.' },
+      en: { titulo: 'Service complete', cuerpo: 'The job is closed. Your payout is now being processed.' },
+    },
   },
   cancelled: {
-    cliente: { titulo: 'Reserva cancelada', cuerpo: 'Tu reserva fue cancelada.' },
-    escolta: { titulo: 'Servicio cancelado', cuerpo: 'Se cancelo un servicio que tenias asignado.' },
+    cliente: {
+      es: { titulo: 'Reserva cancelada', cuerpo: 'Su reserva fue cancelada.' },
+      en: { titulo: 'Booking cancelled', cuerpo: 'Your booking was cancelled.' },
+    },
+    escolta: {
+      es: { titulo: 'Servicio cancelado', cuerpo: 'Se canceló un servicio que tenía asignado.' },
+      en: { titulo: 'Job cancelled', cuerpo: 'A job assigned to you was cancelled.' },
+    },
   },
 };
 
 /**
- * Plantillas para los avisos que encolan los clientes. La llave es `type`.
- * El texto del cliente (title/body) se ignora siempre.
+ * Avisos que la app puede encolar (coleccion `notifications`). El texto lo
+ * pone siempre el servidor: nunca se reenvia lo que escribio el cliente.
  */
-const PLANTILLAS: Record<string, Aviso> = {
-  booking_created: { titulo: 'Reserva creada', cuerpo: 'Tu solicitud de reserva se registro.' },
-  booking_confirmed: { titulo: 'Reserva confirmada', cuerpo: 'Tu servicio de proteccion quedo confirmado.' },
-  booking_accepted: { titulo: 'Reserva aceptada', cuerpo: 'Tu escolta acepto el servicio.' },
-  booking_rejected: { titulo: 'Reserva rechazada', cuerpo: 'El escolta no pudo tomar el servicio. Elige otro en la app.' },
-  booking_cancelled: { titulo: 'Reserva cancelada', cuerpo: 'Una reserva en la que participas fue cancelada.' },
-  booking_reassigned: { titulo: 'Nuevo servicio', cuerpo: 'Se te asigno un servicio. Revisalo en la app.' },
-  new_booking_request: { titulo: 'Nuevo servicio', cuerpo: 'Tienes una nueva solicitud de servicio. Revisala en la app.' },
-  guard_en_route: { titulo: 'Tu escolta va en camino', cuerpo: 'Puedes seguir su ubicacion en la app.' },
-  service_started: { titulo: 'Servicio iniciado', cuerpo: 'Tu servicio de proteccion comenzo.' },
-  service_completed: { titulo: 'Servicio terminado', cuerpo: 'El servicio termino. Puedes calificarlo en la app.' },
-  new_message: { titulo: 'Nuevo mensaje', cuerpo: 'Tienes un mensaje nuevo sobre tu reserva.' },
-  payment_success: { titulo: 'Pago recibido', cuerpo: 'Tu pago se proceso correctamente.' },
-  payment_failed: { titulo: 'Pago no procesado', cuerpo: 'No se pudo procesar tu pago. Revisa tu metodo de pago.' },
-  emergency: { titulo: 'ALERTA DE EMERGENCIA', cuerpo: 'Se activo una alerta de emergencia en tu reserva. Abre la app.' },
+const PLANTILLAS: Record<string, Bilingue> = {
+  booking_created: {
+    es: { titulo: 'Reserva creada', cuerpo: 'Su solicitud de reserva quedó registrada.' },
+    en: { titulo: 'Booking created', cuerpo: 'Your booking request was received.' },
+  },
+  booking_confirmed: {
+    es: { titulo: 'Reserva confirmada', cuerpo: 'Su servicio de protección quedó confirmado.' },
+    en: { titulo: 'Booking confirmed', cuerpo: 'Your protection service is confirmed.' },
+  },
+  booking_accepted: {
+    es: { titulo: 'Reserva aceptada', cuerpo: 'Su escolta aceptó el servicio.' },
+    en: { titulo: 'Booking accepted', cuerpo: 'Your protector accepted the job.' },
+  },
+  booking_rejected: {
+    es: { titulo: 'Reserva rechazada', cuerpo: 'El escolta no pudo tomar el servicio. Elija otro en la app.' },
+    en: { titulo: 'Booking declined', cuerpo: "The protector couldn't take the job. Choose another in the app." },
+  },
+  booking_cancelled: {
+    es: { titulo: 'Reserva cancelada', cuerpo: 'Se canceló una reserva en la que participa.' },
+    en: { titulo: 'Booking cancelled', cuerpo: "A booking you're part of was cancelled." },
+  },
+  booking_reassigned: {
+    es: { titulo: 'Nuevo servicio', cuerpo: 'Se le asignó un servicio. Revíselo en la app.' },
+    en: { titulo: 'New job', cuerpo: 'A job was assigned to you. Review it in the app.' },
+  },
+  new_booking_request: {
+    es: { titulo: 'Nuevo servicio', cuerpo: 'Tiene una nueva solicitud de servicio. Revísela en la app.' },
+    en: { titulo: 'New job', cuerpo: 'You have a new job request. Review it in the app.' },
+  },
+  guard_en_route: {
+    es: { titulo: 'Su escolta va en camino', cuerpo: 'Puede seguir su ubicación en la app.' },
+    en: { titulo: 'Your protector is on the way', cuerpo: 'Follow their location live in the app.' },
+  },
+  service_started: {
+    es: { titulo: 'Servicio iniciado', cuerpo: 'Su servicio de protección comenzó.' },
+    en: { titulo: 'Service started', cuerpo: 'Your protection service has started.' },
+  },
+  service_completed: {
+    es: { titulo: 'Servicio terminado', cuerpo: 'El servicio terminó. Puede calificarlo en la app.' },
+    en: { titulo: 'Service complete', cuerpo: 'The service has ended. You can rate it in the app.' },
+  },
+  new_message: {
+    es: { titulo: 'Nuevo mensaje', cuerpo: 'Tiene un mensaje nuevo sobre su reserva.' },
+    en: { titulo: 'New message', cuerpo: 'You have a new message about your booking.' },
+  },
+  payment_success: {
+    es: { titulo: 'Pago recibido', cuerpo: 'Su pago se procesó correctamente.' },
+    en: { titulo: 'Payment received', cuerpo: 'Your payment went through.' },
+  },
+  payment_failed: {
+    es: { titulo: 'Pago no procesado', cuerpo: 'No se pudo procesar su pago. Revise su método de pago.' },
+    en: { titulo: 'Payment failed', cuerpo: "We couldn't process your payment. Check your payment method." },
+  },
+  emergency: {
+    es: { titulo: 'ALERTA DE EMERGENCIA', cuerpo: 'Se activó una alerta de emergencia en su reserva. Abra la app.' },
+    en: { titulo: 'EMERGENCY ALERT', cuerpo: 'An emergency alert was raised on your booking. Open the app.' },
+  },
 };
 
-/** Todos los tokens de Expo registrados por un usuario (puede tener varios aparatos). */
+/** Idioma del destinatario segun su perfil; espanol si no hay dato. */
+async function idiomaDe(userId: string): Promise<Idioma> {
+  try {
+    const snap = await admin.firestore().collection('users').doc(userId).get();
+    return snap.get('language') === 'en' ? 'en' : 'es';
+  } catch {
+    return 'es';
+  }
+}
+
 async function tokensDe(userId: string): Promise<string[]> {
   if (!userId) return [];
   const snap = await admin.firestore().collection('deviceTokens').where('userId', '==', userId).get();
@@ -163,8 +253,14 @@ async function registrarEnApp(userId: string, tipo: string, aviso: Aviso, datos:
   });
 }
 
-async function notificarA(userId: string, tipo: string, aviso: Aviso, datos: Record<string, unknown>): Promise<void> {
+async function notificarA(
+  userId: string,
+  tipo: string,
+  avisos: Bilingue,
+  datos: Record<string, unknown>
+): Promise<void> {
   if (!userId) return;
+  const aviso = avisos[await idiomaDe(userId)];
   const tokens = await tokensDe(userId);
   const { enviados, tokensMuertos } = await enviarAExpo(tokens, aviso, datos);
   await limpiarTokens(tokensMuertos);
@@ -230,7 +326,7 @@ export const enviarAvisoEncolado = onDocumentCreated('notifications/{notificatio
   const delServidor = datos.senderId === SYSTEM_SENDER;
   const aviso: Aviso | undefined = delServidor
     ? { titulo: String(datos.title ?? 'Escolta Pro'), cuerpo: String(datos.body ?? '') }
-    : PLANTILLAS[tipo];
+    : PLANTILLAS[tipo]?.[await idiomaDe(userId)];
 
   if (!aviso) {
     await doc.ref.update({ status: 'failed', error: `tipo sin plantilla: ${tipo}` });
@@ -275,9 +371,15 @@ export const avisarEmergencia = onDocumentCreated('emergencyAlerts/{alertId}', a
 
   const tipoAlerta = typeof alerta.type === 'string' ? alerta.type.slice(0, 40) : '';
   const direccion = typeof alerta.location?.address === 'string' ? alerta.location.address.slice(0, 120) : '';
-  const aviso: Aviso = {
-    titulo: 'ALERTA DE EMERGENCIA',
-    cuerpo: `Se activo una alerta${tipoAlerta ? ` de tipo ${tipoAlerta}` : ''}${direccion ? ` en ${direccion}` : ''}.`,
+  const avisos: Bilingue = {
+    es: {
+      titulo: 'ALERTA DE EMERGENCIA',
+      cuerpo: `Se activó una alerta${tipoAlerta ? ` de tipo ${tipoAlerta}` : ''}${direccion ? ` en ${direccion}` : ''}.`,
+    },
+    en: {
+      titulo: 'EMERGENCY ALERT',
+      cuerpo: `Emergency alert raised${tipoAlerta ? ` (${tipoAlerta})` : ''}${direccion ? ` at ${direccion}` : ''}.`,
+    },
   };
   const datos = {
     tipo: 'emergency',
@@ -286,7 +388,7 @@ export const avisarEmergencia = onDocumentCreated('emergencyAlerts/{alertId}', a
     userId: alerta.userId ?? null,
   };
 
-  const r = await Promise.allSettled(admins.docs.map((d) => notificarA(d.id, 'emergency', aviso, datos)));
+  const r = await Promise.allSettled(admins.docs.map((d) => notificarA(d.id, 'emergency', avisos, datos)));
   r.filter((x) => x.status === 'rejected').forEach((x) =>
     console.error('[Avisos] Fallo avisar a un admin:', (x as PromiseRejectedResult).reason)
   );

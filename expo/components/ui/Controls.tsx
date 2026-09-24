@@ -72,6 +72,8 @@ export function Chip({ label, selected, onPress, icon: Icon, count, style }: Chi
       accessibilityRole="button"
       accessibilityState={{ selected: !!selected }}
       accessibilityLabel={label}
+      // 36 de alto + 4 arriba y abajo = 44 de area tactil.
+      hitSlop={{ top: 4, bottom: 4 }}
       hoverStyle={selected ? undefined : { borderColor: Colors.accentLine }}
       style={[styles.chip, selected ? styles.chipSelected : null, style]}
     >
@@ -116,7 +118,7 @@ export function SegmentedControl<T extends string>({ options, value, onChange, s
               <Icon size={16} color={active ? Colors.textOnAccent : Colors.textTertiary} strokeWidth={ICON_STROKE} />
             ) : null}
             {opt.label ? (
-              <AppText variant="caption" color={active ? Colors.textOnAccent : Colors.textTertiary}>
+              <AppText variant="caption" numberOfLines={1} color={active ? Colors.textOnAccent : Colors.textTertiary}>
                 {opt.label}
               </AppText>
             ) : null}
@@ -177,10 +179,12 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.glassBorder,
   },
+  // Los segmentos ceden si no caben (etiquetas largas en espanol).
   segment: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    flexShrink: 1,
     gap: 6,
     minWidth: 38,
     height: 34,

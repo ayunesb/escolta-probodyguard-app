@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { ActivityIndicator, Linking, StyleSheet, View } from 'react-native';
+import { useTranslation } from 'react-i18next';
 import { CircleCheck, CircleAlert, HeartPulse, LifeBuoy, PhoneCall, ShieldAlert, Siren, TriangleAlert } from 'lucide-react-native';
 import type { LucideIcon } from 'lucide-react-native';
 import Colors from '@/constants/colors';
@@ -17,39 +18,12 @@ interface PanicButtonProps {
   onAlertTriggered?: (alertId: string) => void;
 }
 
-const OPTIONS: { type: EmergencyType; title: string; subtitle: string; icon: LucideIcon; a11y: string; hint: string }[] = [
-  {
-    type: 'panic',
-    title: 'Panic',
-    subtitle: 'Immediate danger',
-    icon: Siren,
-    a11y: 'Panic - Immediate danger',
-    hint: 'Alerts Escolta Pro operations that you are in immediate danger',
-  },
-  {
-    type: 'sos',
-    title: 'SOS',
-    subtitle: 'Need urgent help',
-    icon: LifeBuoy,
-    a11y: 'SOS - Need urgent help',
-    hint: 'Alerts Escolta Pro operations that you need urgent help',
-  },
-  {
-    type: 'medical',
-    title: 'Medical',
-    subtitle: 'Medical emergency',
-    icon: HeartPulse,
-    a11y: 'Medical emergency',
-    hint: 'Alerts Escolta Pro operations to a medical emergency. Call 911 for an ambulance.',
-  },
-  {
-    type: 'security',
-    title: 'Security',
-    subtitle: 'Security threat',
-    icon: ShieldAlert,
-    a11y: 'Security threat',
-    hint: 'Alerts Escolta Pro operations to a security threat',
-  },
+// Los textos de cada opcion viven en booking:panic.options.<type>.
+const OPTIONS: { type: EmergencyType; icon: LucideIcon }[] = [
+  { type: 'panic', icon: Siren },
+  { type: 'sos', icon: LifeBuoy },
+  { type: 'medical', icon: HeartPulse },
+  { type: 'security', icon: ShieldAlert },
 ];
 
 type Phase = 'choose' | 'sending' | 'sent' | 'failed';
@@ -63,6 +37,7 @@ async function call911() {
 }
 
 export default function PanicButton({ userId, bookingId, size = 'medium', onAlertTriggered }: PanicButtonProps) {
+  const { t } = useTranslation(['booking', 'common']);
   const [visible, setVisible] = useState(false);
   const [phase, setPhase] = useState<Phase>('choose');
   const [lastType, setLastType] = useState<EmergencyType>('panic');
@@ -90,7 +65,7 @@ export default function PanicButton({ userId, bookingId, size = 'medium', onAler
       setPhase('sent');
       onAlertTriggered?.(result.alertId);
     } else {
-      setError(result.error ?? 'The alert could not be sent.');
+      setError(result.error ?? t('booking:panic.sendFailed'));
       setPhase('failed');
     }
   };
@@ -105,50 +80,64 @@ export default function PanicButton({ userId, bookingId, size = 'medium', onAler
         scaleTo={0.92}
         haptic="medium"
         accessibilityRole="button"
-        accessibilityLabel="Emergency SOS button"
-        accessibilityHint="Opens emergency options: alert Escolta Pro operations or call 911"
+        accessibilityLabel={t('booking:panic.triggerA11y')}
+        accessibilityHint={t('booking:panic.triggerHint')}
         style={[styles.trigger, { width: buttonSize, height: buttonSize, borderRadius: buttonSize / 2 }]}
       >
         <TriangleAlert size={iconSize} color={Colors.white} strokeWidth={2.25} />
-        <AppText style={styles.triggerText}>SOS</AppText>
+        <AppText style={styles.triggerText}>{t('booking:panic.trigger')}</AppText>
       </PressableScale>
 
       <Sheet
         visible={visible}
         onClose={close}
         dismissable={phase !== 'sending'}
-        eyebrow="Emergency"
-        title={phase === 'sent' ? 'Operations alerted' : phase === 'failed' ? 'Alert not confirmed' : 'Get help now'}
+        eyebrow={t('booking:panic.eyebrow')}
+        title={t(
+          phase === 'sent'
+            ? 'booking:panic.titleSent'
+            : phase === 'failed'
+              ? 'booking:panic.titleFailed'
+              : 'booking:panic.titleChoose'
+        )}
         testID="panic-sheet"
         footer={
           phase === 'sent' ? (
-            <Button title="Done" variant="secondary" onPress={close} />
+            <Button title={t('common:actions.done')} variant="secondary" onPress={close} style={styles.flex} />
           ) : phase === 'failed' ? (
             <>
-              <Button title="Cancel" variant="secondary" onPress={close} style={styles.flex} />
-              <Button title="Try again" variant="outline" onPress={() => send(lastType)} style={styles.flex} />
+              <Button title={t('common:actions.cancel')} variant="secondary" onPress={close} style={styles.flex} />
+              <Button
+                title={t('common:actions.tryAgain')}
+                variant="outline"
+                onPress={() => send(lastType)}
+                style={styles.flex}
+              />
             </>
           ) : phase === 'choose' ? (
-            <Button title="Cancel" variant="secondary" onPress={close} accessibilityLabel="Cancel emergency alert" />
+            <Button
+              title={t('common:actions.cancel')}
+              variant="secondary"
+              onPress={close}
+              accessibilityLabel={t('booking:panic.cancelA11y')}
+              style={styles.flex}
+            />
           ) : null
         }
       >
         <Button
-          title="Call 911"
+          title={t('booking:panic.call911')}
           icon={PhoneCall}
           variant="danger"
           size="lg"
           onPress={call911}
-          accessibilityLabel="Call 911 emergency services"
-          accessibilityHint="Opens your phone dialer with 911"
+          accessibilityLabel={t('booking:panic.call911A11y')}
+          accessibilityHint={t('booking:panic.call911Hint')}
         />
 
         {phase === 'choose' ? (
           <>
-            <AppText variant="callout">
-              For police, ambulance or fire, call 911. To alert the Escolta Pro operations team, choose what is happening —
-              your location is attached if your device can share it.
-            </AppText>
+            <AppText variant="callout">{t('booking:panic.intro')}</AppText>
             <View style={styles.options}>
               {OPTIONS.map((opt) => (
                 <PressableScale
@@ -157,8 +146,8 @@ export default function PanicButton({ userId, bookingId, size = 'medium', onAler
                   scaleTo={0.98}
                   haptic="medium"
                   accessibilityRole="button"
-                  accessibilityLabel={opt.a11y}
-                  accessibilityHint={opt.hint}
+                  accessibilityLabel={t(`booking:panic.options.${opt.type}.a11y`)}
+                  accessibilityHint={t(`booking:panic.options.${opt.type}.hint`)}
                   hoverStyle={{ borderColor: Colors.borderStrong }}
                   style={styles.option}
                 >
@@ -166,8 +155,8 @@ export default function PanicButton({ userId, bookingId, size = 'medium', onAler
                     <opt.icon size={20} color={Colors.error} strokeWidth={ICON_STROKE} />
                   </View>
                   <View style={styles.optionText}>
-                    <AppText variant="headline">{opt.title}</AppText>
-                    <AppText variant="footnote">{opt.subtitle}</AppText>
+                    <AppText variant="headline">{t(`booking:panic.options.${opt.type}.title`)}</AppText>
+                    <AppText variant="footnote">{t(`booking:panic.options.${opt.type}.subtitle`)}</AppText>
                   </View>
                 </PressableScale>
               ))}
@@ -176,33 +165,35 @@ export default function PanicButton({ userId, bookingId, size = 'medium', onAler
         ) : phase === 'sending' ? (
           <View style={styles.status} accessibilityLiveRegion="polite">
             <ActivityIndicator color={Colors.accent} />
-            <AppText variant="bodyMedium">Alerting Escolta Pro operations…</AppText>
+            <AppText variant="bodyMedium" style={styles.flex}>
+              {t('booking:panic.sending')}
+            </AppText>
           </View>
         ) : phase === 'sent' ? (
           <View style={styles.statusBlock} accessibilityLiveRegion="polite">
             <View style={styles.status}>
               <CircleCheck size={22} color={Colors.success} strokeWidth={ICON_STROKE} />
-              <AppText variant="bodyMedium">Escolta Pro operations has been alerted.</AppText>
+              <AppText variant="bodyMedium" style={styles.flex}>
+                {t('booking:panic.sent')}
+              </AppText>
             </View>
             <Notice
               tone={locationShared ? 'info' : 'warning'}
               message={
-                locationShared
-                  ? 'Your location was shared with the alert.'
-                  : 'Your location could not be shared. If you speak with operations or 911, tell them where you are.'
+                locationShared ? t('booking:panic.locationShared') : t('booking:panic.locationNotShared')
               }
             />
-            <AppText variant="footnote">
-              This alert does not contact police or medical services. If anyone is in danger, call 911.
-            </AppText>
+            <AppText variant="footnote">{t('booking:panic.notEmergencyServices')}</AppText>
           </View>
         ) : (
           <View style={styles.statusBlock} accessibilityLiveRegion="assertive">
             <View style={styles.status}>
               <CircleAlert size={22} color={Colors.error} strokeWidth={ICON_STROKE} />
-              <AppText variant="bodyMedium">{error}</AppText>
+              <AppText variant="bodyMedium" style={styles.flex}>
+                {error}
+              </AppText>
             </View>
-            <AppText variant="footnote">Call 911 now if you need help. You can also try sending the alert again.</AppText>
+            <AppText variant="footnote">{t('booking:panic.failedHelp')}</AppText>
           </View>
         )}
       </Sheet>

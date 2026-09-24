@@ -1,14 +1,15 @@
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, StyleSheet, Switch, View } from 'react-native';
+import { ActivityIndicator, Platform, StyleSheet, Switch, View } from 'react-native';
 import Constants from 'expo-constants';
 import { Stack, useRouter } from 'expo-router';
+import { useTranslation } from 'react-i18next';
 import {
   Building2,
   CircleDot,
   Download,
   FileText,
-  Globe,
   KeyRound,
+  Languages,
   LogOut,
   Mail,
   Phone,
@@ -17,9 +18,10 @@ import {
   Trash2,
 } from 'lucide-react-native';
 import Colors from '@/constants/colors';
-import { Space } from '@/constants/design';
+import { ICON_STROKE, Radius, Space } from '@/constants/design';
 import { AppText, Avatar, Badge, Button, Card, Chip, Input, ListGroup, ListRow, Screen, ScreenHeader, SectionTitle } from '@/components/ui';
 import { Notice, exportMyData, fullName, kycMeta, roleLabel } from '@/components/backoffice';
+import { LanguageToggle } from '@/components/LanguageToggle';
 import { useAuth } from '@/contexts/AuthContext';
 import type { UserRecord } from '@/services/userService';
 import type { Language, User } from '@/types';
@@ -27,6 +29,7 @@ import { formatMXN } from '@/utils/pricing';
 import { confirm } from '@/utils/confirm';
 import { logger } from '@/utils/logger';
 
+// Nombres de idioma en su propio idioma (endonimos): iguales en EN y ES.
 const LANGUAGE_LABEL: Record<string, string> = {
   es: 'Español',
   en: 'English',
@@ -34,11 +37,15 @@ const LANGUAGE_LABEL: Record<string, string> = {
   de: 'Deutsch',
 };
 
+// react-native-web pinta el pulgar encendido en #009688 salvo que se pase activeThumbColor.
+const WEB_SWITCH_ON = Platform.OS === 'web' ? ({ activeThumbColor: Colors.accentLight } as object) : null;
+
 type NoticeState = { tone: 'success' | 'error' | 'info'; message: string } | null;
 
 export default function ProfileScreen() {
   const { user, signOut, resetPassword } = useAuth();
   const router = useRouter();
+  const { t } = useTranslation(['account', 'common']);
   const [notice, setNotice] = useState<NoticeState>(null);
   const [exporting, setExporting] = useState(false);
   const [sendingReset, setSendingReset] = useState(false);
@@ -50,6 +57,7 @@ export default function ProfileScreen() {
   const isGuard = role === 'guard';
   const kyc = kycMeta(profile?.kycStatus);
   const version = Constants.expoConfig?.version;
+  const displayName = role === 'company' && profile?.companyName ? profile.companyName : name;
 
   const handleExport = async () => {
     if (!profile || exporting) return;
@@ -60,7 +68,7 @@ export default function ProfileScreen() {
       if (message) setNotice({ tone: partial ? 'info' : 'success', message });
     } catch (error) {
       logger.error('[Profile] Data export failed', error);
-      setNotice({ tone: 'error', message: 'Your data could not be exported. Please try again.' });
+      setNotice({ tone: 'error', message: t('profile.notices.exportFailed') });
     } finally {
       setExporting(false);
     }
@@ -74,8 +82,8 @@ export default function ProfileScreen() {
       const result = await resetPassword(profile.email);
       setNotice(
         result.success
-          ? { tone: 'success', message: `We sent a password reset link to ${profile.email}.` }
-          : { tone: 'error', message: result.error ?? 'We could not send the reset email.' }
+          ? { tone: 'success', message: t('profile.notices.resetSent', { email: profile.email }) }
+          : { tone: 'error', message: result.error ?? t('profile.notices.resetFailed') }
       );
     } finally {
       setSendingReset(false);
@@ -83,7 +91,13 @@ export default function ProfileScreen() {
   };
 
   const handleSignOut = async () => {
-    const ok = await confirm('Sign out?', 'You will need your email and password to sign back in.', 'Sign out', 'Cancel', true);
+    const ok = await confirm(
+      t('profile.signOutConfirm.title'),
+      t('profile.signOutConfirm.message'),
+      t('profile.signOutConfirm.confirm'),
+      t('common:actions.cancel'),
+      true
+    );
     if (!ok) return;
     setSigningOut(true);
     await signOut();
@@ -93,13 +107,13 @@ export default function ProfileScreen() {
   return (
     <Screen glow keyboard>
       <Stack.Screen options={{ headerShown: false }} />
-      <ScreenHeader eyebrow={roleLabel(role)} title="Profile" />
+      <ScreenHeader eyebrow={roleLabel(role)} title={t('profile.title')} />
 
       <Card style={styles.identity}>
         <Avatar name={name} uri={profile?.photos?.[0]} size={64} verified={isGuard && profile?.kycStatus === 'approved'} />
         <View style={styles.identityText}>
-          <AppText variant="title2" numberOfLines={2}>
-            {role === 'company' && profile?.companyName ? profile.companyName : name}
+          <AppText variant="title2" numberOfLines={3} style={displayName.length > 20 ? styles.identityLong : null}>
+            {displayName}
           </AppText>
           {role === 'company' && profile?.companyName ? (
             <AppText variant="footnote" numberOfLines={1}>
@@ -115,33 +129,38 @@ export default function ProfileScreen() {
 
       {notice ? <Notice tone={notice.tone} message={notice.message} onDismiss={() => setNotice(null)} style={styles.notice} /> : null}
 
-      <SectionTitle title="Account" />
+      {/* Idioma arriba del todo: es lo primero que busca quien no entiende la pantalla. */}
+      <SectionTitle title={t('profile.sections.preferences')} />
       <ListGroup>
-        <ListRow icon={Mail} title="Email" value={profile?.email || '—'} />
-        <ListRow icon={Phone} title="Phone" value={profile?.phone || '—'} />
-        <ListRow
-          icon={Globe}
-          title="Language"
-          value={profile?.language ? LANGUAGE_LABEL[profile.language] ?? String(profile.language).toUpperCase() : '—'}
-        />
-        {role === 'company' ? <ListRow icon={Building2} title="Company" value={profile?.companyName || '—'} /> : null}
+        <LanguageRow title={t('profile.language.title')} subtitle={t('profile.language.subtitle')} />
+      </ListGroup>
+
+      <SectionTitle title={t('profile.sections.account')} />
+      {/* Dato debajo de la etiqueta (no a la derecha): ListRow limita el valor
+          al 45 % del ancho y a 375 px cortaba correos y nombres de empresa. */}
+      <ListGroup>
+        <ListRow icon={Mail} title={t('profile.rows.email')} subtitle={profile?.email || '—'} />
+        <ListRow icon={Phone} title={t('profile.rows.phone')} subtitle={profile?.phone || '—'} />
+        {role === 'company' ? (
+          <ListRow icon={Building2} title={t('profile.rows.company')} subtitle={profile?.companyName || '—'} />
+        ) : null}
       </ListGroup>
 
       {isGuard && profile ? <ProtectorProfileSection guard={profile} /> : null}
 
       {isGuard ? (
         <>
-          <SectionTitle title="Verification" />
+          <SectionTitle title={t('profile.sections.verification')} />
           <ListGroup>
             <ListRow
               icon={ShieldCheck}
-              title="My documents"
+              title={t('profile.rows.myDocuments')}
               subtitle={
                 profile?.kycStatus === 'approved'
-                  ? 'Verified — view or update your files'
+                  ? t('profile.subtitles.kycApproved')
                   : profile?.kycStatus === 'rejected'
-                  ? 'Not approved — upload updated files'
-                  : 'Upload your ID and license for review'
+                  ? t('profile.subtitles.kycRejected')
+                  : t('profile.subtitles.kycPending')
               }
               onPress={() => router.push('/kyc-documents')}
             />
@@ -149,59 +168,83 @@ export default function ProfileScreen() {
         </>
       ) : null}
 
-      <SectionTitle title="Security" />
+      <SectionTitle title={t('profile.sections.security')} />
       <ListGroup>
         <ListRow
           icon={KeyRound}
-          title="Reset password"
-          subtitle={profile?.email ? `Email a reset link to ${profile.email}` : undefined}
+          title={t('profile.rows.resetPassword')}
+          subtitle={profile?.email ? t('profile.subtitles.resetPassword', { email: profile.email }) : undefined}
           onPress={handleResetPassword}
           trailing={sendingReset ? <ActivityIndicator size="small" color={Colors.accent} /> : undefined}
           showChevron={!sendingReset}
         />
       </ListGroup>
 
-      <SectionTitle title="Privacy" />
+      <SectionTitle title={t('profile.sections.privacy')} />
       <ListGroup>
         <ListRow
           icon={SlidersHorizontal}
-          title="Privacy & data"
-          subtitle="Consent preferences and account deletion"
+          title={t('profile.rows.privacyData')}
+          subtitle={t('profile.subtitles.privacyData')}
           onPress={() => router.push('/privacy-settings')}
         />
-        <ListRow icon={FileText} title="Privacy policy" onPress={() => router.push('/privacy-policy')} />
+        <ListRow icon={FileText} title={t('profile.rows.privacyPolicy')} onPress={() => router.push('/privacy-policy')} />
         <ListRow
           icon={Download}
-          title="Export my data"
-          subtitle="A copy of your profile, bookings and messages (JSON)"
+          title={t('profile.rows.exportData')}
+          subtitle={t('profile.subtitles.exportData')}
           onPress={handleExport}
           trailing={exporting ? <ActivityIndicator size="small" color={Colors.accent} /> : undefined}
           showChevron={!exporting}
         />
       </ListGroup>
 
-      <SectionTitle title="Session" />
+      <SectionTitle title={t('profile.sections.session')} />
       <ListGroup>
         <ListRow
           icon={LogOut}
-          title={signingOut ? 'Signing out…' : 'Sign out'}
+          title={signingOut ? t('profile.rows.signingOut') : t('profile.rows.signOut')}
           destructive
           onPress={handleSignOut}
           showChevron={false}
         />
         <ListRow
           icon={Trash2}
-          title="Delete account"
-          subtitle="Request deletion of your account and data"
+          title={t('profile.rows.deleteAccount')}
+          subtitle={t('profile.subtitles.deleteAccount')}
           destructive
           onPress={() => router.push('/privacy-settings')}
         />
       </ListGroup>
 
       <AppText variant="caption" color={Colors.textTertiary} align="center" style={styles.version}>
-        Escolta Pro{version ? ` · Version ${version}` : ''}
+        Escolta Pro{version ? ` · ${t('profile.version', { version })}` : ''}
       </AppText>
     </Screen>
+  );
+}
+
+// Fila de idioma con el mismo aspecto que ListRow, pero con el selector en su
+// propia linea: la pastilla "English | Español" mide 216 px y a 375 px de ancho
+// no cabe junto al titulo sin aplastarlo.
+function LanguageRow({ title, subtitle }: { title: string; subtitle: string }) {
+  return (
+    <View style={styles.langRow}>
+      <View style={styles.langHead}>
+        <View style={styles.langIcon}>
+          <Languages size={17} color={Colors.accent} strokeWidth={ICON_STROKE} />
+        </View>
+        <View style={styles.langText}>
+          <AppText variant="bodyMedium" numberOfLines={1}>
+            {title}
+          </AppText>
+          <AppText variant="footnote" numberOfLines={2}>
+            {subtitle}
+          </AppText>
+        </View>
+      </View>
+      <LanguageToggle size="full" style={styles.langToggle} />
+    </View>
   );
 }
 
@@ -214,6 +257,7 @@ type GuardProfile = UserRecord & { bio?: string; languages?: Language[] };
 // tarifa positiva; antes no habia pantalla para fijar nada de eso.
 function ProtectorProfileSection({ guard }: { guard: GuardProfile }) {
   const { updateUser } = useAuth();
+  const { t } = useTranslation('account');
   const available = guard.availability === true;
   const [savingAvailability, setSavingAvailability] = useState(false);
   const [availabilityError, setAvailabilityError] = useState<string | null>(null);
@@ -242,7 +286,7 @@ function ProtectorProfileSection({ guard }: { guard: GuardProfile }) {
       await updateUser({ availability: value } as unknown as Partial<User>);
     } catch (error) {
       logger.error('[Profile] Failed to update availability', error);
-      setAvailabilityError('Your availability could not be changed. Please try again.');
+      setAvailabilityError(t('protector.availabilityError'));
     } finally {
       setSavingAvailability(false);
     }
@@ -256,7 +300,7 @@ function ProtectorProfileSection({ guard }: { guard: GuardProfile }) {
   const save = async () => {
     const parsed = Number(rate.replace(',', '.'));
     if (!Number.isFinite(parsed) || parsed <= 0) {
-      setRateError('Enter your rate in MXN, greater than 0');
+      setRateError(t('protector.rate.error'));
       return;
     }
     setRateError(null);
@@ -268,10 +312,10 @@ function ProtectorProfileSection({ guard }: { guard: GuardProfile }) {
         bio: bio.trim(),
         languages: languages.length ? languages : savedLanguages,
       } as unknown as Partial<User>);
-      setSaveResult({ tone: 'success', message: 'Your protector profile was saved.' });
+      setSaveResult({ tone: 'success', message: t('protector.saved') });
     } catch (error) {
       logger.error('[Profile] Failed to save protector profile', error);
-      setSaveResult({ tone: 'error', message: 'Your changes could not be saved. Please try again.' });
+      setSaveResult({ tone: 'error', message: t('protector.saveFailed') });
     } finally {
       setSaving(false);
     }
@@ -279,20 +323,20 @@ function ProtectorProfileSection({ guard }: { guard: GuardProfile }) {
 
   const listedHint =
     guard.kycStatus !== 'approved'
-      ? 'You appear to clients once your documents are verified.'
+      ? t('protector.hints.notVerified')
       : savedRate === null
-      ? 'Set your hourly rate to appear to clients.'
+      ? t('protector.hints.noRate')
       : available
-      ? 'Clients can find and book you.'
-      : 'You are hidden from new bookings.';
+      ? t('protector.hints.listed')
+      : t('protector.hints.hidden');
 
   return (
     <>
-      <SectionTitle title="Protector profile" />
+      <SectionTitle title={t('protector.title')} />
       <ListGroup>
         <ListRow
           icon={CircleDot}
-          title="Available for new jobs"
+          title={t('protector.available')}
           subtitle={listedHint}
           showChevron={false}
           trailing={
@@ -305,7 +349,9 @@ function ProtectorProfileSection({ guard }: { guard: GuardProfile }) {
                 trackColor={{ false: Colors.borderStrong, true: Colors.accentDark }}
                 thumbColor={available ? Colors.accentLight : Colors.textSecondary}
                 ios_backgroundColor={Colors.borderStrong}
-                accessibilityLabel="Available for new jobs"
+                // En web el pulgar activo es verde azulado (#009688) si no se indica.
+                {...WEB_SWITCH_ON}
+                accessibilityLabel={t('protector.available')}
               />
             )
           }
@@ -315,34 +361,34 @@ function ProtectorProfileSection({ guard }: { guard: GuardProfile }) {
 
       <Card style={styles.protectorCard}>
         <Input
-          label="Hourly rate (MXN)"
-          placeholder="e.g. 250"
+          label={t('protector.rate.label')}
+          placeholder={t('protector.rate.placeholder')}
           value={rate}
-          onChangeText={(t) => {
-            setRate(t);
+          onChangeText={(text) => {
+            setRate(text);
             setSaveResult(null);
             if (rateError) setRateError(null);
           }}
           error={rateError}
-          hint={savedRate !== null ? `Currently ${formatMXN(savedRate)} per hour, before fees.` : 'What clients pay per hour, before fees.'}
+          hint={savedRate !== null ? t('protector.rate.hintCurrent', { amount: formatMXN(savedRate) }) : t('protector.rate.hint')}
           keyboardType="decimal-pad"
-          accessibilityLabel="Hourly rate in pesos"
+          accessibilityLabel={t('protector.rate.a11y')}
         />
         <Input
-          label="About you"
-          placeholder="Experience, specialties, certifications…"
+          label={t('protector.bio.label')}
+          placeholder={t('protector.bio.placeholder')}
           value={bio}
-          onChangeText={(t) => {
-            setBio(t);
+          onChangeText={(text) => {
+            setBio(text);
             setSaveResult(null);
           }}
           multiline
           maxLength={400}
-          accessibilityLabel="Short bio shown to clients"
+          accessibilityLabel={t('protector.bio.a11y')}
         />
         <View style={styles.langs}>
           <AppText variant="caption" color={Colors.textSecondary}>
-            Languages you speak
+            {t('protector.languages')}
           </AppText>
           <View style={styles.langChips}>
             {LANGUAGE_OPTIONS.map((lang) => (
@@ -351,13 +397,41 @@ function ProtectorProfileSection({ guard }: { guard: GuardProfile }) {
           </View>
         </View>
         {saveResult ? <Notice tone={saveResult.tone} message={saveResult.message} /> : null}
-        <Button title="Save protector profile" variant="secondary" onPress={save} loading={saving} />
+        <Button title={t('protector.save')} variant="secondary" onPress={save} loading={saving} />
       </Card>
     </>
   );
 }
 
 const styles = StyleSheet.create({
+  // Mismas medidas que ListRow (components/ui/Data.tsx) para que la fila case con el resto.
+  langRow: {
+    paddingHorizontal: Space.lg,
+    paddingVertical: Space.md,
+    gap: Space.md,
+  },
+  langHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Space.md,
+    minHeight: 36,
+  },
+  langIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: Radius.sm,
+    backgroundColor: Colors.accentSoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  langText: {
+    flex: 1,
+    gap: 2,
+  },
+  // Alineado con el texto, no con el icono (34 + 12 de separacion).
+  langToggle: {
+    marginLeft: 34 + Space.md,
+  },
   protectorCard: {
     gap: Space.lg,
     marginTop: Space.md,
@@ -378,6 +452,11 @@ const styles = StyleSheet.create({
   identityText: {
     flex: 1,
     gap: Space.xs,
+  },
+  // Nombres largos ("Sentinela Protección Ejecutiva") se cortaban a 2 lineas.
+  identityLong: {
+    fontSize: 18,
+    lineHeight: 23,
   },
   badges: {
     flexDirection: 'row',

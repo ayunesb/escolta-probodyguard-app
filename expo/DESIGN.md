@@ -118,6 +118,18 @@ Detail / flow:
 Forms: `Screen keyboard`, stacked `Input`s with `gap: Space.lg`, validation errors inline via `error`,
 the submit `Button` at the end (or in an `ActionBar`). No `Alert.alert` for validation.
 
+## Bilingual layouts (English / Español)
+Every screen ships in both languages, and Spanish runs 20–30% longer. Design for the Spanish length:
+- Never put user-visible text in code. Use `t('…')` keys from `i18n/locales/<lang>/<namespace>.ts`, and never
+  build a translated label at module scope (it won't follow a language switch).
+- Rows that pair a label with a value or button let the label wrap (`flex: 1`, `minWidth: 0`). Button
+  labels stay on one line, so shorten the copy rather than shrink the type.
+- Text with `numberOfLines` needs `lineHeight` ≥ 1.4× the font size, or Geist's descenders get clipped.
+- Stacked icon + label (tab dock, tiles) keeps at least 4px between the icon's pill and the text.
+  The dock is a custom bar in `app/(tabs)/_layout.tsx` with every measurement in one `DOCK` constant.
+- Dates come from `i18n/format.ts` (`es-MX` / `en-GB`). Capitalize a Spanish weekday that starts a line.
+- Language switch: `<LanguageToggle />` (compact EN | ES, for headers) or `size="full"` (settings rows).
+
 ## Web
 `Alert.alert` works on web: `<AlertHost/>` (mounted in `app/_layout.tsx`) renders it as a branded
 dialog with every button. For text input use a `Modal` with our components — `Alert.prompt` is

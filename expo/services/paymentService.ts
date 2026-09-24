@@ -15,6 +15,7 @@ import { auth as getAuthInstance, db as getDbInstance } from '@/lib/firebase';
 import type { SavedPaymentMethod } from '@/types';
 import type { PriceBreakdown } from '@/utils/pricing';
 import { ENV } from '@/config/env';
+import i18n from '@/i18n';
 import { logger } from '@/utils/logger';
 
 export interface PaymentResult {
@@ -59,7 +60,7 @@ const apiBase = (): string => process.env.EXPO_PUBLIC_API_URL ?? '';
 
 async function authHeaders(): Promise<Record<string, string>> {
   const user = getAuthInstance().currentUser;
-  if (!user) throw new PaymentApiError('Please sign in again to pay.', 401);
+  if (!user) throw new PaymentApiError(i18n.t('funnel:payment.errors.signInAgain'), 401);
   const idToken = await user.getIdToken();
   return {
     'Content-Type': 'application/json',
@@ -116,7 +117,7 @@ export const paymentService = {
     });
 
     if (!response.ok) {
-      const message = await readError(response, 'We could not start the payment. Please try again.');
+      const message = await readError(response, i18n.t('funnel:payment.errors.startFailed'));
       logger.error('[Payment] payment-intent rejected', { status: response.status, message });
       throw new PaymentApiError(message, response.status);
     }
@@ -125,7 +126,7 @@ export const paymentService = {
     const clientSecret = typeof data.clientSecret === 'string' ? data.clientSecret : '';
     const breakdown = normalizeBreakdown(data.breakdown, data.amount);
     if (!clientSecret || !breakdown) {
-      throw new PaymentApiError('The payment server returned an incomplete response.', 502);
+      throw new PaymentApiError(i18n.t('funnel:payment.errors.incompleteResponse'), 502);
     }
     return {
       clientSecret,
@@ -146,7 +147,7 @@ export const paymentService = {
     });
 
     if (!response.ok) {
-      const message = await readError(response, 'We could not confirm the booking yet.');
+      const message = await readError(response, i18n.t('funnel:payment.errors.confirmFailed'));
       logger.error('[Payment] confirm-booking rejected', { status: response.status, message });
       throw new PaymentApiError(message, response.status);
     }
@@ -190,7 +191,7 @@ export const paymentService = {
       logger.error('[Payment] Braintree request failed', error);
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Network error. You were not charged.',
+        error: error instanceof Error ? error.message : i18n.t('funnel:payment.errors.network'),
       };
     }
 
@@ -208,7 +209,7 @@ export const paymentService = {
           ? raw
           : raw && typeof raw === 'object' && typeof (raw as { message?: unknown }).message === 'string'
             ? (raw as { message: string }).message
-            : 'Payment processing failed';
+            : i18n.t('funnel:payment.errors.processingFailed');
       logger.error('[Payment] Braintree charge declined', { status: response.status, message });
       return { success: false, error: message };
     }

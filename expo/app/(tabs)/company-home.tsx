@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import { RefreshControl, StyleSheet, View } from 'react-native';
 import { Stack, useFocusEffect, useRouter } from 'expo-router';
+import { useTranslation } from 'react-i18next';
 import { Briefcase, CalendarCheck, Shield, Star, UserPlus, Users, Wallet } from 'lucide-react-native';
 import Colors from '@/constants/colors';
 import { Space } from '@/constants/design';
@@ -19,7 +20,7 @@ import {
   PhotoCard,
 } from '@/components/ui';
 import { BrandImages } from '@/constants/brandMedia';
-import { ACTIVE_STATUSES, Notice, RoleGate, formatDate, fullName, money, plural, shortId, todayEyebrow } from '@/components/backoffice';
+import { ACTIVE_STATUSES, Notice, RoleGate, formatDate, fullName, money, shortId, todayEyebrow } from '@/components/backoffice';
 import { useAuth } from '@/contexts/AuthContext';
 import { bookingService } from '@/services/bookingService';
 import { UserRecord, userService } from '@/services/userService';
@@ -40,6 +41,7 @@ export default function CompanyHomeRoute() {
 
 function CompanyHomeScreen() {
   const router = useRouter();
+  const { t } = useTranslation(['backoffice', 'common']);
   const { user } = useAuth();
   const company = user as UserRecord | null;
   const [bookings, setBookings] = useState<Booking[] | null>(null);
@@ -119,21 +121,27 @@ function CompanyHomeScreen() {
     <Screen glow refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.accent} />}>
       <ScreenHeader
         eyebrow={todayEyebrow()}
-        title={company?.companyName || 'Your company'}
-        subtitle="Your team, their jobs and their earnings."
+        title={company?.companyName || t('companyHome.titleFallback')}
+        subtitle={t('companyHome.subtitle')}
       />
 
       <PhotoCard
         image={BrandImages.cityAerial}
-        eyebrow="Your operation"
-        title="Your roster, on call across the city"
-        caption="Availability, jobs and earnings for every protector."
+        eyebrow={t('companyHome.bannerEyebrow')}
+        title={t('companyHome.bannerTitle')}
+        caption={t('companyHome.bannerCaption')}
         height={190}
         style={{ marginBottom: Space.xl }}
       />
 
       {guardsError ? (
-        <Notice tone="error" message="We could not load your guards." actionLabel="Try again" onAction={loadGuards} style={styles.block} />
+        <Notice
+          tone="error"
+          message={t('companyHome.guardsError')}
+          actionLabel={t('common:actions.tryAgain')}
+          onAction={loadGuards}
+          style={styles.block}
+        />
       ) : null}
 
       {loading ? (
@@ -146,28 +154,38 @@ function CompanyHomeScreen() {
       ) : (
         <View style={styles.gridWrap}>
           <View style={styles.grid}>
-            <StatTile label="Guards" value={guards?.length ?? 0} hint={`${available} available now`} icon={Users} />
-            <StatTile label="Active jobs" value={stats.activeJobs} hint={`${stats.upcoming} confirmed, not started`} icon={Briefcase} />
+            <StatTile
+              label={t('companyHome.statGuards')}
+              value={guards?.length ?? 0}
+              hint={t('companyHome.statGuardsHint', { count: available })}
+              icon={Users}
+            />
+            <StatTile
+              label={t('companyHome.statActive')}
+              value={stats.activeJobs}
+              hint={t('companyHome.statActiveHint', { count: stats.upcoming })}
+              icon={Briefcase}
+            />
           </View>
           <View style={styles.grid}>
             <StatTile
-              label="Guard earnings"
+              label={t('companyHome.statEarnings')}
               value={formatMXN(stats.guardEarnings)}
-              hint={`${plural(stats.completed, 'completed job')}`}
+              hint={t('companyHome.statEarningsHint', { count: stats.completed })}
               icon={Wallet}
               accent
             />
             <StatTile
-              label="Avg rating"
+              label={t('companyHome.statRating')}
               value={stats.avgRating !== null ? stats.avgRating.toFixed(1) : '—'}
-              hint={stats.ratedCount > 0 ? `${plural(stats.ratedCount, 'review')}` : 'No reviews yet'}
+              hint={stats.ratedCount > 0 ? t('counts.reviews', { count: stats.ratedCount }) : t('shared.noReviewsYet')}
               icon={Star}
             />
           </View>
         </View>
       )}
 
-      <SectionTitle title="Your guards" />
+      <SectionTitle title={t('companyHome.yourGuards')} />
       {guards === null ? (
         <>
           <SkeletonCard media />
@@ -176,9 +194,9 @@ function CompanyHomeScreen() {
       ) : guards.length === 0 ? (
         <EmptyState
           icon={Shield}
-          title="No guards yet"
-          message="Add your security professionals to start receiving bookings."
-          actionLabel="Add guards"
+          title={t('companyHome.emptyGuardsTitle')}
+          message={t('companyHome.emptyGuardsMessage')}
+          actionLabel={t('companyHome.addGuards')}
           onAction={() => router.push('/(tabs)/company-guards')}
         />
       ) : (
@@ -192,7 +210,7 @@ function CompanyHomeScreen() {
               <Card
                 key={g.id}
                 onPress={() => router.push(`/company-guard-documents/${g.id}`)}
-                accessibilityLabel={`${name}, open documents`}
+                accessibilityLabel={t('companyHome.openDocuments', { name })}
                 style={styles.row}
               >
                 <Avatar name={name} uri={g.photos?.[0]} size={44} verified={g.kycStatus === 'approved'} />
@@ -201,28 +219,40 @@ function CompanyHomeScreen() {
                     {name}
                   </AppText>
                   <AppText variant="caption" color={Colors.textTertiary}>
-                    {active > 0 ? `${active} active · ` : ''}
-                    {plural(done, 'completed job')}
+                    {[active > 0 ? t('companyHome.activeCount', { count: active }) : null, t('counts.completedJobs', { count: done })]
+                      .filter(Boolean)
+                      .join(' · ')}
                   </AppText>
                 </View>
-                <Badge label={g.availability === true ? 'Available' : 'Offline'} tone={g.availability === true ? 'success' : 'neutral'} />
+                <Badge
+                  label={g.availability === true ? t('shared.available') : t('shared.offline')}
+                  tone={g.availability === true ? 'success' : 'neutral'}
+                  style={styles.badgeCenter}
+                />
               </Card>
             );
           })}
           {guards.length > 6 ? (
-            <Card onPress={() => router.push('/(tabs)/company-guards')} accessibilityLabel="See all guards" style={styles.row}>
+            <Card onPress={() => router.push('/(tabs)/company-guards')} accessibilityLabel={t('companyHome.seeAllA11y')} style={styles.row}>
               <UserPlus size={18} color={Colors.accent} />
               <AppText variant="bodyMedium" style={styles.flex}>
-                See all {guards.length} guards
+                {t('companyHome.seeAll', { count: guards.length })}
               </AppText>
             </Card>
           ) : null}
         </View>
       )}
 
-      <SectionTitle title="Recent bookings" />
+      <SectionTitle title={t('companyHome.recentBookings')} />
       {bookingsError ? (
-        <Notice tone="error" message={bookingsError} actionLabel="Try again" onAction={onRefresh} style={styles.block} />
+        // El mensaje del servicio viene en ingles: se muestra el traducido.
+        <Notice
+          tone="error"
+          message={t('companyHome.bookingsError')}
+          actionLabel={t('common:actions.tryAgain')}
+          onAction={onRefresh}
+          style={styles.block}
+        />
       ) : null}
       {bookings === null ? (
         <>
@@ -230,7 +260,11 @@ function CompanyHomeScreen() {
           <SkeletonCard />
         </>
       ) : bookings.length === 0 ? (
-        <EmptyState icon={CalendarCheck} title="No bookings yet" message="Jobs assigned to your guards will appear here." />
+        <EmptyState
+          icon={CalendarCheck}
+          title={t('companyHome.emptyBookingsTitle')}
+          message={t('companyHome.emptyBookingsMessage')}
+        />
       ) : (
         <View style={styles.list}>
           {bookings.slice(0, 6).map((b) => {
@@ -239,22 +273,31 @@ function CompanyHomeScreen() {
               <Card key={b.id} style={styles.bookingCard}>
                 <View style={styles.rowHead}>
                   <AppText variant="headline" style={styles.flex} numberOfLines={1}>
-                    {guard ? fullName(guard) : 'Guard'}
+                    {guard ? fullName(guard) : t('people.guard')}
                   </AppText>
                   <StatusBadge status={b.status} />
                 </View>
                 <View style={styles.rowHead}>
-                  <AppText variant="caption" color={Colors.textTertiary} style={styles.flex}>
-                    {shortId(b.id)} · {formatDate(b.scheduledDate)}
-                    {b.scheduledTime ? ` · ${b.scheduledTime}` : ''}
-                    {b.duration ? ` · ${b.duration} h` : ''}
-                  </AppText>
+                  {/* Dos renglones fijos (id y fecha / hora y duracion): en una sola
+                      linea el texto se partia en cualquier punto, p. ej. "4 / h". */}
+                  <View style={styles.flex}>
+                    <AppText variant="caption" color={Colors.textTertiary} numberOfLines={1}>
+                      {`${shortId(b.id)} · ${formatDate(b.scheduledDate)}`}
+                    </AppText>
+                    {b.scheduledTime || b.duration ? (
+                      <AppText variant="caption" color={Colors.textTertiary} numberOfLines={1}>
+                        {[b.scheduledTime || null, b.duration ? t('common:units.hoursShort', { count: b.duration }) : null]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </AppText>
+                    ) : null}
+                  </View>
                   <View style={styles.amount}>
                     <AppText variant="numeric" color={Colors.accentLight}>
                       {formatMXN(b.guardPayout)}
                     </AppText>
                     <AppText variant="caption" color={Colors.textTertiary}>
-                      guard earnings
+                      {t('companyHome.guardEarnings')}
                     </AppText>
                   </View>
                 </View>
@@ -296,6 +339,10 @@ const styles = StyleSheet.create({
   },
   amount: {
     alignItems: 'flex-end',
+  },
+  // Badge trae alignSelf: 'flex-start'; en una fila centrada se ve subido.
+  badgeCenter: {
+    alignSelf: 'center',
   },
   flex: {
     flex: 1,

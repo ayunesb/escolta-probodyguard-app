@@ -24,6 +24,7 @@ import { analyticsService } from "@/services/analyticsService";
 import { appCheckService } from "@/services/appCheckService";
 import { initializeFirebaseServices } from "@/lib/firebase";
 import { installAlertWebPolyfill } from "@/utils/alertWebPolyfill";
+import { hydrateLanguage } from "@/i18n";
 import Colors from "@/constants/colors";
 
 installAlertWebPolyfill();
@@ -75,8 +76,12 @@ export default function RootLayout() {
     // Sentry, analitica y App Check van despues y sin esperar; antes eran una
     // cadena de awaits que retrasaba el arranque sin hacer nada util (las dos
     // ultimas son stubs).
-    initializeFirebaseServices()
-      .catch((error) => console.error('[App] Firebase initialization error:', error))
+    // El idioma guardado se lee a la par (AsyncStorage, milisegundos) para que
+    // la primera pantalla ya salga en el idioma elegido.
+    Promise.all([
+      initializeFirebaseServices().catch((error) => console.error('[App] Firebase initialization error:', error)),
+      hydrateLanguage(),
+    ])
       .finally(() => {
         setFirebaseReady(true);
         initSentry();

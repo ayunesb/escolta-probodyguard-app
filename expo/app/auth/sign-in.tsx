@@ -23,6 +23,8 @@ import Colors from '@/constants/colors';
 import { Fonts, ICON_STROKE, Radius, Space } from '@/constants/design';
 import { AppText, BackgroundVideo, BrandMark, Button, Card, Input, PressableScale, Scrim } from '@/components/ui';
 import { BrandVideo } from '@/constants/brandMedia';
+import { useTranslation } from 'react-i18next';
+import { LanguageToggle } from '@/components/LanguageToggle';
 
 const ROLE_ICONS: Record<DevRole, LucideIcon> = {
   client: Shield,
@@ -51,20 +53,21 @@ function Notice({ tone, message }: { tone: 'error' | 'success'; message: string 
 // Acceso rapido por rol. Solo existe con el emulador local (ver
 // scripts/emulator/README.md); en produccion __DEV__ es falso y esto no se monta.
 function TestModePanel({ busyRole, onPick }: { busyRole: DevRole | null; onPick: (role: DevRole) => void }) {
+  const { t } = useTranslation('auth');
   return (
     <Card style={styles.testPanel}>
       <View style={styles.testHeader}>
         <FlaskConical size={15} color={Colors.accent} strokeWidth={ICON_STROKE} />
         <AppText variant="overline" color={Colors.accent}>
-          Test mode · local emulator
+          {t('testMode.title')}
         </AppText>
       </View>
       <AppText variant="footnote" style={styles.testIntro}>
-        Enter as any role with seeded data. These accounts only exist on this machine.
+        {t('testMode.intro')}
       </AppText>
       <View style={styles.testGrid}>
         {(Object.keys(DEV_ACCOUNTS) as DevRole[]).map((role) => {
-          const acct = DEV_ACCOUNTS[role];
+          const label = t(`testMode.roles.${role}.label`);
           const Icon = ROLE_ICONS[role];
           const busy = busyRole === role;
           return (
@@ -75,16 +78,16 @@ function TestModePanel({ busyRole, onPick }: { busyRole: DevRole | null; onPick:
               scaleTo={0.96}
               haptic="light"
               accessibilityRole="button"
-              accessibilityLabel={`Sign in as test ${acct.label}`}
+              accessibilityLabel={t('testMode.a11y', { role: label })}
               hoverStyle={{ borderColor: Colors.accentLine, backgroundColor: Colors.surfaceLight }}
               style={[styles.roleTile, busy ? styles.roleTileBusy : null, busyRole && !busy ? styles.roleTileDim : null]}
             >
               <View style={styles.roleIcon}>
                 <Icon size={17} color={Colors.accent} strokeWidth={ICON_STROKE} />
               </View>
-              <AppText variant="headline">{busy ? 'Signing in…' : acct.label}</AppText>
+              <AppText variant="headline">{busy ? t('testMode.signingIn') : label}</AppText>
               <AppText variant="caption" color={Colors.textTertiary} numberOfLines={2}>
-                {acct.description}
+                {t(`testMode.roles.${role}.description`)}
               </AppText>
             </PressableScale>
           );
@@ -96,6 +99,7 @@ function TestModePanel({ busyRole, onPick }: { busyRole: DevRole | null; onPick:
 
 export default function SignInScreen() {
   const router = useRouter();
+  const { t } = useTranslation('auth');
   const { signIn, resendVerificationEmail, resetPassword, user, authError, clearAuthError } = useAuth();
   // Precarga solo en desarrollo, y solo si tu .env local las define. Antes
   // estaban escritas aqui, y este repositorio es publico.
@@ -149,9 +153,9 @@ export default function SignInScreen() {
   const handleSignIn = async () => {
     const trimmedEmail = email.trim();
     const nextErrors: typeof fieldErrors = {};
-    if (!trimmedEmail) nextErrors.email = 'Enter your email address.';
-    else if (!/^\S+@\S+\.\S+$/.test(trimmedEmail)) nextErrors.email = "That email address isn't valid.";
-    if (!password) nextErrors.password = 'Enter your password.';
+    if (!trimmedEmail) nextErrors.email = t('validation.emailRequired');
+    else if (!/^\S+@\S+\.\S+$/.test(trimmedEmail)) nextErrors.email = t('validation.emailInvalid');
+    if (!password) nextErrors.password = t('validation.passwordRequired');
     setFieldErrors(nextErrors);
     if (nextErrors.email || nextErrors.password) return;
 
@@ -160,7 +164,7 @@ export default function SignInScreen() {
     setIsLoading(true);
     const result = await signIn(trimmedEmail, password);
     if (result.success) return; // sigue girando hasta que llegue el usuario
-    setError(result.error || "We couldn't sign you in.");
+    setError(result.error || t('errors.signInFailedShort'));
     setShowResendVerification(!!result.emailNotVerified);
     setIsLoading(false);
   };
@@ -172,24 +176,24 @@ export default function SignInScreen() {
     setIsLoading(false);
     if (result.success) {
       setShowResendVerification(false);
-      setSuccess(`Verification email sent to ${email.trim()}. Check your inbox, then sign in.`);
+      setSuccess(t('messages.verificationSent', { email: email.trim() }));
     } else {
-      setError(result.error || "We couldn't resend the verification email.");
+      setError(result.error || t('errors.resendFailed'));
     }
   };
 
   const handleForgotPassword = async () => {
     resetMessages();
     if (!email.trim()) {
-      setFieldErrors({ email: 'Enter your email, then tap "Forgot password" again.' });
+      setFieldErrors({ email: t('validation.forgotNeedsEmail') });
       return;
     }
     setFieldErrors({});
     const result = await resetPassword(email);
     if (result.success) {
-      setSuccess(`If an account exists for ${email.trim()}, a reset link is on its way.`);
+      setSuccess(t('messages.resetSent', { email: email.trim() }));
     } else {
-      setError(result.error || "We couldn't send the reset email.");
+      setError(result.error || t('errors.resetFailedShort'));
     }
   };
 
@@ -197,20 +201,20 @@ export default function SignInScreen() {
     resetMessages();
     setIsLoading(true);
     try {
-      const authenticated = await biometricService.authenticate('Sign in to Escolta Pro');
+      const authenticated = await biometricService.authenticate(t('signIn.biometricPrompt'));
       const credentials = authenticated ? await biometricService.getStoredCredentials() : null;
       if (!credentials) {
-        setError(authenticated ? 'No saved sign-in found on this device.' : 'Biometric check failed.');
+        setError(authenticated ? t('messages.noSavedSignIn') : t('messages.biometricFailed'));
         setIsLoading(false);
         return;
       }
       const result = await signIn(credentials.email, credentials.encryptedPassword);
       if (!result.success) {
-        setError(result.error || "We couldn't sign you in.");
+        setError(result.error || t('errors.signInFailedShort'));
         setIsLoading(false);
       }
     } catch {
-      setError('Biometric sign-in failed.');
+      setError(t('messages.biometricSignInFailed'));
       setIsLoading(false);
     }
   };
@@ -220,7 +224,7 @@ export default function SignInScreen() {
     setBusyRole(role);
     const result = await signIn(DEV_ACCOUNTS[role].email, DEV_PASSWORD);
     if (!result.success) {
-      setError(`${result.error ?? 'Sign-in failed.'} Is the emulator running and seeded? (npm run dev:emulated)`);
+      setError(t('testMode.emulatorHint', { error: result.error ?? t('testMode.failed') }));
       setBusyRole(null);
     }
   };
@@ -230,14 +234,14 @@ export default function SignInScreen() {
   const form = (
     <View style={styles.form}>
       <Input
-        label="Email"
+        label={t('signIn.email')}
         icon={Mail}
         value={email}
         onChangeText={(text) => {
           setEmail(text.trim());
           if (fieldErrors.email) setFieldErrors((f) => ({ ...f, email: undefined }));
         }}
-        placeholder="you@company.com"
+        placeholder={t('signIn.emailPlaceholder')}
         keyboardType="email-address"
         autoCapitalize="none"
         autoCorrect={false}
@@ -248,14 +252,14 @@ export default function SignInScreen() {
       />
       <View>
         <Input
-          label="Password"
+          label={t('signIn.password')}
           icon={Lock}
           value={password}
           onChangeText={(text) => {
             setPassword(text);
             if (fieldErrors.password) setFieldErrors((f) => ({ ...f, password: undefined }));
           }}
-          placeholder="Your password"
+          placeholder={t('signIn.passwordPlaceholder')}
           secureTextEntry
           autoCapitalize="none"
           autoComplete="current-password"
@@ -264,9 +268,9 @@ export default function SignInScreen() {
           onSubmitEditing={handleSignIn}
           error={fieldErrors.password}
         />
-        <PressableScale onPress={handleForgotPassword} scaleTo={0.97} style={styles.forgot} accessibilityRole="button" accessibilityLabel="Forgot password">
+        <PressableScale onPress={handleForgotPassword} scaleTo={0.97} style={styles.forgot} accessibilityRole="button" accessibilityLabel={t('signIn.forgotA11y')}>
           <AppText variant="footnote" color={Colors.accentLight}>
-            Forgot password?
+            {t('signIn.forgot')}
           </AppText>
         </PressableScale>
       </View>
@@ -275,29 +279,29 @@ export default function SignInScreen() {
       {success ? <Notice tone="success" message={success} /> : null}
 
       {showResendVerification ? (
-        <Button title="Resend verification email" variant="outline" icon={Mail} onPress={handleResendVerification} disabled={isLoading} />
+        <Button title={t('signIn.resendVerification')} variant="outline" icon={Mail} onPress={handleResendVerification} disabled={isLoading} />
       ) : null}
 
-      <Button title="Sign in" size="lg" onPress={handleSignIn} loading={isLoading} disabled={!!busyRole} />
+      <Button title={t('signIn.submit')} size="lg" onPress={handleSignIn} loading={isLoading} disabled={!!busyRole} />
 
       {biometricReady ? (
-        <Button title="Sign in with biometrics" variant="secondary" icon={Fingerprint} onPress={handleBiometricSignIn} disabled={isLoading} />
+        <Button title={t('signIn.biometric')} variant="secondary" icon={Fingerprint} onPress={handleBiometricSignIn} disabled={isLoading} />
       ) : null}
 
       <View style={styles.dividerRow}>
         <View style={styles.dividerLine} />
         <AppText variant="caption" color={Colors.textTertiary}>
-          New to Escolta Pro?
+          {t('signIn.newHere')}
         </AppText>
         <View style={styles.dividerLine} />
       </View>
-      <Button title="Create an account" variant="secondary" onPress={() => router.push('/auth/sign-up')} />
+      <Button title={t('signIn.createAccount')} variant="secondary" onPress={() => router.push('/auth/sign-up')} />
 
       {USING_EMULATORS ? <TestModePanel busyRole={busyRole} onPick={handleQuickLogin} /> : null}
 
       {__DEV__ && !!process.env.EXPO_PUBLIC_DEMO_EMAIL && !USING_EMULATORS ? (
         <AppText variant="caption" color={Colors.textTertiary} align="center">
-          Dev build: account prefilled from .env ({process.env.EXPO_PUBLIC_DEMO_EMAIL})
+          {t('signIn.devPrefilled', { email: process.env.EXPO_PUBLIC_DEMO_EMAIL })}
         </AppText>
       ) : null}
     </View>
@@ -306,25 +310,26 @@ export default function SignInScreen() {
   const brand = (
     <View style={styles.brandRow}>
       <BrandMark size={34} color={Colors.textPrimary} />
-      <View>
+      <View style={styles.brandText}>
         <AppText style={styles.brandName}>ESCOLTA PRO</AppText>
         <AppText variant="overline" color={Colors.accentLight} style={styles.brandTag}>
-          Executive protection
+          {t('brandTag')}
         </AppText>
       </View>
+      <LanguageToggle />
     </View>
   );
 
   const headline = (
     <View>
       <AppText variant="display" color={Colors.white} accessibilityRole="header">
-        Discreet protection,{'\n'}
+        {t('hero.line1')}{'\n'}
         <AppText variant="display" style={styles.heroAccent}>
-          on your schedule.
+          {t('hero.line2')}
         </AppText>
       </AppText>
       <AppText variant="callout" color={Colors.textSecondary} style={styles.heroSub}>
-        Vetted close-protection professionals, booked in minutes and tracked in real time.
+        {t('hero.sub')}
       </AppText>
     </View>
   );
@@ -346,7 +351,7 @@ export default function SignInScreen() {
           </View>
           <ScrollView style={styles.wideFormCol} contentContainerStyle={styles.wideFormContent} keyboardShouldPersistTaps="handled">
             <AppText variant="title1" style={styles.formTitle}>
-              Welcome back
+              {t('signIn.welcome')}
             </AppText>
             {form}
           </ScrollView>
@@ -415,6 +420,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: Space.md,
+  },
+  brandText: {
+    flex: 1,
   },
   brandName: {
     fontFamily: Fonts.displayHeavy,

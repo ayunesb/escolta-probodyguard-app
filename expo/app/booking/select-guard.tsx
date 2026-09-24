@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { FlatList, Modal, Pressable, StyleSheet, View } from 'react-native';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useTranslation } from 'react-i18next';
 import { AlertTriangle, CheckCircle2, FileQuestion, Lock, Send, ShieldCheck, UserX } from 'lucide-react-native';
 import Colors from '@/constants/colors';
 import { ICON_STROKE, MAX_CONTENT_WIDTH, Radius, Shadow, Space } from '@/constants/design';
@@ -28,6 +29,7 @@ import { formatMXN } from '@/utils/pricing';
 type LoadState = 'loading' | 'ready' | 'error' | 'missing-param' | 'not-found';
 
 export default function SelectGuardScreen() {
+  const { t } = useTranslation(['funnel', 'common']);
   const { bookingId } = useLocalSearchParams<{ bookingId: string }>();
   const router = useRouter();
   const [booking, setBooking] = useState<Booking | null>(null);
@@ -92,7 +94,7 @@ export default function SelectGuardScreen() {
       setSentTo(candidate);
       setCandidate(null);
     } catch (error) {
-      setSendError(error instanceof Error ? error.message : 'We could not send the request. Please try again.');
+      setSendError(error instanceof Error ? error.message : t('select.sendFailed'));
     } finally {
       setSending(false);
     }
@@ -101,7 +103,7 @@ export default function SelectGuardScreen() {
   const shell = (content: React.ReactNode, opts?: { list?: boolean }) => (
     <View style={styles.root}>
       <Stack.Screen options={{ headerShown: false }} />
-      <NavBar title="Choose a protector" right={booking ? <StatusBadge status={booking.status} /> : undefined} />
+      <NavBar title={t('select.title')} right={booking ? <StatusBadge status={booking.status} /> : undefined} />
       {opts?.list ? content : <Screen padTop={false} contentStyle={styles.content}>{content}</Screen>}
     </View>
   );
@@ -110,9 +112,9 @@ export default function SelectGuardScreen() {
     return shell(
       <EmptyState
         icon={FileQuestion}
-        title="No booking selected"
-        message="Open this screen from one of your bookings."
-        actionLabel="Go to bookings"
+        title={t('select.noBookingTitle')}
+        message={t('select.noBookingMessage')}
+        actionLabel={t('shared.goToBookings')}
         onAction={() => router.replace('/bookings')}
       />
     );
@@ -122,9 +124,9 @@ export default function SelectGuardScreen() {
     return shell(
       <EmptyState
         icon={FileQuestion}
-        title="Booking not found"
-        message="It may have been cancelled or you may not have access to it."
-        actionLabel="Go to bookings"
+        title={t('shared.bookingNotFound')}
+        message={t('select.notFoundMessage')}
+        actionLabel={t('shared.goToBookings')}
         onAction={() => router.replace('/bookings')}
       />
     );
@@ -134,9 +136,9 @@ export default function SelectGuardScreen() {
     return shell(
       <EmptyState
         icon={AlertTriangle}
-        title="Couldn't load protectors"
-        message="Check your connection and try again."
-        actionLabel="Try again"
+        title={t('shared.couldNotLoadProtectors')}
+        message={t('shared.checkConnection')}
+        actionLabel={t('common:actions.tryAgain')}
         onAction={load}
       />
     );
@@ -156,9 +158,9 @@ export default function SelectGuardScreen() {
     return shell(
       <EmptyState
         icon={CheckCircle2}
-        title={`Request sent to ${guardDisplayName(sentTo)}`}
-        message="Your booking and payment stay exactly the same. We'll notify you as soon as they respond."
-        actionLabel="View booking"
+        title={t('select.sentTitle', { name: guardDisplayName(sentTo) })}
+        message={t('select.sentMessage')}
+        actionLabel={t('shared.viewBooking')}
         onAction={() => router.replace(`/booking/${booking.id}`)}
       />
     );
@@ -169,9 +171,9 @@ export default function SelectGuardScreen() {
     return shell(
       <EmptyState
         icon={ShieldCheck}
-        title="No new protector needed"
-        message="This booking isn't waiting for a replacement protector."
-        actionLabel="View booking"
+        title={t('select.notNeededTitle')}
+        message={t('select.notNeededMessage')}
+        actionLabel={t('shared.viewBooking')}
         onAction={() => router.replace(`/booking/${booking.id}`)}
       />
     );
@@ -180,34 +182,34 @@ export default function SelectGuardScreen() {
   const header = (
     <View>
       <AppText variant="title1" accessibilityRole="header">
-        Choose another protector
+        {t('select.heading')}
       </AppText>
       <AppText variant="callout" style={styles.lede}>
-        Your previous protector couldn’t take this booking. Pick someone else and we’ll send them the request.
+        {t('select.lede')}
       </AppText>
 
       {booking.rejectionReason ? (
         <Card style={styles.reason}>
-          <AppText variant="overline">Their note</AppText>
+          <AppText variant="overline">{t('select.theirNote')}</AppText>
           <AppText variant="body" color={Colors.textSecondary} style={styles.reasonText}>
-            “{booking.rejectionReason}”
+            {t('shared.quoted', { text: booking.rejectionReason })}
           </AppText>
         </Card>
       ) : null}
 
       <Card tone="raised" style={styles.summary}>
-        <InfoRow label="When" value={formatScheduled(booking)} />
-        <InfoRow label="Pickup" value={booking.pickupAddress || '—'} />
-        <InfoRow label="Paid" value={formatMXN(booking.totalAmount)} emphasis />
+        <InfoRow label={t('select.when')} value={formatScheduled(booking)} />
+        <InfoRow label={t('shared.pickup')} value={booking.pickupAddress || '—'} />
+        <InfoRow label={t('shared.paid')} value={formatMXN(booking.totalAmount)} emphasis />
         <View style={styles.fixedNote}>
           <Lock size={14} color={Colors.textTertiary} strokeWidth={ICON_STROKE} />
           <AppText variant="footnote" color={Colors.textTertiary} style={styles.flex}>
-            The amount you paid stays the same whoever you choose — amounts are fixed once a booking is paid.
+            {t('select.fixedNote')}
           </AppText>
         </View>
       </Card>
 
-      <SectionTitle title={`${ranked.length} available ${ranked.length === 1 ? 'protector' : 'protectors'}`} />
+      <SectionTitle title={t('select.available', { count: ranked.length })} />
     </View>
   );
 
@@ -221,9 +223,9 @@ export default function SelectGuardScreen() {
           ListEmptyComponent={
             <EmptyState
               icon={UserX}
-              title="No other protectors available"
-              message="Try again a little later, or manage the booking from its detail page."
-              actionLabel="Refresh"
+              title={t('select.emptyTitle')}
+              message={t('select.emptyMessage')}
+              actionLabel={t('shared.refresh')}
               onAction={load}
             />
           }
@@ -236,7 +238,7 @@ export default function SelectGuardScreen() {
                 setSendError(null);
                 setCandidate(item.guard);
               }}
-              accessibilityHint="Sends this protector your booking request"
+              accessibilityHint={t('select.cardHint')}
             />
           )}
           contentContainerStyle={styles.listContent}
@@ -269,30 +271,31 @@ function ConfirmSheet({
   onConfirm: () => void;
   onClose: () => void;
 }) {
+  const { t } = useTranslation(['funnel', 'common']);
   const insets = useSafeAreaInsets();
   return (
     <Modal visible={!!guard} transparent animationType="fade" onRequestClose={onClose}>
       <View style={styles.overlay}>
-        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityRole="button" accessibilityLabel="Cancel" />
+        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityRole="button" accessibilityLabel={t('common:actions.cancel')} />
         {guard ? (
           <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, Space.xl) }]} accessibilityViewIsModal>
             <View style={styles.sheetHead}>
               <Avatar name={`${guard.firstName} ${guard.lastName}`} uri={guard.photos[0]} size={56} verified={isVerified(guard)} />
               <View style={styles.flex}>
-                <AppText variant="overline">Send request to</AppText>
+                <AppText variant="overline">{t('select.sendTo')}</AppText>
                 <AppText variant="title2">{guardDisplayName(guard)}</AppText>
               </View>
             </View>
             <AppText variant="callout" style={styles.sheetBody}>
-              They’ll be asked to accept your booking. Your schedule, options and the amount you paid don’t change.
+              {t('select.sheetBody')}
             </AppText>
             {error ? (
               <AppText variant="callout" color={Colors.error} style={styles.sheetError} accessibilityLiveRegion="polite">
                 {error}
               </AppText>
             ) : null}
-            <Button title="Send request" icon={Send} size="lg" onPress={onConfirm} loading={sending} />
-            <Button title="Cancel" variant="ghost" onPress={onClose} disabled={sending} style={styles.cancel} />
+            <Button title={t('select.send')} icon={Send} size="lg" onPress={onConfirm} loading={sending} />
+            <Button title={t('common:actions.cancel')} variant="ghost" onPress={onClose} disabled={sending} style={styles.cancel} />
           </View>
         ) : null}
       </View>

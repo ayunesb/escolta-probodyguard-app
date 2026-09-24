@@ -5,10 +5,12 @@ import Colors from '@/constants/colors';
 import { Space } from '@/constants/design';
 import { AppText, BrandMark, Button, Screen } from '@/components/ui';
 import { useAuth } from '@/contexts/AuthContext';
+import { useTranslation } from 'react-i18next';
 
 export default function NotFoundScreen() {
   const router = useRouter();
   const { user } = useAuth();
+  const { t } = useTranslation(['nav', 'common']);
 
   const goBack = () => {
     if (router.canGoBack()) router.back();
@@ -17,26 +19,26 @@ export default function NotFoundScreen() {
 
   return (
     <>
-      <Stack.Screen options={{ headerShown: false, title: 'Page not found' }} />
+      <Stack.Screen options={{ headerShown: false, title: t('notFound.screenTitle') }} />
       <Screen glow scroll={false}>
         <View style={styles.content} testID="not-found-container">
           <BrandMark size={64} />
           <AppText variant="overline" color={Colors.accent} style={styles.code}>
-            Error 404
+            {t('notFound.code')}
           </AppText>
           <AppText variant="title1" align="center" accessibilityRole="header">
-            This page doesn’t exist
+            {t('notFound.title')}
           </AppText>
           <AppText variant="callout" align="center" style={styles.message}>
-            The link may be out of date, or the page has moved. Your account and bookings are safe.
+            {t('notFound.message')}
           </AppText>
           <View style={styles.actions}>
             <Button
-              title={user ? 'Go to my home' : 'Go to sign in'}
+              title={user ? t('notFound.goHome') : t('notFound.goSignIn')}
               icon={House}
               onPress={() => router.replace(user ? '/' : '/auth/sign-in')}
             />
-            <Button title="Go back" variant="ghost" onPress={goBack} />
+            <Button title={t('common:actions.goBack')} variant="ghost" onPress={goBack} />
           </View>
         </View>
       </Screen>

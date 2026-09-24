@@ -1,11 +1,14 @@
-// Small, pure helpers shared by the booking funnel screens.
+// Small, pure helpers shared by the booking funnel screens. Text is read from
+// i18n on every call, so a re-render after a language switch picks it up.
+import i18n from '@/i18n';
+import { capitalize, formatDate, formatTimeOfDay } from '@/i18n/format';
 import type { Booking, DressCode, Guard } from '@/types';
 
 /** "Sofía R." — first name plus last initial (privacy before booking). */
 export function guardDisplayName(guard: Pick<Guard, 'firstName' | 'lastName'>): string {
   const first = (guard.firstName ?? '').trim();
   const initial = (guard.lastName ?? '').trim().charAt(0);
-  if (!first && !initial) return 'Protector';
+  if (!first && !initial) return i18n.t('funnel:shared.protectorFallback');
   return initial ? `${first} ${initial}.`.trim() : first;
 }
 
@@ -48,9 +51,11 @@ export function distanceKm(a: Point, b: Point): number {
 }
 
 export function formatDistance(km: number): string {
-  if (km < 1) return `${Math.max(100, Math.round((km * 1000) / 100) * 100)} m away`;
-  if (km < 10) return `${km.toFixed(1)} km away`;
-  return `${Math.round(km)} km away`;
+  // Rounded to 100 m; 950 m and up reads "1.0 km", never "1000 m".
+  const meters = Math.max(100, Math.round((km * 1000) / 100) * 100);
+  if (meters < 1000) return i18n.t('funnel:format.distanceMeters', { value: meters });
+  if (km < 9.95) return i18n.t('funnel:format.distanceKm', { value: Math.max(1, km).toFixed(1) });
+  return i18n.t('funnel:format.distanceKm', { value: Math.round(km) });
 }
 
 // ---------------------------------------------------------------- dates
@@ -75,12 +80,14 @@ export function bookingStart(booking: Pick<Booking, 'scheduledDate' | 'scheduled
   return new Date(y, m - 1, d, hh, mm, 0, 0);
 }
 
+/** "Thu 24 Sept" / "Jue, 24 sept" (sentence-initial, so capitalised). */
 export function formatDateLong(date: Date): string {
-  return date.toLocaleDateString('en-US', { weekday: 'short', day: 'numeric', month: 'short' });
+  return capitalize(formatDate(date, { weekday: 'short', day: 'numeric', month: 'short' }));
 }
 
+/** "15:00" in both languages. */
 export function formatTime(date: Date): string {
-  return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  return formatTimeOfDay(date);
 }
 
 export function formatScheduled(booking: Pick<Booking, 'scheduledDate' | 'scheduledTime'>): string {
@@ -89,28 +96,37 @@ export function formatScheduled(booking: Pick<Booking, 'scheduledDate' | 'schedu
   return `${formatDateLong(start)} · ${formatTime(start)}`;
 }
 
-/** Today's eyebrow, e.g. "Tuesday, 24 September". */
+/** Today's eyebrow, e.g. "Tuesday 24 September" / "Martes, 24 de septiembre". */
 export function todayEyebrow(now = new Date()): string {
-  return now.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
+  return capitalize(formatDate(now, { weekday: 'long', day: 'numeric', month: 'long' }));
 }
 
 // ---------------------------------------------------------------- options
 
+// Getters: the label is looked up when read, never frozen at import time.
 export const DRESS_CODE_LABELS: Record<DressCode, string> = {
-  suit: 'Suit',
-  business_casual: 'Business casual',
-  tactical: 'Tactical',
-  casual: 'Casual',
+  get suit() {
+    return i18n.t('funnel:dressCode.suit');
+  },
+  get business_casual() {
+    return i18n.t('funnel:dressCode.business_casual');
+  },
+  get tactical() {
+    return i18n.t('funnel:dressCode.tactical');
+  },
+  get casual() {
+    return i18n.t('funnel:dressCode.casual');
+  },
 };
 
 export function describeBookingOptions(
   booking: Pick<Booking, 'duration' | 'protectionType' | 'vehicleType' | 'numberOfProtectors'>
 ): string {
   const parts = [
-    `${booking.duration} h`,
-    booking.protectionType === 'armed' ? 'Armed' : 'Unarmed',
-    booking.vehicleType === 'armored' ? 'Armored vehicle' : 'Standard vehicle',
+    i18n.t('common:units.hoursShort', { count: booking.duration }),
+    booking.protectionType === 'armed' ? i18n.t('funnel:format.armed') : i18n.t('funnel:format.unarmed'),
+    booking.vehicleType === 'armored' ? i18n.t('funnel:format.armoredVehicle') : i18n.t('funnel:format.standardVehicle'),
   ];
-  if (booking.numberOfProtectors > 1) parts.push(`${booking.numberOfProtectors} protectors`);
+  if (booking.numberOfProtectors > 1) parts.push(i18n.t('funnel:format.protectors', { count: booking.numberOfProtectors }));
   return parts.join(' · ');
 }

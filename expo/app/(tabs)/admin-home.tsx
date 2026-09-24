@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import { Linking, RefreshControl, StyleSheet, View } from 'react-native';
 import { Stack, useFocusEffect, useRouter } from 'expo-router';
+import { useTranslation } from 'react-i18next';
 import {
   CalendarCheck,
   ChartColumn,
@@ -51,7 +52,6 @@ import {
   money,
   openDocument,
   percent,
-  plural,
   saveTextFile,
   shortId,
   toCSV,
@@ -59,6 +59,7 @@ import {
 } from '@/components/backoffice';
 import { useAuth } from '@/contexts/AuthContext';
 import { emergencyService } from '@/services/emergencyService';
+import i18n from '@/i18n';
 import { UserRecord, userService } from '@/services/userService';
 import type { Booking } from '@/types';
 import { formatMXN } from '@/utils/pricing';
@@ -70,12 +71,14 @@ interface GuardCounts {
   pending: number;
 }
 
-const ALERT_LABEL: Record<string, string> = {
-  panic: 'Panic — immediate danger',
-  sos: 'SOS — urgent help',
-  medical: 'Medical emergency',
-  security: 'Security threat',
-};
+const ALERT_TYPES = ['panic', 'sos', 'medical', 'security'] as const;
+type AlertType = (typeof ALERT_TYPES)[number];
+
+// Se traduce en cada llamada (sigue al idioma activo).
+const alertLabel = (type?: string): string =>
+  ALERT_TYPES.includes(type as AlertType)
+    ? i18n.t(`backoffice:adminHome.alerts.${type as AlertType}`)
+    : i18n.t('backoffice:adminHome.alerts.fallback');
 
 export default function AdminHomeRoute() {
   return (
@@ -90,12 +93,13 @@ export default function AdminHomeRoute() {
 
 function AdminHomeScreen() {
   const router = useRouter();
+  const { t } = useTranslation(['backoffice', 'common']);
   const { user } = useAuth();
   const [bookings, setBookings] = useState<Booking[] | null>(null);
   const [guards, setGuards] = useState<GuardCounts | null>(null);
   const [alerts, setAlerts] = useState<EmergencyAlertRow[]>([]);
   const [people, setPeople] = useState<Record<string, UserRecord>>({});
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState(false);
   const [alertsError, setAlertsError] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -103,7 +107,7 @@ function AdminHomeScreen() {
   const [resolvingId, setResolvingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    setLoadError(null);
+    setLoadError(false);
     const [bookingsResult, countsResult, alertsResult] = await Promise.allSettled([
       fetchAllBookings(),
       Promise.all([
@@ -120,7 +124,7 @@ function AdminHomeScreen() {
       setBookings(loaded);
     } else {
       logger.error('[AdminHome] Failed to load bookings', bookingsResult.reason);
-      setLoadError('We could not load platform bookings.');
+      setLoadError(true);
     }
     if (countsResult.status === 'fulfilled') {
       const [total, approved, pending] = countsResult.value;
@@ -220,13 +224,13 @@ function AdminHomeScreen() {
         filename: `escolta-pro-bookings-${fileStamp()}.csv`,
         content: csv,
         mimeType: 'text/csv',
-        title: 'Escolta Pro bookings ledger',
+        title: t('adminHome.ledgerTitle'),
       });
-      const message = describeSave(result, `Ledger with ${plural(bookings.length, 'booking')}`);
+      const message = describeSave(result, t('adminHome.ledgerWhat', { count: bookings.length }));
       if (message) setNotice({ tone: 'success', message });
     } catch (error) {
       logger.error('[AdminHome] CSV export failed', error);
-      setNotice({ tone: 'error', message: 'The ledger could not be exported. Please try again.' });
+      setNotice({ tone: 'error', message: t('adminHome.exportError') });
     } finally {
       setExporting(false);
     }
@@ -239,7 +243,7 @@ function AdminHomeScreen() {
     if (ok) {
       setAlerts((prev) => prev.filter((a) => a.id !== alert.id));
     } else {
-      setNotice({ tone: 'error', message: 'The alert could not be updated. Please try again.' });
+      setNotice({ tone: 'error', message: t('adminHome.alertUpdateError') });
     }
   };
 
@@ -249,23 +253,23 @@ function AdminHomeScreen() {
     <Screen glow refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.accent} />}>
       <ScreenHeader
         eyebrow={todayEyebrow()}
-        title="Operations"
-        subtitle="The state of Escolta Pro at a glance."
+        title={t('adminHome.title')}
+        subtitle={t('adminHome.subtitle')}
         right={
           <IconButton
             icon={Download}
             onPress={exportLedger}
             disabled={exporting || !bookings || bookings.length === 0}
-            accessibilityLabel="Export bookings ledger as CSV"
+            accessibilityLabel={t('adminHome.exportA11y')}
           />
         }
       />
 
       <PhotoCard
         image={BrandImages.opsRoom}
-        eyebrow="Command center"
-        title="Every detail, one view"
-        caption="Bookings, verification and alerts across the platform."
+        eyebrow={t('adminHome.bannerEyebrow')}
+        title={t('adminHome.bannerTitle')}
+        caption={t('adminHome.bannerCaption')}
         height={190}
         style={{ marginBottom: Space.xl }}
       />
@@ -274,7 +278,7 @@ function AdminHomeScreen() {
 
       {alerts.length > 0 ? (
         <View style={styles.block}>
-          <SectionTitle title={`Emergency alerts · ${alerts.length}`} style={styles.firstSection} />
+          <SectionTitle title={t('adminHome.alertsTitle', { count: alerts.length })} style={styles.firstSection} />
           <View style={styles.list}>
             {alerts.map((a) => {
               const person = people[a.userId];
@@ -286,58 +290,63 @@ function AdminHomeScreen() {
                       <Siren size={18} color={Colors.error} />
                     </View>
                     <View style={styles.flex}>
-                      <AppText variant="headline">{ALERT_LABEL[a.type ?? ''] ?? 'Emergency alert'}</AppText>
+                      <AppText variant="headline">{alertLabel(a.type)}</AppText>
                       <AppText variant="footnote">
-                        {person ? fullName(person) : 'Unknown member'} · {formatDateTime(a.timestamp)}
-                        {a.bookingId ? ` · Booking ${shortId(a.bookingId)}` : ''}
+                        {[
+                          person ? fullName(person) : t('people.unknownMember'),
+                          formatDateTime(a.timestamp),
+                          a.bookingId ? t('adminHome.alertBooking', { id: shortId(a.bookingId) }) : null,
+                        ]
+                          .filter(Boolean)
+                          .join(' · ')}
                       </AppText>
                     </View>
                   </View>
                   <AppText variant="caption" color={loc ? Colors.textSecondary : Colors.warning}>
                     {loc
                       ? loc.address || `${loc.latitude.toFixed(5)}, ${loc.longitude.toFixed(5)}`
-                      : 'Location not shared by the device'}
+                      : t('adminHome.noLocation')}
                   </AppText>
                   <View style={styles.actions}>
                     {loc ? (
                       <Button
-                        title="Map"
+                        title={t('adminHome.map')}
                         icon={MapPin}
                         variant="secondary"
                         size="sm"
                         fullWidth={false}
                         onPress={() => openDocument(`https://www.google.com/maps/search/?api=1&query=${loc.latitude},${loc.longitude}`)}
-                        accessibilityLabel="Open alert location on a map"
+                        accessibilityLabel={t('adminHome.mapA11y')}
                       />
                     ) : null}
                     {person?.phone ? (
                       <Button
-                        title="Call"
+                        title={t('adminHome.call')}
                         icon={Phone}
                         variant="secondary"
                         size="sm"
                         fullWidth={false}
                         onPress={() => Linking.openURL(`tel:${person.phone}`).catch(() => {})}
-                        accessibilityLabel={`Call ${fullName(person)}`}
+                        accessibilityLabel={t('adminHome.callA11y', { name: fullName(person) })}
                       />
                     ) : null}
                     <Button
-                      title="Resolved"
+                      title={t('adminHome.resolved')}
                       variant="outline"
                       size="sm"
                       fullWidth={false}
                       loading={resolvingId === a.id}
                       onPress={() => resolveAlert(a, 'resolved')}
-                      accessibilityLabel="Mark alert as resolved"
+                      accessibilityLabel={t('adminHome.resolvedA11y')}
                     />
                     <Button
-                      title="False alarm"
+                      title={t('adminHome.falseAlarm')}
                       variant="ghost"
                       size="sm"
                       fullWidth={false}
                       disabled={resolvingId === a.id}
                       onPress={() => resolveAlert(a, 'false_alarm')}
-                      accessibilityLabel="Mark alert as a false alarm"
+                      accessibilityLabel={t('adminHome.falseAlarmA11y')}
                     />
                   </View>
                 </Card>
@@ -348,22 +357,22 @@ function AdminHomeScreen() {
       ) : null}
 
       {alertsError ? (
-        <Notice tone="warning" message="Emergency alerts could not be checked. Pull to refresh." style={styles.block} />
+        <Notice tone="warning" message={t('adminHome.alertsError')} style={styles.block} />
       ) : null}
 
       {guards && guards.pending > 0 ? (
-        <Card tone="accent" onPress={() => router.push('/(tabs)/admin-kyc')} accessibilityLabel="Review pending verifications" style={styles.kycCard}>
+        <Card tone="accent" onPress={() => router.push('/(tabs)/admin-kyc')} accessibilityLabel={t('adminHome.kycA11y')} style={styles.kycCard}>
           <ShieldCheck size={20} color={Colors.accent} />
           <View style={styles.flex}>
-            <AppText variant="headline">{plural(guards.pending, 'guard')} waiting for verification</AppText>
-            <AppText variant="footnote">Review documents before they can accept bookings.</AppText>
+            <AppText variant="headline">{t('adminHome.kycWaiting', { count: guards.pending })}</AppText>
+            <AppText variant="footnote">{t('adminHome.kycMessage')}</AppText>
           </View>
         </Card>
       ) : null}
 
-      <SectionTitle title="Bookings" />
+      <SectionTitle title={t('adminHome.bookings')} />
       {loadError ? (
-        <Notice tone="error" message={loadError} actionLabel="Try again" onAction={load} />
+        <Notice tone="error" message={t('adminHome.loadError')} actionLabel={t('common:actions.tryAgain')} onAction={load} />
       ) : loading ? (
         <View style={styles.grid}>
           <SkeletonCard lines={1} />
@@ -372,23 +381,49 @@ function AdminHomeScreen() {
       ) : (
         <View style={styles.gridWrap}>
           <View style={styles.grid}>
-            <StatTile label="Bookings" value={stats.total} hint={`${stats.inProgress} in progress`} icon={CalendarCheck} />
-            <StatTile label="Completed" value={stats.completed} hint={`${percent(stats.completed, stats.total)} of all`} icon={ShieldCheck} />
+            <StatTile
+              label={t('adminHome.bookings')}
+              value={stats.total}
+              hint={t('adminHome.statInProgress', { count: stats.inProgress })}
+              icon={CalendarCheck}
+            />
+            <StatTile
+              label={t('adminHome.statCompleted')}
+              value={stats.completed}
+              hint={t('adminHome.statOfAll', { percent: percent(stats.completed, stats.total) })}
+              icon={ShieldCheck}
+            />
           </View>
           <View style={styles.grid}>
-            <StatTile label="Client payments" value={formatMXN(stats.gross)} hint="Completed jobs" icon={Wallet} />
-            <StatTile label="Platform fees" value={formatMXN(stats.platform)} hint="Completed jobs" icon={Receipt} accent />
+            <StatTile label={t('shared.clientPayments')} value={formatMXN(stats.gross)} hint={t('shared.completedJobs')} icon={Wallet} />
+            <StatTile
+              label={t('shared.platformFees')}
+              value={formatMXN(stats.platform)}
+              hint={t('shared.completedJobs')}
+              icon={Receipt}
+              accent
+            />
           </View>
           <View style={styles.grid}>
-            <StatTile label="Guards" value={guards ? guards.total : '—'} hint={guards ? `${guards.approved} verified` : undefined} icon={Users} />
-            <StatTile label="Awaiting guard" value={stats.awaitingGuard} hint="Paid, not yet accepted" icon={UserRoundX} />
+            <StatTile
+              label={t('adminHome.statGuards')}
+              value={guards ? guards.total : '—'}
+              hint={guards ? t('adminHome.statVerified', { count: guards.approved }) : undefined}
+              icon={Users}
+            />
+            <StatTile
+              label={t('adminHome.statAwaiting')}
+              value={stats.awaitingGuard}
+              hint={t('adminHome.statAwaitingHint')}
+              icon={UserRoundX}
+            />
           </View>
         </View>
       )}
 
       {stats.declined.length > 0 ? (
         <>
-          <SectionTitle title="Declined — waiting on the client" />
+          <SectionTitle title={t('adminHome.declinedTitle')} />
           <ListGroup>
             {stats.declined.slice(0, 5).map((b) => {
               const client = people[b.clientId];
@@ -396,13 +431,15 @@ function AdminHomeScreen() {
                 <ListRow
                   key={b.id}
                   icon={UserRoundX}
-                  title={`${shortId(b.id)} · ${client ? fullName(client) : 'Client'}`}
-                  subtitle={`Declined${b.rejectionReason ? `: ${b.rejectionReason}` : ''} · ${formatDate(b.scheduledDate)}`}
+                  title={`${shortId(b.id)} · ${client ? fullName(client) : t('people.client')}`}
+                  subtitle={`${
+                    b.rejectionReason ? t('adminHome.declinedWithReason', { reason: b.rejectionReason }) : t('adminHome.declined')
+                  } · ${formatDate(b.scheduledDate)}`}
                   value={formatMXN(b.totalAmount)}
                   onPress={() =>
                     router.push({ pathname: '/guard-reassignment', params: { bookingId: b.id, currentGuardId: b.guardId ?? '' } })
                   }
-                  accessibilityHint="Opens booking details and next steps"
+                  accessibilityHint={t('adminHome.declinedHint')}
                 />
               );
             })}
@@ -410,32 +447,47 @@ function AdminHomeScreen() {
         </>
       ) : null}
 
-      <SectionTitle title="Back office" />
+      <SectionTitle title={t('adminHome.backOffice')} />
       <ListGroup>
         <ListRow
           icon={ShieldCheck}
-          title="Guard verification"
-          subtitle="Review identity and license documents"
-          value={guards ? (guards.pending > 0 ? `${guards.pending} pending` : 'Up to date') : undefined}
+          title={t('adminHome.kycRow')}
+          subtitle={t('adminHome.kycRowSubtitle')}
+          value={guards ? (guards.pending > 0 ? t('adminHome.kycPending', { count: guards.pending }) : t('adminHome.upToDate')) : undefined}
           onPress={() => router.push('/(tabs)/admin-kyc')}
         />
-        <ListRow icon={Users} title="Members" subtitle="Search, edit and suspend accounts" onPress={() => router.push('/(tabs)/admin-users')} />
-        <ListRow icon={ChartColumn} title="Analytics" subtitle="Bookings, revenue and members" onPress={() => router.push('/admin-analytics')} />
+        <ListRow
+          icon={Users}
+          title={t('adminHome.membersRow')}
+          subtitle={t('adminHome.membersRowSubtitle')}
+          onPress={() => router.push('/(tabs)/admin-users')}
+        />
+        <ListRow
+          icon={ChartColumn}
+          title={t('adminHome.analyticsRow')}
+          subtitle={t('adminHome.analyticsRowSubtitle')}
+          onPress={() => router.push('/admin-analytics')}
+        />
         <ListRow
           icon={Receipt}
-          title="Refunds"
-          subtitle="Paid bookings that were cancelled or declined"
+          title={t('adminHome.refundsRow')}
+          subtitle={t('adminHome.refundsRowSubtitle')}
           value={bookings ? String(stats.refundCandidates) : undefined}
           onPress={() => router.push('/admin-refunds')}
         />
-        <ListRow icon={History} title="KYC audit trail" subtitle="Every upload and decision" onPress={() => router.push('/admin/kyc-audit')} />
+        <ListRow
+          icon={History}
+          title={t('adminHome.auditRow')}
+          subtitle={t('adminHome.auditRowSubtitle')}
+          onPress={() => router.push('/admin/kyc-audit')}
+        />
       </ListGroup>
 
       <SectionTitle
-        title="Recent bookings"
+        title={t('adminHome.recentBookings')}
         action={
           bookings && bookings.length > 0 ? (
-            <Button title="Export CSV" icon={Download} variant="ghost" size="sm" fullWidth={false} loading={exporting} onPress={exportLedger} />
+            <Button title={t('adminHome.exportCsv')} icon={Download} variant="ghost" size="sm" fullWidth={false} loading={exporting} onPress={exportLedger} />
           ) : undefined
         }
       />
@@ -446,7 +498,7 @@ function AdminHomeScreen() {
         </>
       ) : !bookings || bookings.length === 0 ? (
         loadError ? null : (
-          <EmptyState icon={CalendarCheck} title="No bookings yet" message="Bookings appear here as soon as clients create them." />
+          <EmptyState icon={CalendarCheck} title={t('adminHome.emptyTitle')} message={t('adminHome.emptyMessage')} />
         )
       ) : (
         <View style={styles.list}>
@@ -462,15 +514,23 @@ function AdminHomeScreen() {
                   <StatusBadge status={b.status} />
                 </View>
                 <AppText variant="footnote" numberOfLines={1}>
-                  {client ? fullName(client) : 'Client'} → {guard ? fullName(guard) : b.guardId ? 'Guard' : 'No guard'}
+                  {t('adminHome.route', {
+                    client: client ? fullName(client) : t('people.client'),
+                    guard: guard ? fullName(guard) : b.guardId ? t('people.guard') : t('people.noGuard'),
+                  })}
                 </AppText>
                 <View style={styles.rowHead}>
                   <AppText variant="caption" color={Colors.textTertiary} style={styles.flex}>
-                    {formatDate(b.scheduledDate)}
-                    {b.scheduledTime ? ` · ${b.scheduledTime}` : ''}
-                    {b.duration ? ` · ${b.duration} h` : ''}
+                    {[
+                      formatDate(b.scheduledDate),
+                      b.scheduledTime || null,
+                      // Espacio duro: "4 h" no se parte en dos renglones
+                      b.duration ? t('common:units.hoursShort', { count: b.duration }).replace(' ', '\u00A0') : null,
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')}
                   </AppText>
-                  {isPaid(b) ? <Badge label="Paid" tone="success" /> : null}
+                  {isPaid(b) ? <Badge label={t('adminHome.paid')} tone="success" style={styles.badgeCenter} /> : null}
                   <AppText variant="numeric" color={Colors.accentLight}>
                     {formatMXN(b.totalAmount)}
                   </AppText>
@@ -530,6 +590,10 @@ const styles = StyleSheet.create({
   },
   bookingCard: {
     gap: Space.xs,
+  },
+  // Badge trae alignSelf: 'flex-start'; en una fila centrada se ve subido.
+  badgeCenter: {
+    alignSelf: 'center',
   },
   flex: {
     flex: 1,

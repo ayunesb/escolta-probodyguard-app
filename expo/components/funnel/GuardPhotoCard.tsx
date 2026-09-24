@@ -1,6 +1,7 @@
 import React, { memo } from 'react';
 import { StyleSheet, View } from 'react-native';
-import { BadgeCheck, MapPin, Star } from 'lucide-react-native';
+import { BadgeCheck, Languages, MapPin, Star } from 'lucide-react-native';
+import { useTranslation } from 'react-i18next';
 import Colors from '@/constants/colors';
 import { ICON_STROKE, Radius, Space } from '@/constants/design';
 import { AppText, Badge, PressableScale, Scrim } from '@/components/ui';
@@ -32,6 +33,8 @@ export const GuardPhotoCard = memo(function GuardPhotoCard({
   width,
   accessibilityHint,
 }: GuardPhotoCardProps) {
+  // Subscribes to language changes, so this memoised card re-renders on a switch.
+  const { t } = useTranslation(['funnel', 'common']);
   const name = guardDisplayName(guard);
   const verified = isVerified(guard);
   const rated = hasRating(guard);
@@ -44,7 +47,7 @@ export const GuardPhotoCard = memo(function GuardPhotoCard({
       scaleTo={0.985}
       accessibilityRole="button"
       accessibilityLabel={guardA11yLabel(guard, { distanceKm })}
-      accessibilityHint={accessibilityHint ?? 'Opens the profile to book protection'}
+      accessibilityHint={accessibilityHint ?? t('shared.openProfileHint')}
       hoverStyle={styles.hover}
       style={[styles.card, { height }]}
     >
@@ -59,38 +62,52 @@ export const GuardPhotoCard = memo(function GuardPhotoCard({
 
       <View style={styles.overlay}>
         <View style={styles.text}>
-          {verified ? <Badge label="Verified" tone="accent" icon={BadgeCheck} style={styles.badge} /> : null}
+          {verified ? <Badge label={t('card.verified')} tone="accent" icon={BadgeCheck} style={styles.badge} /> : null}
           <AppText variant="title3" color={Colors.white} numberOfLines={1}>
             {name}
           </AppText>
+          {/* Record on its own line so the count never wraps or truncates (it did
+              in English and in Spanish when it shared the line with languages). */}
           <View style={styles.metaRow}>
             {rated ? (
               <>
-                <Star size={13} color={Colors.accent} fill={Colors.accent} strokeWidth={ICON_STROKE} />
+                <Star size={13} color={Colors.accent} fill={Colors.accent} strokeWidth={ICON_STROKE} style={styles.icon} />
                 <AppText variant="footnote" color={Colors.textPrimary} tabular>
                   {guard.rating.toFixed(1)}
                 </AppText>
-                <AppText variant="footnote" color={Colors.textSecondary}>
-                  · {guard.completedJobs} {guard.completedJobs === 1 ? 'job' : 'jobs'}
+                <AppText variant="footnote" color={Colors.textSecondary} numberOfLines={1} style={styles.shrink}>
+                  · {t('shared.jobs', { count: guard.completedJobs })}
                 </AppText>
               </>
             ) : (
-              <AppText variant="footnote" color={Colors.textSecondary}>
-                New to Escolta
+              <AppText variant="footnote" color={Colors.textSecondary} numberOfLines={1} style={styles.shrink}>
+                {t('shared.newToEscolta')}
               </AppText>
             )}
-            {languages.length > 0 ? (
-              <AppText variant="footnote" color={Colors.textSecondary} numberOfLines={1} style={styles.shrink}>
-                · {languages.join(' · ')}
-              </AppText>
-            ) : null}
           </View>
-          {typeof distanceKm === 'number' ? (
+          {languages.length > 0 || typeof distanceKm === 'number' ? (
             <View style={styles.metaRow}>
-              <MapPin size={13} color={Colors.textSecondary} strokeWidth={ICON_STROKE} />
-              <AppText variant="footnote" color={Colors.textSecondary}>
-                {formatDistance(distanceKm)}
-              </AppText>
+              {languages.length > 0 ? (
+                <>
+                  <Languages size={13} color={Colors.textSecondary} strokeWidth={ICON_STROKE} style={styles.icon} />
+                  <AppText variant="footnote" color={Colors.textSecondary} numberOfLines={1} style={styles.shrink}>
+                    {languages.join(' · ')}
+                  </AppText>
+                </>
+              ) : null}
+              {typeof distanceKm === 'number' ? (
+                <>
+                  <MapPin
+                    size={13}
+                    color={Colors.textSecondary}
+                    strokeWidth={ICON_STROKE}
+                    style={[styles.icon, languages.length > 0 ? styles.iconGap : null]}
+                  />
+                  <AppText variant="footnote" color={Colors.textSecondary} numberOfLines={1} style={styles.icon}>
+                    {formatDistance(distanceKm)}
+                  </AppText>
+                </>
+              ) : null}
             </View>
           ) : null}
         </View>
@@ -101,7 +118,7 @@ export const GuardPhotoCard = memo(function GuardPhotoCard({
               {formatMXN(guard.hourlyRate)}
             </AppText>
             <AppText variant="caption" color={Colors.textSecondary}>
-              / hr
+              {t('common:units.perHour')}
             </AppText>
           </View>
         ) : null}
@@ -145,6 +162,14 @@ const styles = StyleSheet.create({
   },
   shrink: {
     flexShrink: 1,
+  },
+  // SVG icons (and the short distance) shrink like text in a crowded web flex
+  // row; keep them whole and let the languages truncate instead.
+  icon: {
+    flexShrink: 0,
+  },
+  iconGap: {
+    marginLeft: Space.sm,
   },
   // Frosted pill; the scrim underneath guarantees contrast on any photo.
   pricePill: {

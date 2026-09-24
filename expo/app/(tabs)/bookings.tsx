@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { FlatList, StyleSheet, View } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
+import { useTranslation } from 'react-i18next';
 import { AlertCircle, BriefcaseBusiness, CalendarDays, History } from 'lucide-react-native';
 import { useAuth } from '@/contexts/AuthContext';
 import { bookingService } from '@/services/bookingService';
@@ -8,6 +9,7 @@ import { Space } from '@/constants/design';
 import { EmptyState, Screen, ScreenHeader, SegmentedControl, SkeletonCard } from '@/components/ui';
 import { BookingCard } from '@/components/booking/BookingCard';
 import { scheduledDate } from '@/components/booking/format';
+import { capitalize, formatDate } from '@/i18n/format';
 import type { Booking, BookingStatus, UserRole } from '@/types';
 
 type Segment = 'upcoming' | 'past';
@@ -19,13 +21,6 @@ const UPCOMING: Record<UserRole, BookingStatus[]> = {
   guard: ['confirmed', 'accepted', 'en_route', 'active'],
   company: ['confirmed', 'accepted', 'en_route', 'active', 'rejected'],
   admin: ['pending', 'confirmed', 'accepted', 'en_route', 'active', 'rejected'],
-};
-
-const HEADER: Record<UserRole, { title: string; subtitle: string }> = {
-  client: { title: 'Your bookings', subtitle: 'Every protection detail, upcoming and past.' },
-  guard: { title: 'Your jobs', subtitle: 'Jobs you have accepted, are working, or have finished.' },
-  company: { title: 'Team bookings', subtitle: 'Every job your protectors are handling.' },
-  admin: { title: 'All bookings', subtitle: 'Bookings across the platform.' },
 };
 
 const LIVE_FIRST: Partial<Record<BookingStatus, number>> = { active: 0, en_route: 1 };
@@ -48,6 +43,7 @@ function subscribe(role: UserRole, userId: string, onData: (b: Booking[]) => voi
 export default function BookingsScreen() {
   const { user } = useAuth();
   const router = useRouter();
+  const { t } = useTranslation(['booking', 'common']);
   const role: UserRole = user?.role ?? 'client';
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [loading, setLoading] = useState(true);
@@ -101,8 +97,11 @@ export default function BookingsScreen() {
   }, [bookings, role]);
 
   const data = segment === 'upcoming' ? upcoming : past;
-  const header = HEADER[role];
-  const today = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
+  const today = capitalize(formatDate(new Date(), { weekday: 'long', day: 'numeric', month: 'long' }));
+  // El escolta ve "servicios" (masculino en espanol); el resto, "reservas".
+  const jobs = role === 'guard';
+  const segmentLabel = (label: string, count: number) =>
+    loading ? label : t('booking:list.segments.withCount', { label, count });
 
   const openBooking = useCallback((id: string) => router.push(`/booking/${id}`), [router]);
 
@@ -120,9 +119,9 @@ export default function BookingsScreen() {
       return (
         <EmptyState
           icon={AlertCircle}
-          title="Couldn't load bookings"
+          title={t('booking:list.loadError')}
           message={error}
-          actionLabel="Try again"
+          actionLabel={t('common:actions.tryAgain')}
           onAction={() => setAttempt((n) => n + 1)}
         />
       );
@@ -131,8 +130,8 @@ export default function BookingsScreen() {
       return (
         <EmptyState
           icon={History}
-          title={role === 'guard' ? 'No finished jobs yet' : 'No past bookings yet'}
-          message="Completed and cancelled bookings will appear here."
+          title={t(role === 'guard' ? 'booking:list.emptyPastJobs' : 'booking:list.emptyPast')}
+          message={t('booking:list.emptyPastMessage')}
         />
       );
     }
@@ -140,9 +139,9 @@ export default function BookingsScreen() {
       return (
         <EmptyState
           icon={CalendarDays}
-          title="No upcoming bookings"
-          message="When you book a protector, the details and live status appear here."
-          actionLabel="Book protection"
+          title={t('booking:list.emptyClient')}
+          message={t('booking:list.emptyClientMessage')}
+          actionLabel={t('booking:list.bookProtection')}
           onAction={() => router.push('/(tabs)/home')}
         />
       );
@@ -151,14 +150,20 @@ export default function BookingsScreen() {
       return (
         <EmptyState
           icon={BriefcaseBusiness}
-          title="No upcoming jobs"
-          message="New requests arrive on your Jobs tab. Accepted jobs show up here."
-          actionLabel="See requests"
+          title={t('booking:list.emptyGuard')}
+          message={t('booking:list.emptyGuardMessage')}
+          actionLabel={t('booking:list.seeRequests')}
           onAction={() => router.push('/(tabs)/home')}
         />
       );
     }
-    return <EmptyState icon={CalendarDays} title="No active bookings" message="Bookings in progress will appear here." />;
+    return (
+      <EmptyState
+        icon={CalendarDays}
+        title={t('booking:list.emptyOther')}
+        message={t('booking:list.emptyOtherMessage')}
+      />
+    );
   };
 
   return (
@@ -170,13 +175,25 @@ export default function BookingsScreen() {
         showsVerticalScrollIndicator={false}
         ListHeaderComponent={
           <View>
-            <ScreenHeader eyebrow={today} title={header.title} subtitle={header.subtitle} />
+            <ScreenHeader
+              eyebrow={today}
+              title={t(`booking:list.headers.${role}.title`)}
+              subtitle={t(`booking:list.headers.${role}.subtitle`)}
+            />
             <SegmentedControl<Segment>
               value={segment}
               onChange={setSegment}
               options={[
-                { value: 'upcoming', label: `Upcoming${loading ? '' : ` · ${upcoming.length}`}`, accessibilityLabel: 'Upcoming bookings' },
-                { value: 'past', label: `Past${loading ? '' : ` · ${past.length}`}`, accessibilityLabel: 'Past bookings' },
+                {
+                  value: 'upcoming',
+                  label: segmentLabel(t(jobs ? 'booking:list.segments.upcomingJobs' : 'booking:list.segments.upcoming'), upcoming.length),
+                  accessibilityLabel: t(jobs ? 'booking:list.segments.upcomingJobsA11y' : 'booking:list.segments.upcomingA11y'),
+                },
+                {
+                  value: 'past',
+                  label: segmentLabel(t(jobs ? 'booking:list.segments.pastJobs' : 'booking:list.segments.past'), past.length),
+                  accessibilityLabel: t(jobs ? 'booking:list.segments.pastJobsA11y' : 'booking:list.segments.pastA11y'),
+                },
               ]}
               style={styles.segments}
             />

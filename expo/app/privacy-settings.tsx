@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Linking, Platform, StyleSheet, Switch, View } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
+import { useTranslation } from 'react-i18next';
 import { Download, FileText, Mail, MapPin, Megaphone, Trash2 } from 'lucide-react-native';
 import Colors from '@/constants/colors';
 import { Space } from '@/constants/design';
@@ -12,6 +13,8 @@ import { gdprService } from '@/services/gdprService';
 import { logger } from '@/utils/logger';
 
 const PRIVACY_EMAIL = 'privacy@escoltapro.mx';
+// react-native-web pinta el pulgar encendido en #009688 salvo que se pase activeThumbColor.
+const WEB_SWITCH_ON = Platform.OS === 'web' ? ({ activeThumbColor: Colors.accentLight } as object) : null;
 
 export default function PrivacySettingsRoute() {
   return (
@@ -27,6 +30,7 @@ export default function PrivacySettingsRoute() {
 function PrivacySettingsScreen() {
   const router = useRouter();
   const { user, signOut } = useAuth();
+  const { t } = useTranslation(['account', 'common']);
   const [notice, setNotice] = useState<{ tone: 'success' | 'error' | 'info'; message: string } | null>(null);
   const [exporting, setExporting] = useState(false);
 
@@ -66,7 +70,7 @@ function PrivacySettingsScreen() {
     } catch (error) {
       logger.error('[PrivacySettings] Failed to update consent', error);
       setMarketing(previous);
-      setNotice({ tone: 'error', message: 'Your preference could not be saved. Please try again.' });
+      setNotice({ tone: 'error', message: t('privacySettings.marketing.saveFailed') });
     } finally {
       setSavingMarketing(false);
     }
@@ -81,7 +85,7 @@ function PrivacySettingsScreen() {
       if (message) setNotice({ tone: partial ? 'info' : 'success', message });
     } catch (error) {
       logger.error('[PrivacySettings] Export failed', error);
-      setNotice({ tone: 'error', message: 'Your data could not be exported. Please try again.' });
+      setNotice({ tone: 'error', message: t('privacySettings.export.failed') });
     } finally {
       setExporting(false);
     }
@@ -93,7 +97,11 @@ function PrivacySettingsScreen() {
     setDeleteOpen(true);
   };
 
-  const confirmed = confirmText.trim().toUpperCase() === 'DELETE';
+  // La palabra de confirmacion sigue al idioma (DELETE / ELIMINAR); se acepta
+  // tambien la inglesa por si la persona cambio de idioma a medio camino.
+  const keyword = t('privacySettings.deleteSheet.keyword');
+  const typed = confirmText.trim().toUpperCase();
+  const confirmed = typed === keyword || typed === 'DELETE';
 
   const handleDelete = async () => {
     if (!user || !confirmed) return;
@@ -103,7 +111,7 @@ function PrivacySettingsScreen() {
       await gdprService.requestDataDeletion(user.id, 'User requested account deletion');
     } catch (error) {
       logger.error('[PrivacySettings] Deletion request failed', error);
-      setDeleteError('Your request could not be sent. Nothing was deleted — please try again.');
+      setDeleteError(t('privacySettings.deleteSheet.failed'));
       setDeleting(false);
       return;
     }
@@ -121,48 +129,59 @@ function PrivacySettingsScreen() {
 
   return (
     <View style={styles.root}>
-      <NavBar title="Privacy & data" />
+      <NavBar title={t('privacySettings.navTitle')} />
       <Screen padTop={false} contentStyle={styles.content}>
         <View style={styles.intro}>
-          <AppText variant="title2">Your data, your rights</AppText>
-          <AppText variant="callout">
-            Under Mexico’s Federal Law on the Protection of Personal Data Held by Private Parties (LFPDPPP) you can
-            access, rectify, cancel or oppose the use of your personal data — your ARCO rights.
-          </AppText>
+          <AppText variant="title2">{t('privacySettings.title')}</AppText>
+          <AppText variant="callout">{t('privacySettings.intro')}</AppText>
         </View>
 
         {notice ? <Notice tone={notice.tone} message={notice.message} onDismiss={() => setNotice(null)} /> : null}
 
-        <SectionTitle title="Your data" />
+        <SectionTitle title={t('privacySettings.sections.yourData')} />
         <ListGroup>
           <ListRow
             icon={Download}
-            title="Export my data"
-            subtitle="Download a copy of your profile, bookings and messages"
+            title={t('privacySettings.export.title')}
+            subtitle={t('privacySettings.export.subtitle')}
             onPress={handleExport}
             trailing={exporting ? <ActivityIndicator size="small" color={Colors.accent} /> : undefined}
             showChevron={!exporting}
           />
-          <ListRow icon={FileText} title="Privacy policy" subtitle="What we collect and why" onPress={() => router.push('/privacy-policy')} />
+          <ListRow
+            icon={FileText}
+            title={t('privacySettings.policy.title')}
+            subtitle={t('privacySettings.policy.subtitle')}
+            onPress={() => router.push('/privacy-policy')}
+          />
           <ListRow
             icon={Mail}
-            title="Exercise your ARCO rights"
-            subtitle={`Write to ${PRIVACY_EMAIL}`}
-            onPress={() => Linking.openURL(`mailto:${PRIVACY_EMAIL}?subject=ARCO%20request`).catch(() => {})}
+            title={t('privacySettings.arco.title')}
+            subtitle={t('privacySettings.arco.subtitle', { email: PRIVACY_EMAIL })}
+            onPress={() =>
+              Linking.openURL(
+                `mailto:${PRIVACY_EMAIL}?subject=${encodeURIComponent(t('privacySettings.arco.emailSubject'))}`
+              ).catch(() => {})
+            }
           />
         </ListGroup>
 
-        <SectionTitle title="Preferences" />
+        <SectionTitle title={t('privacySettings.sections.preferences')} />
         {consentState === 'loading' ? (
           <SkeletonCard lines={1} />
         ) : consentState === 'error' ? (
-          <Notice tone="error" message="Your preferences could not be loaded." actionLabel="Try again" onAction={loadConsent} />
+          <Notice
+            tone="error"
+            message={t('privacySettings.loadFailed')}
+            actionLabel={t('common:actions.tryAgain')}
+            onAction={loadConsent}
+          />
         ) : (
           <ListGroup>
             <ListRow
               icon={Megaphone}
-              title="News and offers"
-              subtitle="Occasional emails about new services. Off by default."
+              title={t('privacySettings.marketing.title')}
+              subtitle={t('privacySettings.marketing.subtitle')}
               showChevron={false}
               trailing={
                 <Switch
@@ -172,7 +191,8 @@ function PrivacySettingsScreen() {
                   trackColor={{ false: Colors.borderStrong, true: Colors.accentDark }}
                   thumbColor={marketing ? Colors.accentLight : Colors.textSecondary}
                   ios_backgroundColor={Colors.borderStrong}
-                  accessibilityLabel="News and offers emails"
+                  {...WEB_SWITCH_ON}
+                  accessibilityLabel={t('privacySettings.marketing.a11y')}
                 />
               }
             />
@@ -181,23 +201,23 @@ function PrivacySettingsScreen() {
         <ListGroup style={styles.gapTop}>
           <ListRow
             icon={MapPin}
-            title="Location"
-            subtitle={
-              user?.role === 'guard'
-                ? 'Shared with your client only while you are on an active job. Controlled by your device permission.'
-                : 'Used to set pickup points and to show your guard during a job. Controlled by your device permission.'
-            }
+            title={t('privacySettings.location.title')}
+            subtitle={user?.role === 'guard' ? t('privacySettings.location.guard') : t('privacySettings.location.client')}
             onPress={Platform.OS === 'web' ? undefined : openDeviceSettings}
-            accessibilityHint="Opens your device settings"
+            accessibilityHint={t('privacySettings.location.hint')}
           />
         </ListGroup>
+        {/* Fuera de la fila: el subtitulo de ListRow se corta a 2 lineas. */}
+        <AppText variant="footnote" color={Colors.textTertiary} style={styles.groupFooter}>
+          {t('privacySettings.location.permission')}
+        </AppText>
 
-        <SectionTitle title="Delete account" />
+        <SectionTitle title={t('privacySettings.sections.deleteAccount')} />
         <ListGroup>
           <ListRow
             icon={Trash2}
-            title="Delete my account"
-            subtitle="Request permanent deletion of your account and personal data"
+            title={t('privacySettings.deleteRow.title')}
+            subtitle={t('privacySettings.deleteRow.subtitle')}
             destructive
             onPress={openDelete}
           />
@@ -208,37 +228,33 @@ function PrivacySettingsScreen() {
         visible={deleteOpen}
         onClose={() => setDeleteOpen(false)}
         dismissable={!deleting}
-        eyebrow="Delete account"
-        title="Are you sure?"
+        eyebrow={t('privacySettings.deleteSheet.eyebrow')}
+        title={t('privacySettings.deleteSheet.title')}
         footer={
           <>
-            <Button title="Cancel" variant="secondary" onPress={() => setDeleteOpen(false)} disabled={deleting} style={styles.flex} />
+            <Button title={t('common:actions.cancel')} variant="secondary" onPress={() => setDeleteOpen(false)} disabled={deleting} style={styles.flex} />
             <Button
-              title="Delete account"
+              title={t('privacySettings.deleteSheet.confirm')}
               variant="danger"
               icon={Trash2}
               onPress={handleDelete}
               disabled={!confirmed}
               loading={deleting}
               style={styles.flex}
-              accessibilityLabel="Confirm account deletion request"
+              accessibilityLabel={t('privacySettings.deleteSheet.confirmA11y')}
             />
           </>
         }
       >
-        <AppText variant="callout">
-          We will send your request to Escolta Pro and sign you out. Your account and personal data are deleted within
-          30 days, except records the law requires us to keep (for example payment and tax records). Upcoming bookings
-          are not cancelled or refunded automatically — cancel them first.
-        </AppText>
+        <AppText variant="callout">{t('privacySettings.deleteSheet.body')}</AppText>
         <Input
-          label="Type DELETE to confirm"
+          label={t('privacySettings.deleteSheet.inputLabel', { keyword })}
           value={confirmText}
           onChangeText={setConfirmText}
           autoCapitalize="characters"
           autoCorrect={false}
-          placeholder="DELETE"
-          accessibilityLabel="Type DELETE to confirm"
+          placeholder={keyword}
+          accessibilityLabel={t('privacySettings.deleteSheet.inputLabel', { keyword })}
           returnKeyType="done"
           onSubmitEditing={handleDelete}
         />
@@ -262,6 +278,10 @@ const styles = StyleSheet.create({
   },
   gapTop: {
     marginTop: Space.md,
+  },
+  groupFooter: {
+    marginTop: Space.sm,
+    paddingHorizontal: Space.lg,
   },
   flex: {
     flex: 1,

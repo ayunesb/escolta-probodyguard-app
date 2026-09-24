@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Linking, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useTranslation } from 'react-i18next';
+import { formatTimeOfDay } from '@/i18n/format';
 import {
   AlertCircle,
   Clock,
@@ -62,6 +64,7 @@ export default function TrackingScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
+  const { t } = useTranslation(['booking', 'common']);
   const { booking, loading, error, notFound, retry } = useLiveBooking(bookingId);
   const { guard } = useGuardProfile(booking?.guardId);
 
@@ -129,9 +132,9 @@ export default function TrackingScreen() {
   if (loading || error || notFound || !booking) {
     return (
       <View style={styles.root}>
-        <NavBar title="Live tracking" />
+        <NavBar title={t('booking:tracking.title')} />
         {loading ? (
-          <View style={styles.flex} accessibilityLabel="Loading map">
+          <View style={styles.flex} accessibilityLabel={t('booking:tracking.loadingMap')}>
             <Skeleton width="100%" height={0} radius={0} style={styles.mapSkeleton} />
             <View style={[styles.sheetWrap, { paddingBottom: Math.max(insets.bottom, Space.lg) }]}>
               <View style={styles.sheet}>
@@ -150,13 +153,19 @@ export default function TrackingScreen() {
         ) : (
           <View style={styles.centerState}>
             {error ? (
-              <EmptyState icon={AlertCircle} title="Couldn't load tracking" message={error} actionLabel="Try again" onAction={retry} />
+              <EmptyState
+                icon={AlertCircle}
+                title={t('booking:tracking.loadError')}
+                message={error}
+                actionLabel={t('common:actions.tryAgain')}
+                onAction={retry}
+              />
             ) : (
               <EmptyState
                 icon={SearchX}
-                title="Booking unavailable"
-                message="It may have been removed, or you don't have access to it."
-                actionLabel="Go back"
+                title={t('booking:shared.unavailableTitle')}
+                message={t('booking:shared.unavailableMessage')}
+                actionLabel={t('common:actions.goBack')}
                 onAction={() => (router.canGoBack() ? router.back() : router.replace('/(tabs)/bookings'))}
               />
             )}
@@ -174,37 +183,54 @@ export default function TrackingScreen() {
   switch (booking.status) {
     case 'pending':
     case 'confirmed':
-      statusText = 'Live tracking starts once the booking is accepted.';
+      statusText = t('booking:tracking.notAccepted');
       break;
     case 'accepted':
     case 'en_route':
       if (!visible) {
         const mins = minutesUntilVisible(booking, now);
-        statusText =
-          viewer === 'guard'
-            ? `Your location is shared from 10 minutes before the start${mins ? ` (in ${humanMinutes(mins)})` : ''}, or once you tap “I’m on my way” in the booking.`
-            : `Live location appears 10 minutes before the start${mins ? ` — in ${humanMinutes(mins)}` : ''}.`;
+        if (viewer === 'guard') {
+          statusText = mins
+            ? t('booking:tracking.guardNotYetIn', { time: humanMinutes(mins) })
+            : t('booking:tracking.guardNotYet');
+        } else {
+          statusText = mins
+            ? t('booking:tracking.clientNotYetIn', { time: humanMinutes(mins) })
+            : t('booking:tracking.clientNotYet');
+        }
       } else if (!canRead) {
-        statusText = 'Live location is visible to the client and the protector.';
+        statusText = t('booking:tracking.onlyParticipants');
       } else if (!location) {
         statusIcon = Radio;
-        statusText = viewer === 'guard' ? 'Waiting for your first location fix…' : `Waiting for ${name ?? 'your protector'}’s location…`;
+        statusText =
+          viewer === 'guard'
+            ? t('booking:tracking.waitingOwn')
+            : name
+              ? t('booking:tracking.waitingNamed', { name })
+              : t('booking:tracking.waitingProtector');
       } else {
         statusIcon = Navigation;
         statusTone = Colors.accent;
-        statusText = viewer === 'guard' ? 'Heading to the pickup.' : `${name ?? 'Your protector'} is heading to the pickup.`;
+        statusText =
+          viewer === 'guard'
+            ? t('booking:tracking.headingOwn')
+            : name
+              ? t('booking:tracking.headingNamed', { name })
+              : t('booking:tracking.headingProtector');
       }
       break;
     case 'active':
       statusIcon = Shield;
       statusTone = Colors.success;
-      statusText = booking.startedAt ? `Service in progress since ${new Date(booking.startedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}.` : 'Service in progress.';
+      statusText = booking.startedAt
+        ? t('booking:tracking.activeSince', { time: formatTimeOfDay(new Date(booking.startedAt)) })
+        : t('booking:tracking.active');
       break;
     case 'completed':
-      statusText = 'Service completed. Tracking has ended.';
+      statusText = t('booking:tracking.completed');
       break;
     default:
-      statusText = 'Tracking has ended for this booking.';
+      statusText = t('booking:tracking.ended');
   }
   if (locationError && visible && canRead) {
     statusIcon = AlertCircle;
@@ -213,7 +239,7 @@ export default function TrackingScreen() {
   } else if (stale && visible && location) {
     statusIcon = AlertCircle;
     statusTone = Colors.warning;
-    statusText = `Last location ${timeAgo(location.timestamp, now)}. It updates when the signal returns.`;
+    statusText = t('booking:tracking.stale', { ago: timeAgo(location.timestamp, now) });
   }
   const StatusIcon = statusIcon;
 
@@ -223,7 +249,7 @@ export default function TrackingScreen() {
 
   return (
     <View style={styles.root}>
-      <NavBar title="Live tracking" right={<StatusBadge status={booking.status} />} />
+      <NavBar title={t('booking:tracking.title')} right={<StatusBadge status={booking.status} />} />
 
       <View style={styles.flex}>
         <MapView
@@ -233,10 +259,15 @@ export default function TrackingScreen() {
           initialRegion={initialRegion}
           showsUserLocation={false}
           showsMyLocationButton={false}
-          accessibilityLabel="Map with the pickup point and the protector's live location"
+          accessibilityLabel={t('booking:tracking.mapA11y')}
         >
           {pickup ? (
-            <Marker coordinate={pickup} title="Pickup" description={booking.pickupAddress} anchor={{ x: 0.5, y: 0.5 }}>
+            <Marker
+              coordinate={pickup}
+              title={t('booking:tracking.pickupMarker')}
+              description={booking.pickupAddress}
+              anchor={{ x: 0.5, y: 0.5 }}
+            >
               <View style={styles.pickupPin}>
                 <MapPin size={16} color={Colors.textPrimary} strokeWidth={ICON_STROKE} />
               </View>
@@ -245,7 +276,7 @@ export default function TrackingScreen() {
           {guardPoint ? (
             <Marker
               coordinate={guardPoint}
-              title={viewer === 'guard' ? 'You' : (name ?? 'Your protector')}
+              title={viewer === 'guard' ? t('booking:tracking.you') : (name ?? t('booking:shared.yourProtector'))}
               anchor={{ x: 0.5, y: 0.5 }}
               zIndex={10}
             >
@@ -266,7 +297,13 @@ export default function TrackingScreen() {
             <PanicButton userId={user.id} bookingId={booking.id} size="small" />
           ) : null}
           {pickup || guardPoint ? (
-            <IconButton icon={LocateFixed} onPress={fit} accessibilityLabel="Recenter map" size={44} style={styles.recenter} />
+            <IconButton
+              icon={LocateFixed}
+              onPress={fit}
+              accessibilityLabel={t('booking:tracking.recenter')}
+              size={44}
+              style={styles.recenter}
+            />
           ) : null}
         </View>
 
@@ -287,10 +324,12 @@ export default function TrackingScreen() {
               )}
               <View style={styles.flex}>
                 <AppText variant="headline" numberOfLines={1}>
-                  {viewer === 'guard' ? 'Client pickup' : (name ?? 'Your protector')}
+                  {viewer === 'guard' ? t('booking:tracking.clientPickup') : (name ?? t('booking:shared.yourProtector'))}
                 </AppText>
                 <AppText variant="footnote" numberOfLines={2}>
-                  {viewer === 'guard' ? booking.pickupAddress || '—' : `Pickup at ${formatTime(booking)} · ${booking.pickupAddress || '—'}`}
+                  {viewer === 'guard'
+                    ? booking.pickupAddress || '—'
+                    : t('booking:tracking.pickupAt', { time: formatTime(booking), address: booking.pickupAddress || '—' })}
                 </AppText>
               </View>
             </View>
@@ -307,17 +346,17 @@ export default function TrackingScreen() {
             {distanceKm !== null ? (
               <View style={styles.stats}>
                 <View style={styles.stat}>
-                  <AppText variant="overline">Distance</AppText>
+                  <AppText variant="overline">{t('booking:tracking.distance')}</AppText>
                   <AppText variant="numeric">{formatDistance(distanceKm)}</AppText>
                 </View>
                 <View style={styles.statDivider} />
                 <View style={styles.stat}>
-                  <AppText variant="overline">ETA approx.</AppText>
+                  <AppText variant="overline">{t('booking:tracking.eta')}</AppText>
                   <AppText variant="numeric">{humanMinutes(estimateEtaMinutes(distanceKm))}</AppText>
                 </View>
                 <View style={styles.statDivider} />
                 <View style={styles.stat}>
-                  <AppText variant="overline">Updated</AppText>
+                  <AppText variant="overline">{t('booking:tracking.updated')}</AppText>
                   <AppText variant="numeric">{timeAgo(location?.timestamp, now)}</AppText>
                 </View>
               </View>
@@ -328,34 +367,45 @@ export default function TrackingScreen() {
                 <AppText variant="footnote" color={Colors.error} style={styles.flex}>
                   {sharing.error}
                 </AppText>
-                <Button title="Retry" variant="ghost" size="sm" fullWidth={false} onPress={sharing.retry} />
+                <Button
+                  title={t('common:actions.retry')}
+                  variant="ghost"
+                  size="sm"
+                  fullWidth={false}
+                  onPress={sharing.retry}
+                />
               </View>
             ) : null}
 
             {/* Acciones */}
             {canStart ? (
-              <Button title="Enter start code" icon={KeyRound} onPress={() => setCodeOpen(true)} style={styles.primary} />
+              <Button
+                title={t('booking:shared.enterStartCode')}
+                icon={KeyRound}
+                onPress={() => setCodeOpen(true)}
+                style={styles.primary}
+              />
             ) : null}
             {viewer !== 'observer' ? (
               <View style={styles.actions}>
                 <Button
-                  title="Message"
+                  title={t('booking:tracking.message')}
                   icon={MessageCircle}
                   variant="secondary"
                   onPress={openChat}
                   style={styles.flex}
-                  accessibilityLabel={viewer === 'guard' ? 'Message the client' : 'Message your protector'}
+                  accessibilityLabel={t(viewer === 'guard' ? 'booking:tracking.messageClient' : 'booking:tracking.messageProtector')}
                 />
                 {phone ? (
                   <Button
-                    title="Call"
+                    title={t('booking:tracking.call')}
                     icon={Phone}
                     variant="secondary"
                     onPress={() => {
                       Linking.openURL(`tel:${phone}`).catch(() => {});
                     }}
                     style={styles.flex}
-                    accessibilityLabel={`Call ${name ?? 'your protector'}`}
+                    accessibilityLabel={name ? t('booking:tracking.callNamed', { name }) : t('booking:tracking.callProtector')}
                   />
                 ) : null}
               </View>

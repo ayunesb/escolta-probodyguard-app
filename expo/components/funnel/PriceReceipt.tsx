@@ -1,5 +1,6 @@
 import React from 'react';
 import { StyleSheet, View } from 'react-native';
+import { useTranslation } from 'react-i18next';
 import { Divider, InfoRow } from '@/components/ui';
 import { Space } from '@/constants/design';
 import { formatMXN, PRICING } from '@/utils/pricing';
@@ -16,32 +17,35 @@ export interface PriceReceiptProps {
 
 // Receipt lines. Only prints what it was given: no line is recomputed here.
 export function PriceReceipt({ breakdown, duration, protectors }: PriceReceiptProps) {
+  const { t } = useTranslation('funnel');
   const base = breakdown.baseSubtotal ?? breakdown.subtotal;
   const serviceLabel =
     duration && protectors
-      ? `Protection · ${duration} h${protectors > 1 ? ` × ${protectors}` : ''}`
-      : 'Protection service';
+      ? protectors > 1
+        ? t('receipt.serviceTeam', { hours: duration, protectors })
+        : t('receipt.service', { hours: duration })
+      : t('receipt.serviceGeneric');
 
   return (
     <View style={styles.receipt}>
       {typeof base === 'number' ? <InfoRow label={serviceLabel} value={formatMXN(base)} /> : null}
       {breakdown.armoredSurcharge ? (
         <InfoRow
-          label={`Armored vehicle ${pct(PRICING.ARMORED_VEHICLE_MULTIPLIER)}`}
+          label={t('receipt.armored', { pct: pct(PRICING.ARMORED_VEHICLE_MULTIPLIER) })}
           value={formatMXN(breakdown.armoredSurcharge)}
         />
       ) : null}
       {breakdown.armedSurcharge ? (
         <InfoRow
-          label={`Armed protection ${pct(PRICING.ARMED_PROTECTION_MULTIPLIER)}`}
+          label={t('receipt.armed', { pct: pct(PRICING.ARMED_PROTECTION_MULTIPLIER) })}
           value={formatMXN(breakdown.armedSurcharge)}
         />
       ) : null}
       {typeof breakdown.processingFee === 'number' ? (
-        <InfoRow label="Processing fee" value={formatMXN(breakdown.processingFee)} />
+        <InfoRow label={t('receipt.processingFee')} value={formatMXN(breakdown.processingFee)} />
       ) : null}
       <Divider style={styles.divider} />
-      <InfoRow label="Total" value={formatMXN(breakdown.total)} emphasis />
+      <InfoRow label={t('receipt.total')} value={formatMXN(breakdown.total)} emphasis />
     </View>
   );
 }

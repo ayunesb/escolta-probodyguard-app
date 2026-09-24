@@ -1,6 +1,7 @@
 import React from 'react';
 import { StyleSheet, View } from 'react-native';
 import { Minus, Plus } from 'lucide-react-native';
+import { useTranslation } from 'react-i18next';
 import Colors from '@/constants/colors';
 import { Space } from '@/constants/design';
 import { AppText, IconButton } from '@/components/ui';
@@ -14,17 +15,21 @@ export interface StepperRowProps {
   onChange: (value: number) => void;
   // How the value reads, e.g. (n) => `${n} h`
   format?: (value: number) => string;
-  // Singular noun for screen readers ("protector", "hour")
+  // Singular noun for screen readers ("protector", "hour"). English only:
+  // prefer `formatSpoken`, which can pluralise in any language.
   unit?: string;
+  // What a screen reader says for the value, e.g. (n) => t('hours', { count: n })
+  formatSpoken?: (value: number) => string;
 }
 
 // Label on the left, − value + on the right. Limits come from the caller
 // (PRICING for anything that affects the price) and the buttons disable at
 // the bounds, so an out-of-range value can never be produced.
-export function StepperRow({ label, hint, value, min, max, onChange, format, unit }: StepperRowProps) {
+export function StepperRow({ label, hint, value, min, max, onChange, format, unit, formatSpoken }: StepperRowProps) {
+  const { t } = useTranslation('funnel');
   const clamp = (n: number) => Math.min(max, Math.max(min, n));
   const shown = format ? format(value) : String(value);
-  const spoken = unit ? `${value} ${unit}${value === 1 ? '' : 's'}` : shown;
+  const spoken = formatSpoken ? formatSpoken(value) : unit ? `${value} ${unit}${value === 1 ? '' : 's'}` : shown;
 
   return (
     <View
@@ -53,7 +58,7 @@ export function StepperRow({ label, hint, value, min, max, onChange, format, uni
           size={36}
           onPress={() => onChange(clamp(value - 1))}
           disabled={value <= min}
-          accessibilityLabel={`Fewer ${label.toLowerCase()}`}
+          accessibilityLabel={t('stepper.decrease', { label: label.toLowerCase() })}
         />
         <AppText variant="numeric" align="center" style={styles.value}>
           {shown}
@@ -63,7 +68,7 @@ export function StepperRow({ label, hint, value, min, max, onChange, format, uni
           size={36}
           onPress={() => onChange(clamp(value + 1))}
           disabled={value >= max}
-          accessibilityLabel={`More ${label.toLowerCase()}`}
+          accessibilityLabel={t('stepper.increase', { label: label.toLowerCase() })}
         />
       </View>
     </View>

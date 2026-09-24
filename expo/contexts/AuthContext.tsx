@@ -18,6 +18,7 @@ import { rateLimitService } from "@/services/rateLimitService";
 import { monitoringService } from "@/services/monitoringService";
 import { validatePasswordStrength } from "@/utils/passwordValidation";
 import { logger } from "@/utils/logger";
+import i18n, { applyProfileLanguage, currentLanguage } from "@/i18n";
 
 // Roles que la app sabe mostrar. Un documento con otro valor (p. ej. el
 // 'bodyguard' viejo del sembrador) provocaba un bucle de redirecciones
@@ -104,17 +105,18 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
 
         if (!VALID_ROLES.includes(profile.role)) {
           logger.error("[Auth] Invalid role on profile", { role: profile.role });
-          setAuthError("This account isn't set up correctly. Please contact support.");
+          setAuthError(i18n.t("auth:errors.profileMisconfigured"));
           await firebaseSignOut(getAuthInstance()).catch(() => {});
           setUser(null);
         } else if ((profile as { suspended?: boolean }).suspended === true) {
-          setAuthError("This account has been suspended. Please contact support.");
+          setAuthError(i18n.t("auth:errors.suspended"));
           await firebaseSignOut(getAuthInstance()).catch(() => {});
           setUser(null);
         } else {
           setAuthError(null);
           markActivity();
           setUser({ id: firebaseUser.uid, ...profile });
+          applyProfileLanguage(profile.language);
           // El registro de avisos push va en segundo plano: antes el
           // arranque esperaba el permiso, dos peticiones de token y dos
           // escrituras antes de mostrar nada. Y ya registra el rol real
@@ -127,8 +129,8 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
         logger.error("[Auth] Error loading user profile", { error: error?.message ?? error });
         setAuthError(
           error?.code === "permission-denied"
-            ? "We couldn't open your profile. Please contact support."
-            : "We couldn't load your profile. Check your connection and try again."
+            ? i18n.t("auth:errors.profileDenied")
+            : i18n.t("auth:errors.profileLoadFailed")
         );
         // Sin cerrar sesion aqui el boton de acceso giraba para siempre:
         // Firebase no vuelve a disparar el listener para el mismo usuario.
@@ -152,22 +154,22 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
         const credential = await signInWithEmailAndPassword(getAuthInstance(), email, password);
         if (!credential.user.emailVerified && !allowUnverified()) {
           await firebaseSignOut(getAuthInstance()).catch(() => {});
-          return { success: false, error: "Please verify your email before signing in.", emailNotVerified: true };
+          return { success: false, error: i18n.t("auth:errors.verifyFirst"), emailNotVerified: true };
         }
         await rateLimitService.resetRateLimit("login", email);
         monitoringService.trackEvent("user_login", { userId: credential.user.uid }, credential.user.uid).catch(() => {});
         return { success: true };
       } catch (error: any) {
         logger.error("[Auth] Sign in error", { code: error?.code });
-        let message = "We couldn't sign you in. Please try again.";
+        let message = i18n.t("auth:errors.signInFailed");
         if (error?.code === "auth/user-not-found" || error?.code === "auth/invalid-credential" || error?.code === "auth/wrong-password") {
-          message = "That email and password don't match.";
+          message = i18n.t("auth:errors.wrongCredentials");
         } else if (error?.code === "auth/invalid-email") {
-          message = "That email address isn't valid.";
+          message = i18n.t("auth:validation.emailInvalid");
         } else if (error?.code === "auth/too-many-requests") {
-          message = "Too many attempts. Please wait a moment and try again.";
+          message = i18n.t("auth:errors.tooManyAttempts");
         } else if (error?.code === "auth/network-request-failed") {
-          message = "No connection. Check your network and try again.";
+          message = i18n.t("auth:errors.network");
         }
         return { success: false, error: message };
       }
@@ -187,11 +189,11 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
       consents?: { terms: boolean; privacy: boolean; dataProcessing: boolean; marketing: boolean }
     ): Promise<AuthResult & { needsVerification?: boolean }> => {
       if (!SELF_SERVICE_ROLES.includes(role)) {
-        return { success: false, error: "That account type isn't available." };
+        return { success: false, error: i18n.t("auth:errors.roleUnavailable") };
       }
       const passwordValidation = validatePasswordStrength(password);
       if (!passwordValidation.isValid) {
-        return { success: false, error: `Password is not strong enough: ${passwordValidation.feedback.join(", ")}` };
+        return { success: false, error: i18n.t("auth:errors.weakPassword", { feedback: passwordValidation.feedback.join(", ") }) };
       }
 
       authFlowRef.current = true;
@@ -206,7 +208,7 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
           firstName,
           lastName,
           phone,
-          language: "en",
+          language: currentLanguage(),
           kycStatus: "pending",
           createdAt: now,
           updatedAt: now,
@@ -234,11 +236,11 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
         return { success: true, needsVerification: true };
       } catch (error: any) {
         logger.error("[Auth] Sign up error", { code: error?.code, message: error?.message });
-        let message = "We couldn't create your account. Please try again.";
-        if (error?.code === "auth/email-already-in-use") message = "An account with this email already exists. Try signing in.";
-        else if (error?.code === "auth/invalid-email") message = "That email address isn't valid.";
-        else if (error?.code === "auth/weak-password") message = "Please choose a stronger password.";
-        else if (error?.code === "auth/network-request-failed") message = "No connection. Check your network and try again.";
+        let message = i18n.t("auth:errors.signUpFailed");
+        if (error?.code === "auth/email-already-in-use") message = i18n.t("auth:errors.emailInUse");
+        else if (error?.code === "auth/invalid-email") message = i18n.t("auth:validation.emailInvalid");
+        else if (error?.code === "auth/weak-password") message = i18n.t("auth:errors.chooseStronger");
+        else if (error?.code === "auth/network-request-failed") message = i18n.t("auth:errors.network");
         return { success: false, error: message };
       } finally {
         await firebaseSignOut(getAuthInstance()).catch(() => {});
@@ -280,16 +282,16 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
     try {
       const credential = await signInWithEmailAndPassword(getAuthInstance(), email, password);
       if (credential.user.emailVerified) {
-        return { success: false, error: "Your email is already verified. Sign in again." };
+        return { success: false, error: i18n.t("auth:errors.alreadyVerified") };
       }
       await sendEmailVerification(credential.user);
       return { success: true };
     } catch (error: any) {
       logger.error("[Auth] Resend verification error", { code: error?.code });
       if (error?.code === "auth/too-many-requests") {
-        return { success: false, error: "We just sent one. Please wait a few minutes before trying again." };
+        return { success: false, error: i18n.t("auth:errors.resendTooSoon") };
       }
-      return { success: false, error: "We couldn't resend the verification email." };
+      return { success: false, error: i18n.t("auth:errors.resendFailed") };
     } finally {
       await firebaseSignOut(getAuthInstance()).catch(() => {});
       authFlowRef.current = false;
@@ -300,16 +302,16 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
   // revelar que correos estan registrados.
   const resetPassword = useCallback(async (email: string): Promise<AuthResult> => {
     const trimmed = email.trim();
-    if (!trimmed) return { success: false, error: "Enter your email address first." };
+    if (!trimmed) return { success: false, error: i18n.t("auth:errors.emailFirst") };
     try {
       await sendPasswordResetEmail(getAuthInstance(), trimmed);
       return { success: true };
     } catch (error: any) {
-      if (error?.code === "auth/invalid-email") return { success: false, error: "That email address isn't valid." };
+      if (error?.code === "auth/invalid-email") return { success: false, error: i18n.t("auth:validation.emailInvalid") };
       if (error?.code === "auth/user-not-found") return { success: true };
-      if (error?.code === "auth/network-request-failed") return { success: false, error: "No connection. Check your network and try again." };
+      if (error?.code === "auth/network-request-failed") return { success: false, error: i18n.t("auth:errors.network") };
       logger.error("[Auth] Password reset error", { code: error?.code });
-      return { success: false, error: "We couldn't send the reset email. Please try again." };
+      return { success: false, error: i18n.t("auth:errors.resetFailed") };
     }
   }, []);
 
@@ -323,7 +325,7 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
     const expireIfIdle = () => {
       if (Date.now() - lastActivityRef.current >= IDLE_TIMEOUT_MS) {
         logger.log("[Auth] Signing out after inactivity");
-        setAuthError("You were signed out after 30 minutes of inactivity.");
+        setAuthError(i18n.t("auth:errors.idleSignOut"));
         signOut();
       }
     };

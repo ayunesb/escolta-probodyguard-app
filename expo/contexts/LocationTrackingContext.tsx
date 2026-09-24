@@ -21,6 +21,7 @@ import {
   type LocationPermission,
 } from '@/services/locationTrackingService';
 import { logger } from '@/utils/logger';
+import i18n from '@/i18n';
 
 // Minimo entre escrituras: suficiente para seguir un coche en ciudad sin
 // gastar bateria ni cuota.
@@ -77,11 +78,11 @@ export const [LocationTrackingProvider, useLocationTracking] = createContextHook
       if (generation !== generationRef.current) return;
       setPermission(perm);
       if (perm === 'denied') {
-        setErrorOnce('Location permission is off. Turn it on so your client can see you arrive.');
+        setErrorOnce(i18n.t('booking:location.permissionOff'));
         return;
       }
       if (perm === 'unavailable') {
-        setErrorOnce("Location isn't available on this device.");
+        setErrorOnce(i18n.t('booking:location.unavailable'));
         return;
       }
 
@@ -99,7 +100,7 @@ export const [LocationTrackingProvider, useLocationTracking] = createContextHook
               .catch((error) => {
                 logger.error('[Location] Publishing failed', { bookingId, error });
                 if (generation === generationRef.current) {
-                  setErrorOnce("Your location couldn't be shared. Check your connection.");
+                  setErrorOnce(i18n.t('booking:location.shareFailed'));
                 }
               });
           },
@@ -107,9 +108,7 @@ export const [LocationTrackingProvider, useLocationTracking] = createContextHook
             if (generation !== generationRef.current) return;
             if (error.kind === 'denied') setPermission('denied');
             setErrorOnce(
-              error.kind === 'denied'
-                ? 'Location permission is off. Turn it on so your client can see you arrive.'
-                : error.message
+              error.kind === 'denied' ? i18n.t('booking:location.permissionOff') : error.message
             );
           }
         );
@@ -123,7 +122,7 @@ export const [LocationTrackingProvider, useLocationTracking] = createContextHook
         setPublishingBookingId(bookingId);
       } catch (error) {
         logger.error('[Location] Could not start location updates', { error });
-        if (generation === generationRef.current) setErrorOnce("We couldn't start sharing your location.");
+        if (generation === generationRef.current) setErrorOnce(i18n.t('booking:location.startFailed'));
       }
     },
     [setErrorOnce, stopActive]
@@ -232,7 +231,7 @@ export function useBookingLocation(bookingId: string | null | undefined, enabled
     return subscribeToBookingLocation(
       bookingId,
       (location) => setState({ location, error: null, loaded: true }),
-      () => setState({ location: null, error: "Live location isn't available right now.", loaded: true })
+      () => setState({ location: null, error: i18n.t('booking:location.liveUnavailable'), loaded: true })
     );
   }, [bookingId, enabled]);
 

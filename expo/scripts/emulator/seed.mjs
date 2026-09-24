@@ -58,7 +58,8 @@ const baseProfile = (email, firstName, lastName, role, extra = {}) => ({
   firstName,
   lastName,
   phone: '+52 984 000 0000',
-  language: 'es',
+  // Idioma del perfil: 'en' para que en modo de prueba decida el selector EN | ES del dispositivo.
+  language: 'en',
   kycStatus: 'approved',
   createdAt: iso(daysFrom(-60)),
   updatedAt: iso(now),

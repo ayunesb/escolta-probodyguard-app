@@ -2,6 +2,7 @@ import React from 'react';
 import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { X } from 'lucide-react-native';
+import { useTranslation } from 'react-i18next';
 import Colors from '@/constants/colors';
 import { MAX_CONTENT_WIDTH, Radius, Shadow, Space } from '@/constants/design';
 import { AppText, IconButton } from '@/components/ui';
@@ -25,6 +26,7 @@ export interface SheetProps {
 // iOS). Abajo en el telefono, centrada en web.
 export function Sheet({ visible, onClose, title, eyebrow, subtitle, children, footer, dismissable = true, testID }: SheetProps) {
   const insets = useSafeAreaInsets();
+  const { t } = useTranslation('common');
   const isWeb = Platform.OS === 'web';
   const close = () => {
     if (dismissable) onClose();
@@ -40,7 +42,7 @@ export function Sheet({ visible, onClose, title, eyebrow, subtitle, children, fo
           style={StyleSheet.absoluteFill}
           onPress={close}
           accessibilityRole="button"
-          accessibilityLabel="Close"
+          accessibilityLabel={t('actions.close')}
           accessible={dismissable}
         />
         <View
@@ -64,7 +66,7 @@ export function Sheet({ visible, onClose, title, eyebrow, subtitle, children, fo
               </AppText>
               {subtitle ? <AppText variant="callout">{subtitle}</AppText> : null}
             </View>
-            {dismissable ? <IconButton icon={X} onPress={onClose} accessibilityLabel="Close" size={36} /> : null}
+            {dismissable ? <IconButton icon={X} onPress={onClose} accessibilityLabel={t('actions.close')} size={36} /> : null}
           </View>
           <ScrollView
             style={styles.body}

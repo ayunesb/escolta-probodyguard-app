@@ -17,6 +17,7 @@ import Colors from '@/constants/colors';
 import { MAX_CONTENT_WIDTH, Space } from '@/constants/design';
 import { AppText } from './AppText';
 import { IconButton } from './Controls';
+import i18n from '@/i18n';
 
 // Atmosfera "Midnight": dos fuentes de luz fria (arriba a la derecha y un
 // eco abajo a la izquierda) sobre el azul medianoche. Da profundidad sin ruido.
@@ -173,7 +174,7 @@ export function NavBar({ title, onBack, right, hideBack, transparent }: NavBarPr
     <View style={[styles.navBar, { paddingTop: insets.top + Space.sm }, transparent ? null : styles.navBarSolid]}>
       <View style={[styles.column, styles.navRow]}>
         <View style={styles.navSide}>
-          {hideBack ? null : <IconButton icon={ChevronLeft} onPress={goBack} accessibilityLabel="Go back" />}
+          {hideBack ? null : <IconButton icon={ChevronLeft} onPress={goBack} accessibilityLabel={i18n.t('common:actions.goBack')} />}
         </View>
         <AppText variant="headline" numberOfLines={1} style={styles.navTitle} accessibilityRole="header">
           {title ?? ''}

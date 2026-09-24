@@ -3,6 +3,7 @@
 // botones (en web solo corre el primero).
 import React, { useEffect, useState } from 'react';
 import { KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, View } from 'react-native';
+import { useTranslation } from 'react-i18next';
 import Colors from '@/constants/colors';
 import { Radius, Shadow, Space } from '@/constants/design';
 import { AppText, Button, Input } from '@/components/ui';
@@ -31,11 +32,12 @@ export function ActionModal({
   message,
   confirmLabel,
   confirmVariant = 'primary',
-  cancelLabel = 'Go back',
+  cancelLabel,
   input,
   onConfirm,
   onClose,
 }: ActionModalProps) {
+  const { t } = useTranslation(['booking', 'common']);
   const [value, setValue] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -56,7 +58,7 @@ export function ActionModal({
     if (busy) return;
     const trimmed = value.trim();
     if (input?.required && !trimmed) {
-      setError(`Please add a ${input.label.toLowerCase()}.`);
+      setError(t('booking:modals.required', { field: input.label.toLowerCase() }));
       return;
     }
     setBusy(true);
@@ -67,7 +69,7 @@ export function ActionModal({
       onClose();
     } catch (e) {
       setBusy(false);
-      setError(e instanceof Error ? e.message : 'Something went wrong. Please try again.');
+      setError(e instanceof Error ? e.message : t('common:errors.generic'));
     }
   };
 
@@ -75,7 +77,7 @@ export function ActionModal({
     <Modal visible={visible} transparent animationType="fade" onRequestClose={close}>
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <View style={styles.overlay}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={close} accessibilityLabel="Close dialog" />
+          <Pressable style={StyleSheet.absoluteFill} onPress={close} accessibilityLabel={t('booking:modals.closeDialog')} />
           <View style={styles.sheet} accessibilityViewIsModal>
             <AppText variant="title2" accessibilityRole="header">
               {title}
@@ -111,7 +113,13 @@ export function ActionModal({
             ) : null}
 
             <View style={styles.actions}>
-              <Button title={cancelLabel} variant="secondary" onPress={close} disabled={busy} style={styles.action} />
+              <Button
+                title={cancelLabel ?? t('common:actions.goBack')}
+                variant="secondary"
+                onPress={close}
+                disabled={busy}
+                style={styles.action}
+              />
               <Button
                 title={confirmLabel}
                 variant={confirmVariant}

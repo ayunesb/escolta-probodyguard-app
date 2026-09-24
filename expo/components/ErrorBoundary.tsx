@@ -7,15 +7,16 @@ import { AppText } from "@/components/ui/AppText";
 import { Button } from "@/components/ui/Button";
 import { BrandMark } from "@/components/ui/Brand";
 import { reportError } from "@/services/sentryService";
+import i18n from "@/i18n";
 
 // Vista de error compartida por el limite raiz y los de pantalla. No usa
 // Screen ni safe-area: el limite raiz envuelve a SafeAreaProvider, asi que
 // aqui no hay contexto del que depender.
 export function ErrorFallbackView({
-  title = "Something went wrong",
-  message = "We hit an unexpected problem. Your bookings and payments are safe — please try again.",
+  title = i18n.t("common:errorBoundary.title"),
+  message = i18n.t("common:errorBoundary.message"),
   error,
-  primaryLabel = "Try again",
+  primaryLabel = i18n.t("common:actions.tryAgain"),
   onPrimary,
   secondaryLabel,
   onSecondary,

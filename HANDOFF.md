@@ -73,6 +73,23 @@ Full list of fixes by area: see the commit message.
 5. **Cloud Functions** once Firebase is on the Blaze plan: `firebase deploy --only functions`
    (confirm deleting the two removed demo functions).
 
+## English / Español
+
+The whole app is bilingual. The **EN | ES** switch is on the sign-in screen (top right) and under
+Account → Language. The choice is remembered on the device and saved to the user's profile
+(`users/{uid}.language`). On first launch the app follows the phone's language.
+
+- Engine: i18next + react-i18next in `expo/i18n/`. English is the source of truth
+  (`i18n/locales/en/*.ts`). Spanish (`i18n/locales/es/*.ts`) is type-checked against it, so a missing or
+  extra key fails `tsc`.
+- Spanish copy is Mexican Spanish with formal "usted". Dates use `es-MX`. Money stays MXN.
+- Push notifications (Cloud Functions, `functions/src/notificaciones.ts`) are sent in each recipient's profile
+  language, Spanish when unknown. Profiles created before this change carry `language: "en"` by default. If
+  real Mexican users signed up earlier, set theirs to `"es"`, or they will get English pushes until they
+  pick a language in the app.
+- To add text: put the English string in the right namespace file, add the Spanish one with the same key,
+  and use `const { t } = useTranslation('<namespace>')`.
+
 ## Test mode: one-tap login for every role
 
 ```bash
@@ -110,8 +127,6 @@ that cannot reach the real one. Details: `expo/scripts/emulator/README.md`.
 
 ## Known gaps / next steps
 
-- **Language**: the UI is English while the market is Mexico. A translation layer exists but no screen
-  uses it yet.
 - **Refunds** are recorded, not executed — money moves in the Stripe dashboard. A server refund endpoint
   is the next payments task.
 - **Background location** only shares while the guard's app is open (the background task still targets

@@ -21,6 +21,7 @@ import { ChatMessage, Language } from '@/types';
 import { translationService } from './translationService';
 import { rateLimitService } from './rateLimitService';
 import { logger } from '@/utils/logger';
+import i18n from '@/i18n';
 
 export interface TypingIndicator {
   userId: string;
@@ -116,7 +117,7 @@ export const chatService = {
       await addDoc(collection(getDbInstance(), 'messages'), messageData);
     } catch (error) {
       logger.error('[Chat] Error sending message', { bookingId, error });
-      throw new Error("Your message wasn't sent. Please try again.");
+      throw new Error(i18n.t('booking:errors.messageNotSent'));
     }
   },
 
@@ -182,7 +183,7 @@ export const chatService = {
             return;
           }
           logger.error('[Chat] Message subscription failed', { bookingId, error });
-          onError?.(new Error("Messages couldn't be loaded."));
+          onError?.(new Error(i18n.t('booking:errors.messagesLoad')));
         }
       );
     };
@@ -191,7 +192,7 @@ export const chatService = {
       listen(true);
     } catch (error) {
       logger.error('[Chat] Error subscribing to messages', { bookingId, error });
-      onError?.(new Error("Messages couldn't be loaded."));
+      onError?.(new Error(i18n.t('booking:errors.messagesLoad')));
     }
 
     return () => {

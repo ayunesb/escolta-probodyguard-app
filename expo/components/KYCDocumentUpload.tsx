@@ -3,6 +3,8 @@ import { Image, Platform, StyleSheet, View } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { getDownloadURL, getStorage, ref as storageRef, uploadBytes } from 'firebase/storage';
 import { Camera, CircleCheck, FileText, ImagePlus, Upload, X } from 'lucide-react-native';
+import { useTranslation } from 'react-i18next';
+import i18n from '@/i18n';
 import Colors from '@/constants/colors';
 import { ICON_STROKE, Radius, Space } from '@/constants/design';
 import { AppText, Badge, Button, Card, PressableScale } from '@/components/ui';
@@ -66,12 +68,12 @@ async function uploadToStorage(
 
 function uploadErrorMessage(error: unknown): string {
   const code = (error as { code?: string })?.code ?? '';
-  if (code === 'app/too-large') return 'That file is larger than 5 MB. Choose a smaller photo.';
-  if (code === 'storage/unauthorized') return 'Upload not allowed. Files must be images under 5 MB.';
+  if (code === 'app/too-large') return i18n.t('account:upload.errors.tooLarge');
+  if (code === 'storage/unauthorized') return i18n.t('account:upload.errors.unauthorized');
   if (code === 'storage/retry-limit-exceeded' || code === 'storage/network-request-failed' || /network/i.test(code)) {
-    return 'Connection problem while uploading. Check your network and try again.';
+    return i18n.t('account:upload.errors.network');
   }
-  return 'The file could not be uploaded. Please try again.';
+  return i18n.t('account:upload.errors.generic');
 }
 
 export default function KYCDocumentUpload({
@@ -85,6 +87,7 @@ export default function KYCDocumentUpload({
   initialImages = [],
   disabled = false,
 }: KYCDocumentUploadProps) {
+  const { t } = useTranslation(['account', 'common']);
   const [images, setImages] = useState<string[]>(initialImages);
   const [busy, setBusy] = useState<Busy>('idle');
   const [error, setError] = useState<UploadError | null>(null);
@@ -116,10 +119,8 @@ export default function KYCDocumentUpload({
     } catch (e) {
       logger.error('[KYCUpload] Saving the document record failed', e);
       setError({
-        message: uploaded
-          ? 'The file was uploaded but your record could not be saved, so it is not on file yet.'
-          : 'Your change could not be saved.',
-        retryLabel: 'Try saving again',
+        message: uploaded ? t('upload.errors.recordNotSaved') : t('upload.errors.changeNotSaved'),
+        retryLabel: t('upload.retrySave'),
         retry: () => persist(next, uploaded),
       });
     } finally {
@@ -136,7 +137,7 @@ export default function KYCDocumentUpload({
     } catch (e) {
       logger.error('[KYCUpload] Storage upload failed', e);
       setBusy('idle');
-      setError({ message: uploadErrorMessage(e), retryLabel: 'Try again', retry: () => uploadAsset(localUri) });
+      setError({ message: uploadErrorMessage(e), retryLabel: t('common:actions.tryAgain'), retry: () => uploadAsset(localUri) });
       return;
     }
     await persist([...images, uploaded.url], { path: uploaded.path, size: uploaded.size });
@@ -153,10 +154,7 @@ export default function KYCDocumentUpload({
             : await ImagePicker.requestMediaLibraryPermissionsAsync();
         if (permission.status !== 'granted') {
           setError({
-            message:
-              source === 'camera'
-                ? 'Camera access is off. Allow it in your device settings to take a photo.'
-                : 'Photo library access is off. Allow it in your device settings to choose a file.',
+            message: source === 'camera' ? t('upload.errors.cameraOff') : t('upload.errors.libraryOff'),
           });
           return;
         }
@@ -174,19 +172,30 @@ export default function KYCDocumentUpload({
       await uploadAsset(result.assets[0].uri);
     } catch (e) {
       logger.error('[KYCUpload] Picker failed', e);
-      setError({ message: 'We could not open your photos. Please try again.' });
+      setError({ message: t('upload.errors.picker') });
     }
   };
 
   const remove = async (index: number) => {
     if (busy !== 'idle' || disabled) return;
-    const ok = await confirm('Remove this file?', `It will no longer be part of your ${label.toLowerCase()}.`, 'Remove', 'Cancel', true);
+    const ok = await confirm(
+      t('upload.removeConfirm.title'),
+      t('upload.removeConfirm.message', { label: label.toLowerCase(), name: label }),
+      t('upload.removeConfirm.confirm'),
+      t('common:actions.cancel'),
+      true
+    );
     if (!ok) return;
     await persist(images.filter((_, i) => i !== index));
   };
 
   const LeadIcon = PUBLIC_TYPES.includes(documentType) ? Camera : FileText;
-  const statusLabel = images.length > 0 ? `${images.length}/${maxImages} on file` : isKyc ? 'Not provided' : 'Optional';
+  const statusLabel =
+    images.length > 0
+      ? t('upload.status.onFile', { n: images.length, max: maxImages })
+      : isKyc
+      ? t('upload.status.notProvided')
+      : t('upload.status.optional');
 
   return (
     <Card style={styles.card}>
@@ -195,10 +204,16 @@ export default function KYCDocumentUpload({
           <LeadIcon size={18} color={Colors.accent} strokeWidth={ICON_STROKE} />
         </View>
         <View style={styles.headerText}>
-          <AppText variant="headline">{label}</AppText>
+          {/* La insignia va junto al titulo y baja de linea si no cabe; asi la
+              descripcion usa todo el ancho (antes quedaba en una columna estrecha). */}
+          <View style={styles.titleRow}>
+            <AppText variant="headline" style={styles.title}>
+              {label}
+            </AppText>
+            <Badge label={statusLabel} tone={images.length > 0 ? 'success' : 'neutral'} />
+          </View>
           {description ? <AppText variant="footnote">{description}</AppText> : null}
         </View>
-        <Badge label={statusLabel} tone={images.length > 0 ? 'success' : 'neutral'} />
       </View>
 
       {images.length > 0 ? (
@@ -209,7 +224,7 @@ export default function KYCDocumentUpload({
                 onPress={() => openDocument(uri)}
                 scaleTo={0.97}
                 accessibilityRole="imagebutton"
-                accessibilityLabel={`Open ${label} file ${index + 1}`}
+                accessibilityLabel={t('upload.openFile', { label, n: index + 1 })}
                 style={styles.thumb}
               >
                 <Image source={{ uri }} style={styles.thumbImage} accessibilityIgnoresInvertColors />
@@ -222,9 +237,9 @@ export default function KYCDocumentUpload({
                   onPress={() => remove(index)}
                   disabled={busy !== 'idle'}
                   scaleTo={0.9}
-                  hitSlop={8}
+                  hitSlop={10}
                   accessibilityRole="button"
-                  accessibilityLabel={`Remove ${label} file ${index + 1}`}
+                  accessibilityLabel={t('upload.removeFile', { label, n: index + 1 })}
                   style={styles.removeButton}
                 >
                   <X size={14} color={Colors.textPrimary} strokeWidth={2} />
@@ -239,7 +254,7 @@ export default function KYCDocumentUpload({
         <Notice
           tone="error"
           message={error.message}
-          actionLabel={error.retry ? error.retryLabel ?? 'Try again' : undefined}
+          actionLabel={error.retry ? error.retryLabel ?? t('common:actions.tryAgain') : undefined}
           onAction={error.retry}
         />
       ) : null}
@@ -247,41 +262,49 @@ export default function KYCDocumentUpload({
       {canAdd ? (
         Platform.OS === 'web' ? (
           <Button
-            title={busy === 'uploading' ? 'Uploading…' : busy === 'saving' ? 'Saving…' : images.length > 0 ? 'Add another file' : 'Upload file'}
+            title={
+              busy === 'uploading'
+                ? t('upload.uploading')
+                : busy === 'saving'
+                ? t('common:actions.saving')
+                : images.length > 0
+                ? t('upload.addAnother')
+                : t('upload.uploadFile')
+            }
             icon={Upload}
             variant="outline"
             size="sm"
             loading={busy !== 'idle'}
             onPress={() => pick('library')}
-            accessibilityLabel={`Upload ${label}`}
+            accessibilityLabel={t('upload.uploadA11y', { label })}
           />
         ) : (
           <View style={styles.actions}>
             <Button
-              title="Camera"
+              title={t('upload.camera')}
               icon={Camera}
               variant="secondary"
               size="sm"
               disabled={busy !== 'idle'}
               onPress={() => pick('camera')}
               style={styles.flex}
-              accessibilityLabel={`Take a photo for ${label}`}
+              accessibilityLabel={t('upload.cameraA11y', { label })}
             />
             <Button
-              title={busy === 'uploading' ? 'Uploading…' : busy === 'saving' ? 'Saving…' : 'Library'}
+              title={busy === 'uploading' ? t('upload.uploading') : busy === 'saving' ? t('common:actions.saving') : t('upload.library')}
               icon={ImagePlus}
               variant="outline"
               size="sm"
               loading={busy !== 'idle'}
               onPress={() => pick('library')}
               style={styles.flex}
-              accessibilityLabel={`Choose ${label} from your library`}
+              accessibilityLabel={t('upload.libraryA11y', { label })}
             />
           </View>
         )
       ) : busy !== 'idle' ? (
         <AppText variant="caption" color={Colors.textTertiary}>
-          Saving…
+          {t('common:actions.saving')}
         </AppText>
       ) : null}
     </Card>
@@ -308,7 +331,18 @@ const styles = StyleSheet.create({
   },
   headerText: {
     flex: 1,
-    gap: 2,
+    gap: Space.xs,
+  },
+  titleRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    columnGap: Space.sm,
+    rowGap: Space.xs,
+  },
+  title: {
+    maxWidth: '100%',
   },
   grid: {
     flexDirection: 'row',

@@ -26,10 +26,11 @@ export const BrandVideo = {
   loginPoster: require('@/assets/brand/video/login-poster.jpg') as ImageSourcePropType,
 } as const;
 
-// Servicios que se muestran en el inicio del cliente.
+// Servicios que se muestran en el inicio del cliente. Solo la imagen: el
+// titulo y el texto salen del namespace "funnel" (home.moments.<key>).
 export const SERVICE_MOMENTS = [
-  { key: 'airport', title: 'Airport & aviation', caption: 'Terminal to door, on the tarmac', image: BrandImages.services.airport },
-  { key: 'executive', title: 'Executive travel', caption: 'Meetings, roadshows, the city', image: BrandImages.services.executive },
-  { key: 'events', title: 'Events & galas', caption: 'Discreet presence, all night', image: BrandImages.services.events },
-  { key: 'family', title: 'Family & residence', caption: 'Villas, travel, peace of mind', image: BrandImages.services.family },
+  { key: 'airport', image: BrandImages.services.airport },
+  { key: 'executive', image: BrandImages.services.executive },
+  { key: 'events', image: BrandImages.services.events },
+  { key: 'family', image: BrandImages.services.family },
 ] as const;

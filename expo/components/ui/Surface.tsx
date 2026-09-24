@@ -7,6 +7,7 @@ import type { BookingStatus } from '@/types';
 import { AppText } from './AppText';
 import { Button } from './Button';
 import { PressableScale } from './PressableScale';
+import i18n from '@/i18n';
 
 export interface CardProps {
   children: React.ReactNode;
@@ -84,19 +85,23 @@ export function Badge({ label, tone = 'neutral', icon: Icon, style }: { label: s
   );
 }
 
-const STATUS: Record<BookingStatus, { label: string; tone: Tone }> = {
-  pending: { label: 'Pending', tone: 'warning' },
-  confirmed: { label: 'Confirmed', tone: 'info' },
-  accepted: { label: 'Accepted', tone: 'accent' },
-  rejected: { label: 'Declined', tone: 'error' },
-  en_route: { label: 'En route', tone: 'info' },
-  active: { label: 'In progress', tone: 'success' },
-  completed: { label: 'Completed', tone: 'neutral' },
-  cancelled: { label: 'Cancelled', tone: 'error' },
+const STATUS_TONE: Record<BookingStatus, Tone> = {
+  pending: 'warning',
+  confirmed: 'info',
+  accepted: 'accent',
+  rejected: 'error',
+  en_route: 'info',
+  active: 'success',
+  completed: 'neutral',
+  cancelled: 'error',
 };
 
-export const bookingStatusMeta = (status?: string): { label: string; tone: Tone } =>
-  STATUS[status as BookingStatus] ?? { label: status ? status.replace(/_/g, ' ') : 'Unknown', tone: 'neutral' };
+// La etiqueta se traduce en cada llamada (sigue al idioma activo).
+export const bookingStatusMeta = (status?: string): { label: string; tone: Tone } => {
+  const tone = STATUS_TONE[status as BookingStatus];
+  if (tone) return { label: i18n.t(`common:status.${status as BookingStatus}`), tone };
+  return { label: status ? status.replace(/_/g, ' ') : i18n.t('common:status.unknown'), tone: 'neutral' };
+};
 
 export function StatusBadge({ status, style }: { status?: string; style?: StyleProp<ViewStyle> }) {
   const meta = bookingStatusMeta(status);

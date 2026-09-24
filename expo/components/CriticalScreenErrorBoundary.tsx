@@ -2,6 +2,7 @@ import React from 'react';
 import { useRouter } from 'expo-router';
 import { logger } from '@/utils/logger';
 import { ErrorFallbackView } from '@/components/ErrorBoundary';
+import i18n from '@/i18n';
 
 interface Props {
   children: React.ReactNode;
@@ -55,9 +56,9 @@ function ScreenErrorFallback({ error, onReset, message }: { error: Error | null;
     <ErrorFallbackView
       error={error}
       message={message}
-      primaryLabel="Try again"
+      primaryLabel={i18n.t('common:actions.tryAgain')}
       onPrimary={onReset}
-      secondaryLabel="Go to home"
+      secondaryLabel={i18n.t('common:actions.goHome')}
       onSecondary={() => {
         onReset();
         // "/" reparte por rol (antes iba a "/(tabs)", que no es una ruta)

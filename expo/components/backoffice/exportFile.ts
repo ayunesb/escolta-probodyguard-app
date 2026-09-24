@@ -1,5 +1,6 @@
 import { Platform, Share } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
+import i18n from '@/i18n';
 
 export type SaveResult = 'downloaded' | 'shared' | 'copied' | 'dismissed';
 
@@ -18,7 +19,7 @@ export async function saveTextFile({
 }): Promise<SaveResult> {
   if (Platform.OS === 'web') {
     if (typeof document === 'undefined' || typeof URL === 'undefined') {
-      throw new Error('Downloads are not available in this browser.');
+      throw new Error(i18n.t('backoffice:export.unavailable'));
     }
     const blob = new Blob([content], { type: `${mimeType};charset=utf-8` });
     const url = URL.createObjectURL(blob);
@@ -43,14 +44,15 @@ export async function saveTextFile({
   }
 }
 
+// `what` ya viene traducido por quien llama ("Registro de 7 reservas").
 export function describeSave(result: SaveResult, what: string): string | null {
   switch (result) {
     case 'downloaded':
-      return `${what} downloaded.`;
+      return i18n.t('backoffice:export.downloaded', { what });
     case 'shared':
-      return `${what} ready — shared from your device.`;
+      return i18n.t('backoffice:export.shared', { what });
     case 'copied':
-      return `${what} copied to your clipboard.`;
+      return i18n.t('backoffice:export.copied', { what });
     default:
       return null;
   }

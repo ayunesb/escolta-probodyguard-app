@@ -67,6 +67,8 @@ export function Button({
       accessibilityHint={accessibilityHint}
       accessibilityState={{ disabled: inactive, busy: loading }}
       testID={testID}
+      // El tamano pequeno mide 38: 3 arriba y abajo lo llevan a 44 de area tactil.
+      hitSlop={size === 'sm' ? { top: 3, bottom: 3 } : undefined}
       hoverStyle={{ backgroundColor: tone.hover }}
       style={[
         styles.base,
@@ -89,7 +91,7 @@ export function Button({
           {Icon ? <Icon size={ICON[size]} color={tone.fg} strokeWidth={ICON_STROKE + 0.25} /> : null}
           <AppText
             numberOfLines={1}
-            style={[Type.button, { color: tone.fg }, size === 'sm' ? styles.smallText : null]}
+            style={[Type.button, styles.label, { color: tone.fg }, size === 'sm' ? styles.smallText : null]}
           >
             {title}
           </AppText>
@@ -113,10 +115,16 @@ const styles = StyleSheet.create({
   inline: {
     alignSelf: 'flex-start',
   },
+  // La fila no pasa del ancho de la pastilla: una etiqueta larga (espanol)
+  // se abrevia con "…" en vez de salirse del borde.
   row: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Space.sm,
+    maxWidth: '100%',
+  },
+  label: {
+    flexShrink: 1,
   },
   smallText: {
     fontSize: 13.5,

@@ -1,5 +1,6 @@
 import React from 'react';
 import { StyleProp, StyleSheet, View, ViewStyle } from 'react-native';
+import { useTranslation } from 'react-i18next';
 import { Star } from 'lucide-react-native';
 import Colors from '@/constants/colors';
 import { Space } from '@/constants/design';
@@ -14,12 +15,21 @@ interface StarRatingProps {
   style?: StyleProp<ViewStyle>;
 }
 
+// Area tactil minima de cada estrella editable. En web hitSlop no existe, asi
+// que la celda misma mide 44 px y el espacio entre estrellas sale de ella.
+const MIN_TARGET = 44;
+
 export function StarRating({ value, onChange, size = 28, label, style }: StarRatingProps) {
+  const { t } = useTranslation('booking');
+  const gap = size > 24 ? Space.sm : Space.xs;
+  const cell = Math.max(MIN_TARGET, size + gap);
   return (
     <View
-      style={[styles.row, { gap: size > 24 ? Space.sm : Space.xs }, style]}
+      style={[styles.row, onChange ? null : { gap }, style]}
       accessibilityRole={onChange ? 'radiogroup' : 'image'}
-      accessibilityLabel={onChange ? label : `${label ? `${label}: ` : ''}${value} out of 5 stars`}
+      accessibilityLabel={
+        onChange ? label : label ? t('stars.readOnlyLabeled', { label, value }) : t('stars.readOnly', { value })
+      }
     >
       {[1, 2, 3, 4, 5].map((n) => {
         const filled = n <= value;
@@ -38,10 +48,10 @@ export function StarRating({ value, onChange, size = 28, label, style }: StarRat
             onPress={() => onChange(n)}
             scaleTo={0.88}
             haptic="selection"
-            hitSlop={4}
             accessibilityRole="radio"
             accessibilityState={{ selected: value === n }}
-            accessibilityLabel={`${label ? `${label}, ` : ''}${n} ${n === 1 ? 'star' : 'stars'}`}
+            accessibilityLabel={label ? t('stars.starLabeled', { label, count: n }) : t('stars.star', { count: n })}
+            style={[styles.cell, { width: cell, height: cell }]}
           >
             {icon}
           </PressableScale>
@@ -51,9 +61,20 @@ export function StarRating({ value, onChange, size = 28, label, style }: StarRat
   );
 }
 
+// Margen que deja la celda a cada lado de la estrella: sirve para alinear la
+// primera estrella con el texto de arriba (marginLeft negativo).
+export const starCellInset = (size: number): number => {
+  const gap = size > 24 ? Space.sm : Space.xs;
+  return (Math.max(MIN_TARGET, size + gap) - size) / 2;
+};
+
 const styles = StyleSheet.create({
   row: {
     flexDirection: 'row',
     alignItems: 'center',
+  },
+  cell: {
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });

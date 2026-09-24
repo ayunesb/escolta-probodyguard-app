@@ -23,6 +23,7 @@ import { StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
 import type * as LeafletNS from 'leaflet';
 import Colors from '@/constants/colors';
 import { Fonts } from '@/constants/design';
+import i18n from '@/i18n';
 import 'leaflet/dist/leaflet.css';
 
 type Leaflet = typeof LeafletNS;
@@ -177,9 +178,14 @@ const MapViewImpl = forwardRef<MapViewHandle, MapViewOwnProps>(function MapView(
       map = L.map(containerRef.current, {
         center: [start.latitude, start.longitude],
         zoom: zoomFromDelta(center.latitudeDelta),
-        zoomControl: true,
+        zoomControl: false,
         attributionControl: true,
       });
+      // Control de zoom propio para que los titulos (tooltip y lector de
+      // pantalla) salgan en el idioma activo.
+      L.control
+        .zoom({ zoomInTitle: i18n.t('booking:map.zoomIn'), zoomOutTitle: i18n.t('booking:map.zoomOut') })
+        .addTo(map);
       map.attributionControl.setPrefix(false);
       L.tileLayer(TILE_URL, {
         attribution: ATTRIBUTION,

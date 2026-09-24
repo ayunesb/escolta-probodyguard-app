@@ -2,12 +2,14 @@
 // traduccion automatica al idioma del usuario y opcion de ver el original.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
+import { useTranslation } from 'react-i18next';
 import { Languages, Send } from 'lucide-react-native';
 import Colors from '@/constants/colors';
 import { ICON_STROKE, Radius, Space } from '@/constants/design';
 import { AppText, IconButton, Input, PressableScale, Skeleton } from '@/components/ui';
 import { chatService } from '@/services/chatService';
 import type { ChatMessage, Language, UserRole } from '@/types';
+import { formatTimeOfDay } from '@/i18n/format';
 
 interface BookingChatProps {
   bookingId: string;
@@ -21,10 +23,14 @@ interface BookingChatProps {
 
 const timeOf = (iso: string) => {
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  return Number.isNaN(d.getTime()) ? '' : formatTimeOfDay(d);
 };
 
 export function BookingChat({ bookingId, clientId, guardId, user, canSend, counterpartLabel }: BookingChatProps) {
+  const { t, i18n } = useTranslation('booking');
+  // Los mensajes se traducen al idioma en que se usa la app ahora mismo, no al
+  // del perfil (los perfiles antiguos traen 'en' aunque nadie lo eligiera).
+  const language: Language = i18n.resolvedLanguage === 'es' ? 'es' : 'en';
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -39,7 +45,7 @@ export function BookingChat({ bookingId, clientId, guardId, user, canSend, count
     setLoadError(null);
     return chatService.subscribeToMessages(
       bookingId,
-      user.language,
+      language,
       (next) => {
         setMessages(next);
         setLoading(false);
@@ -50,7 +56,7 @@ export function BookingChat({ bookingId, clientId, guardId, user, canSend, count
         setLoading(false);
       }
     );
-  }, [bookingId, user.id, user.language]);
+  }, [bookingId, user.id, language]);
 
   // Marca como leido cuando llega algo nuevo de la otra parte.
   useEffect(() => {
@@ -71,16 +77,16 @@ export function BookingChat({ bookingId, clientId, guardId, user, canSend, count
         user.id,
         user.role === 'guard' ? 'guard' : 'client',
         text,
-        user.language,
+        language,
         { clientId, guardId }
       );
       setDraft('');
     } catch (e) {
-      setSendError(e instanceof Error ? e.message : "Your message wasn't sent.");
+      setSendError(e instanceof Error ? e.message : t('chat.notSent'));
     } finally {
       setSending(false);
     }
-  }, [draft, sending, bookingId, user.id, user.role, user.language, clientId, guardId]);
+  }, [draft, sending, bookingId, user.id, user.role, language, clientId, guardId, t]);
 
   return (
     <View style={styles.container}>
@@ -96,7 +102,7 @@ export function BookingChat({ bookingId, clientId, guardId, user, canSend, count
           </AppText>
         ) : messages.length === 0 ? (
           <AppText variant="footnote" color={Colors.textTertiary} align="center" style={styles.empty}>
-            {canSend ? `No messages yet. Write to ${counterpartLabel} to coordinate the pickup.` : 'No messages in this booking.'}
+            {canSend ? t('chat.empty', { name: counterpartLabel }) : t('chat.emptyReadOnly')}
           </AppText>
         ) : (
           messages.map((m) => {
@@ -113,14 +119,14 @@ export function BookingChat({ bookingId, clientId, guardId, user, canSend, count
                     <PressableScale
                       onPress={() => setShowOriginal((prev) => ({ ...prev, [m.id]: !prev[m.id] }))}
                       scaleTo={0.96}
-                      hitSlop={8}
+                      hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}
                       accessibilityRole="button"
-                      accessibilityLabel={original ? 'Show translation' : 'Show original message'}
+                      accessibilityLabel={t(original ? 'chat.showTranslation' : 'chat.showOriginalA11y')}
                       style={styles.translateToggle}
                     >
                       <Languages size={12} color={Colors.textTertiary} strokeWidth={ICON_STROKE} />
                       <AppText variant="caption" color={Colors.textTertiary}>
-                        {original ? 'Show translation' : 'Show original'}
+                        {t(original ? 'chat.showTranslation' : 'chat.showOriginal')}
                       </AppText>
                     </PressableScale>
                   ) : null}
@@ -141,11 +147,11 @@ export function BookingChat({ bookingId, clientId, guardId, user, canSend, count
             setDraft(t);
             if (sendError) setSendError(null);
           }}
-          placeholder={`Message ${counterpartLabel}…`}
+          placeholder={t('chat.placeholder', { name: counterpartLabel })}
           multiline
           maxLength={1000}
           error={sendError}
-          accessibilityLabel="Message"
+          accessibilityLabel={t('chat.inputA11y')}
           containerStyle={styles.composer}
           trailing={
             <IconButton
@@ -154,7 +160,7 @@ export function BookingChat({ bookingId, clientId, guardId, user, canSend, count
               size={36}
               onPress={send}
               disabled={!draft.trim() || sending}
-              accessibilityLabel="Send message"
+              accessibilityLabel={t('chat.send')}
             />
           }
         />
@@ -203,10 +209,13 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
     gap: Space.md,
   },
+  // Enlace pequeno dentro de la burbuja: el relleno y el hitSlop lo llevan
+  // a ~44 px de alto sin inflar la burbuja.
   translateToggle: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
+    paddingVertical: Space.xs,
   },
   composer: {
     marginTop: Space.xs,

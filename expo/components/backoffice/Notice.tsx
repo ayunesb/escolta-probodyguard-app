@@ -2,6 +2,7 @@ import React from 'react';
 import { StyleProp, StyleSheet, View, ViewStyle } from 'react-native';
 import { CircleAlert, CircleCheck, Info, TriangleAlert, X } from 'lucide-react-native';
 import type { LucideIcon } from 'lucide-react-native';
+import { useTranslation } from 'react-i18next';
 import Colors from '@/constants/colors';
 import { ICON_STROKE, Radius, Space } from '@/constants/design';
 import { AppText, Button, IconButton } from '@/components/ui';
@@ -32,6 +33,7 @@ export interface NoticeProps {
 // Alert de "Success"/"Error" que no aportan nada y en web se ven como
 // ventanas del navegador.
 export function Notice({ tone = 'info', title, message, icon, actionLabel, onAction, actionLoading, onDismiss, style }: NoticeProps) {
+  const { t: tr } = useTranslation('common');
   const t = TONES[tone];
   const Icon = icon ?? t.icon;
   return (
@@ -58,7 +60,7 @@ export function Notice({ tone = 'info', title, message, icon, actionLabel, onAct
           />
         ) : null}
       </View>
-      {onDismiss ? <IconButton icon={X} onPress={onDismiss} accessibilityLabel="Dismiss" size={30} /> : null}
+      {onDismiss ? <IconButton icon={X} onPress={onDismiss} accessibilityLabel={tr('actions.dismiss')} size={30} /> : null}
     </View>
   );
 }

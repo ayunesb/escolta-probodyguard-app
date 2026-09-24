@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { RefreshControl, StyleSheet, View } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { Stack } from 'expo-router';
+import { useTranslation } from 'react-i18next';
 import { addDoc, collection, getDocs } from 'firebase/firestore';
 import { Copy, ExternalLink, Receipt, Search } from 'lucide-react-native';
 import Colors from '@/constants/colors';
@@ -37,6 +38,7 @@ import {
 } from '@/components/backoffice';
 import { withErrorBoundary } from '@/components/CriticalScreenErrorBoundary';
 import { useAuth } from '@/contexts/AuthContext';
+import i18n from '@/i18n';
 import { db as getDb } from '@/lib/firebase';
 import { UserRecord, userService } from '@/services/userService';
 import type { Booking } from '@/types';
@@ -60,6 +62,12 @@ interface RefundRecord {
   note?: string;
 }
 
+// "cancelada por el cliente" / "por el cliente"; si llega otro valor se muestra tal cual.
+const cancelledByText = (who: string | undefined, kind: 'cancelledBy' | 'by'): string | null => {
+  if (!who) return null;
+  return who === 'client' || who === 'guard' ? i18n.t(`backoffice:refunds.${kind}.${who}`) : who;
+};
+
 const stripeUrl = (transactionId: string) =>
   transactionId.startsWith('pi_') ? `https://dashboard.stripe.com/payments/${transactionId}` : null;
 
@@ -75,11 +83,12 @@ function AdminRefundsRoute() {
 }
 
 function AdminRefundsScreen() {
+  const { t } = useTranslation(['backoffice', 'common']);
   const { user } = useAuth();
   const [bookings, setBookings] = useState<Booking[] | null>(null);
   const [refunds, setRefunds] = useState<Record<string, RefundRecord>>({});
   const [people, setPeople] = useState<Record<string, UserRecord>>({});
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [filter, setFilter] = useState<Filter>('open');
   const [search, setSearch] = useState('');
@@ -89,7 +98,7 @@ function AdminRefundsScreen() {
   const [recordError, setRecordError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    setError(null);
+    setError(false);
     try {
       const [all, refundSnap] = await Promise.all([fetchAllBookings(), getDocs(collection(getDb(), 'refunds'))]);
       // Pagadas (el servidor confirmo el cobro) y luego canceladas o rechazadas.
@@ -104,7 +113,7 @@ function AdminRefundsScreen() {
       setPeople(await userService.getUsersByIds(candidates.flatMap((b) => [b.clientId, b.guardId])));
     } catch (e) {
       logger.error('[AdminRefunds] Failed to load refund candidates', e);
-      setError('Refund data could not be loaded.');
+      setError(true);
     }
   }, []);
 
@@ -154,10 +163,10 @@ function AdminRefundsScreen() {
   const recordRefund = async () => {
     if (!selected || !user) return;
     const ok = await confirm(
-      'Record refund',
-      `Only do this after refunding ${formatMXN(selected.totalAmount)} in the Stripe dashboard. This records it here; it does not move money.`,
-      'Record refund',
-      'Cancel'
+      t('refunds.recordTitle'),
+      t('refunds.recordMessage', { amount: formatMXN(selected.totalAmount) }),
+      t('refunds.recordConfirm'),
+      t('common:actions.cancel')
     );
     if (!ok) return;
     setRecording(true);
@@ -180,7 +189,7 @@ function AdminRefundsScreen() {
       setSelected(null);
     } catch (e) {
       logger.error('[AdminRefunds] Failed to record refund', e);
-      setRecordError('The refund could not be recorded. Please try again.');
+      setRecordError(t('refunds.recordError'));
     } finally {
       setRecording(false);
     }
@@ -193,7 +202,7 @@ function AdminRefundsScreen() {
 
   return (
     <View style={styles.root}>
-      <NavBar title="Refunds" />
+      <NavBar title={t('refunds.title')} />
       <Screen
         padTop={false}
         keyboard
@@ -201,15 +210,12 @@ function AdminRefundsScreen() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.accent} />}
       >
         <View style={styles.header}>
-          <AppText variant="title2">Refunds</AppText>
-          <AppText variant="callout">
-            Paid bookings that were cancelled, or declined by the guard. Refunds are issued in the Stripe dashboard — this
-            app never moves money. Declined bookings may still be reassigned by the client.
-          </AppText>
+          <AppText variant="title2">{t('refunds.title')}</AppText>
+          <AppText variant="callout">{t('refunds.description')}</AppText>
         </View>
 
         {error ? (
-          <Notice tone="error" message={error} actionLabel="Try again" onAction={load} />
+          <Notice tone="error" message={t('refunds.loadError')} actionLabel={t('common:actions.tryAgain')} onAction={load} />
         ) : bookings === null ? (
           <>
             <View style={styles.grid}>
@@ -222,32 +228,40 @@ function AdminRefundsScreen() {
         ) : (
           <>
             <View style={styles.grid}>
-              <StatTile label="To review" value={totals.openCount} hint={formatMXN(totals.openAmount)} icon={Receipt} accent={totals.openCount > 0} />
-              <StatTile label="Recorded" value={totals.recordedCount} hint="Refunded in Stripe" />
+              <StatTile
+                label={t('refunds.toReview')}
+                value={totals.openCount}
+                hint={formatMXN(totals.openAmount)}
+                icon={Receipt}
+                accent={totals.openCount > 0}
+              />
+              <StatTile label={t('refunds.recorded')} value={totals.recordedCount} hint={t('refunds.recordedHint')} />
             </View>
 
             <Input
               icon={Search}
-              placeholder="Booking, transaction or client"
+              placeholder={t('refunds.search')}
               value={search}
               onChangeText={setSearch}
               autoCapitalize="none"
               autoCorrect={false}
-              accessibilityLabel="Search refunds"
+              accessibilityLabel={t('refunds.searchA11y')}
               containerStyle={styles.search}
             />
             <View style={styles.chips}>
-              <Chip label="To review" selected={filter === 'open'} onPress={() => setFilter('open')} count={totals.openCount} />
-              <Chip label="Recorded" selected={filter === 'recorded'} onPress={() => setFilter('recorded')} count={totals.recordedCount} />
-              <Chip label="All" selected={filter === 'all'} onPress={() => setFilter('all')} count={bookings.length} />
+              <Chip label={t('refunds.toReview')} selected={filter === 'open'} onPress={() => setFilter('open')} count={totals.openCount} />
+              <Chip label={t('refunds.recorded')} selected={filter === 'recorded'} onPress={() => setFilter('recorded')} count={totals.recordedCount} />
+              <Chip label={t('refunds.all')} selected={filter === 'all'} onPress={() => setFilter('all')} count={bookings.length} />
             </View>
 
-            <SectionTitle title={filter === 'open' ? 'To review' : filter === 'recorded' ? 'Recorded refunds' : 'All paid cancellations'} />
+            <SectionTitle
+              title={filter === 'open' ? t('refunds.toReview') : filter === 'recorded' ? t('refunds.sectionRecorded') : t('refunds.sectionAll')}
+            />
             {list.length === 0 ? (
               <EmptyState
                 icon={Receipt}
-                title={bookings.length === 0 ? 'Nothing to refund' : 'No matches'}
-                message={bookings.length === 0 ? 'Paid bookings that get cancelled or declined will appear here.' : 'Try another search or filter.'}
+                title={bookings.length === 0 ? t('refunds.emptyTitle') : t('shared.noMatches')}
+                message={bookings.length === 0 ? t('refunds.emptyMessage') : t('refunds.noMatchesMessage')}
               />
             ) : (
               <View style={styles.list}>
@@ -255,22 +269,32 @@ function AdminRefundsScreen() {
                   const client = people[b.clientId];
                   const recorded = !!refunds[b.id];
                   return (
-                    <Card key={b.id} onPress={() => openDetail(b)} accessibilityLabel={`Refund details for booking ${shortId(b.id)}`} style={styles.card}>
+                    <Card
+                      key={b.id}
+                      onPress={() => openDetail(b)}
+                      accessibilityLabel={t('refunds.cardA11y', { id: shortId(b.id) })}
+                      style={styles.card}
+                    >
                       <View style={styles.row}>
                         <AppText variant="headline" style={styles.flex} numberOfLines={1}>
-                          {client ? fullName(client) : 'Client'}
+                          {client ? fullName(client) : t('refunds.client')}
                         </AppText>
                         <AppText variant="numeric" color={Colors.accentLight}>
                           {formatMXN(b.totalAmount)}
                         </AppText>
                       </View>
-                      <View style={styles.row}>
+                      <View style={styles.badges}>
                         <StatusBadge status={b.status} />
-                        {recorded ? <Badge label="Refund recorded" tone="success" /> : <Badge label="Review in Stripe" tone="warning" />}
+                        {recorded ? (
+                          <Badge label={t('refunds.refundRecorded')} tone="success" />
+                        ) : (
+                          <Badge label={t('refunds.reviewInStripe')} tone="warning" />
+                        )}
                       </View>
-                      <AppText variant="caption" color={Colors.textTertiary} numberOfLines={1}>
-                        {shortId(b.id)} · {formatDate(b.cancelledAt ?? b.rejectedAt ?? b.createdAt)}
-                        {b.cancelledBy ? ` · cancelled by ${b.cancelledBy}` : ''}
+                      <AppText variant="caption" color={Colors.textTertiary}>
+                        {[shortId(b.id), formatDate(b.cancelledAt ?? b.rejectedAt ?? b.createdAt), cancelledByText(b.cancelledBy, 'cancelledBy')]
+                          .filter(Boolean)
+                          .join(' · ')}
                       </AppText>
                     </Card>
                   );
@@ -285,63 +309,72 @@ function AdminRefundsScreen() {
         visible={!!selected}
         onClose={() => setSelected(null)}
         dismissable={!recording}
-        eyebrow={selected ? `Booking ${shortId(selected.id)}` : undefined}
+        eyebrow={selected ? t('refunds.booking', { id: shortId(selected.id) }) : undefined}
         title={selected ? formatMXN(selected.totalAmount) : ''}
-        subtitle={selectedRefund ? `Refund recorded ${formatDateTime(selectedRefund.createdAt)}` : 'Paid by the client'}
+        subtitle={selectedRefund ? t('refunds.recordedOn', { date: formatDateTime(selectedRefund.createdAt) }) : t('refunds.paidByClient')}
         footer={
           selected && !selectedRefund ? (
-            <Button title="Record refund" onPress={recordRefund} loading={recording} accessibilityLabel="Record a refund made in Stripe" />
+            <Button
+              title={t('refunds.recordTitle')}
+              onPress={recordRefund}
+              loading={recording}
+              accessibilityLabel={t('refunds.recordA11y')}
+              style={styles.flex}
+            />
           ) : (
-            <Button title="Close" variant="secondary" onPress={() => setSelected(null)} />
+            <Button title={t('common:actions.close')} variant="secondary" onPress={() => setSelected(null)} style={styles.flex} />
           )
         }
       >
         {selected ? (
           <>
             <View>
-              <InfoRow label="Status" value={<StatusBadge status={selected.status} />} />
-              <InfoRow label="Client" value={selectedClient ? fullName(selectedClient) : '—'} />
-              <InfoRow label="Guard" value={selectedGuard ? fullName(selectedGuard) : '—'} />
-              <InfoRow label="Scheduled" value={formatDate(selected.scheduledDate)} />
+              <InfoRow label={t('refunds.status')} value={<StatusBadge status={selected.status} />} />
+              <InfoRow label={t('refunds.client')} value={selectedClient ? fullName(selectedClient) : '—'} />
+              <InfoRow label={t('refunds.guard')} value={selectedGuard ? fullName(selectedGuard) : '—'} />
+              <InfoRow label={t('refunds.scheduled')} value={formatDate(selected.scheduledDate)} />
               {selected.status === 'cancelled' ? (
-                <InfoRow label="Cancelled" value={`${formatDateTime(selected.cancelledAt)}${selected.cancelledBy ? ` · by ${selected.cancelledBy}` : ''}`} />
+                <InfoRow
+                  label={t('refunds.cancelled')}
+                  value={[formatDateTime(selected.cancelledAt), cancelledByText(selected.cancelledBy, 'by')].filter(Boolean).join(' · ')}
+                />
               ) : (
-                <InfoRow label="Declined" value={formatDateTime(selected.rejectedAt)} />
+                <InfoRow label={t('refunds.declined')} value={formatDateTime(selected.rejectedAt)} />
               )}
-              <InfoRow label="Guard payout" value={formatMXN(selected.guardPayout)} />
-              <InfoRow label="Platform fee" value={formatMXN(selected.platformCut)} />
-              <InfoRow label="Card processing" value={formatMXN(selected.processingFee)} />
-              <InfoRow label="Total paid" value={formatMXN(selected.totalAmount)} emphasis />
+              <InfoRow label={t('refunds.guardPayout')} value={formatMXN(selected.guardPayout)} />
+              <InfoRow label={t('refunds.platformFee')} value={formatMXN(selected.platformCut)} />
+              <InfoRow label={t('refunds.cardProcessing')} value={formatMXN(selected.processingFee)} />
+              <InfoRow label={t('refunds.totalPaid')} value={formatMXN(selected.totalAmount)} emphasis />
             </View>
 
             {selected.cancellationReason || selected.rejectionReason ? (
-              <Notice tone="info" title="Reason given" message={selected.cancellationReason ?? selected.rejectionReason ?? ''} />
+              <Notice tone="info" title={t('refunds.reasonGiven')} message={selected.cancellationReason ?? selected.rejectionReason ?? ''} />
             ) : null}
 
             <Card tone="raised" style={styles.txCard}>
-              <AppText variant="overline">Stripe transaction</AppText>
+              <AppText variant="overline">{t('refunds.stripeTransaction')}</AppText>
               <AppText variant="numeric" selectable numberOfLines={2}>
                 {selected.transactionId}
               </AppText>
               <View style={styles.row}>
                 <Button
-                  title={copied ? 'Copied' : 'Copy ID'}
+                  title={copied ? t('common:actions.copied') : t('refunds.copyId')}
                   icon={Copy}
                   variant="secondary"
                   size="sm"
                   onPress={copyTransaction}
                   style={styles.flex}
-                  accessibilityLabel="Copy the Stripe transaction ID"
+                  accessibilityLabel={t('refunds.copyA11y')}
                 />
                 {selectedStripe ? (
                   <Button
-                    title="Open in Stripe"
+                    title={t('refunds.openStripe')}
                     icon={ExternalLink}
                     variant="outline"
                     size="sm"
                     onPress={() => openDocument(selectedStripe)}
                     style={styles.flex}
-                    accessibilityLabel="Open this payment in the Stripe dashboard"
+                    accessibilityLabel={t('refunds.openStripeA11y')}
                   />
                 ) : null}
               </View>
@@ -351,9 +384,7 @@ function AdminRefundsScreen() {
               <Notice
                 tone="warning"
                 message={
-                  selected.status === 'rejected'
-                    ? 'The guard declined this booking. The client can still pick a new guard with the same payment — check with them before refunding.'
-                    : 'Refund this payment in the Stripe dashboard, then record it here so the team knows it was handled.'
+                  selected.status === 'rejected' ? t('refunds.declinedWarning') : t('refunds.refundWarning')
                 }
               />
             ) : null}
@@ -401,6 +432,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: Space.sm,
   },
+  // Dos insignias que en espanol pueden no caber en una linea a 375 px.
+  badges: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Space.sm,
+  },
   txCard: {
     gap: Space.sm,
   },
@@ -409,6 +446,9 @@ const styles = StyleSheet.create({
   },
 });
 
+// Getter: el mensaje se lee al dibujar el fallback, en el idioma activo.
 export default withErrorBoundary(AdminRefundsRoute, {
-  fallbackMessage: 'Refunds could not be displayed. Please try again.',
+  get fallbackMessage() {
+    return i18n.t('backoffice:refunds.crash');
+  },
 });

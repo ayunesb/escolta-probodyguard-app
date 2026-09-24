@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { Booking, Guard } from '@/types';
 import { bookingService } from '@/services/bookingService';
 import { guardService } from '@/services/guardService';
+import i18n from '@/i18n';
 
 export interface LiveBookingState {
   booking: Booking | null;
@@ -34,7 +35,7 @@ export function useLiveBooking(bookingId?: string | null): LiveBookingState {
     // La suscripcion sigue viva y limpia el aviso cuando llegan datos.
     const slow = setTimeout(() => {
       if (answered) return;
-      setError('Still connecting. Check your internet connection.');
+      setError(i18n.t('booking:shared.stillConnecting'));
       setLoading(false);
     }, 12000);
     const unsubscribe = bookingService.subscribeToBooking(

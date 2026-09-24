@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Image, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useTranslation } from 'react-i18next';
 import {
   AlertTriangle,
   Award,
@@ -48,6 +49,7 @@ import { formatMXN } from '@/utils/pricing';
 type LoadState = 'loading' | 'ready' | 'missing' | 'error';
 
 export default function GuardDetailScreen() {
+  const { t } = useTranslation(['funnel', 'common']);
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -92,7 +94,7 @@ export default function GuardDetailScreen() {
       {/* First in the tree so it is first in focus order; zIndex keeps it on top. */}
       <View pointerEvents="box-none" style={[styles.floating, { top: insets.top + Space.sm }]}>
         <View pointerEvents="box-none" style={styles.floatingColumn}>
-          <IconButton icon={ChevronLeft} onPress={goBack} accessibilityLabel="Go back" size={42} style={styles.backButton} />
+          <IconButton icon={ChevronLeft} onPress={goBack} accessibilityLabel={t('common:actions.goBack')} size={42} style={styles.backButton} />
         </View>
       </View>
       <Screen
@@ -107,7 +109,7 @@ export default function GuardDetailScreen() {
 
   if (state === 'loading') {
     return shell(
-      <View accessibilityLabel="Loading profile">
+      <View accessibilityLabel={t('profile.loading')}>
         <Skeleton height={heroHeight} radius={0} style={styles.heroSkeleton} />
         <View style={styles.statsRow}>
           <Skeleton height={96} radius={Radius.lg} style={styles.flex} />
@@ -126,9 +128,9 @@ export default function GuardDetailScreen() {
     return shell(
       <EmptyState
         icon={AlertTriangle}
-        title="Couldn't load this profile"
-        message="Check your connection and try again."
-        actionLabel="Try again"
+        title={t('profile.errorTitle')}
+        message={t('shared.checkConnection')}
+        actionLabel={t('common:actions.tryAgain')}
         onAction={load}
       />
     );
@@ -138,9 +140,9 @@ export default function GuardDetailScreen() {
     return shell(
       <EmptyState
         icon={UserX}
-        title="Protector not found"
-        message="This profile is no longer available."
-        actionLabel="Browse protectors"
+        title={t('profile.missingTitle')}
+        message={t('profile.missingMessage')}
+        actionLabel={t('shared.browseProtectors')}
         onAction={() => router.replace('/home')}
       />
     );
@@ -152,11 +154,11 @@ export default function GuardDetailScreen() {
   const priced = hasCompleteProfile(guard);
   const bookable = priced && verified && guard.availability;
   const unavailableReason = !priced
-    ? 'This protector has not set a rate yet.'
+    ? t('profile.reasonNoRate', { name })
     : !verified
-      ? 'This protector is completing identity verification.'
+      ? t('profile.reasonVerifying', { name })
       : !guard.availability
-        ? 'This protector is not taking bookings right now.'
+        ? t('profile.reasonUnavailable', { name })
         : null;
   const gallery = guard.photos.slice(1);
   const breakdown = guard.ratingBreakdown;
@@ -165,7 +167,9 @@ export default function GuardDetailScreen() {
     <ActionBar>
       <View style={styles.actionRow}>
         <View style={styles.priceBlock}>
-          <AppText variant="overline">Hourly rate</AppText>
+          <AppText variant="overline" numberOfLines={1}>
+            {t('profile.hourlyRate')}
+          </AppText>
           {priced ? (
             <AppText variant="numeric" color={Colors.accentLight} style={styles.price}>
               {formatMXN(guard.hourlyRate)}
@@ -177,13 +181,13 @@ export default function GuardDetailScreen() {
           )}
         </View>
         <Button
-          title="Book protection"
+          title={t('profile.book')}
           icon={ShieldCheck}
           size="lg"
           disabled={!bookable}
           onPress={() => router.push({ pathname: '/booking/create', params: { guardId: guard.id } })}
           style={styles.flex}
-          accessibilityHint={unavailableReason ?? 'Choose the date, time and options for your booking'}
+          accessibilityHint={unavailableReason ?? t('profile.bookHint')}
         />
       </View>
       {unavailableReason ? (
@@ -210,7 +214,7 @@ export default function GuardDetailScreen() {
         <Scrim start={0.42} strength={0.97} />
         <View style={styles.heroBody}>
           <AppText variant="overline" color={Colors.accentLight}>
-            {guard.isFreelancer ? 'Independent protector' : 'Agency protector'}
+            {guard.isFreelancer ? t('profile.independent') : t('profile.agency')}
           </AppText>
           <AppText
             variant="display"
@@ -223,9 +227,9 @@ export default function GuardDetailScreen() {
             {name}
           </AppText>
           <View style={styles.badges}>
-            {verified ? <Badge label="Identity verified" tone="success" icon={BadgeCheck} /> : null}
+            {verified ? <Badge label={t('profile.identityVerified')} tone="success" icon={BadgeCheck} /> : null}
             <Badge
-              label={guard.availability ? 'Available' : 'Not taking bookings'}
+              label={guard.availability ? t('profile.available') : t('shared.notTakingBookings')}
               tone={guard.availability ? 'success' : 'neutral'}
               icon={CalendarCheck}
             />
@@ -235,29 +239,29 @@ export default function GuardDetailScreen() {
 
       <View style={styles.statsRow}>
         <StatTile
-          label="Rating"
+          label={t('profile.rating')}
           icon={Star}
           value={rated ? guard.rating.toFixed(1) : '—'}
-          hint={rated ? 'out of 5' : 'No reviews yet'}
+          hint={rated ? t('profile.outOf5') : t('profile.noReviews')}
         />
         <StatTile
-          label="Completed jobs"
+          label={t('profile.completedJobs')}
           icon={ShieldCheck}
           value={guard.completedJobs}
-          hint={guard.completedJobs === 0 ? 'New to Escolta' : 'on Escolta Pro'}
+          hint={guard.completedJobs === 0 ? t('shared.newToEscolta') : t('profile.onEscolta')}
         />
       </View>
 
       {gallery.length > 0 ? (
         <>
-          <SectionTitle title="Portfolio" />
+          <SectionTitle title={t('profile.portfolio')} />
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.gallery}>
             {gallery.map((uri, idx) => (
               <Image
                 key={`${uri}-${idx}`}
                 source={{ uri }}
                 style={styles.photo}
-                accessibilityLabel={`${name}, photo ${idx + 2}`}
+                accessibilityLabel={t('profile.photoA11y', { name, index: idx + 2 })}
               />
             ))}
           </ScrollView>
@@ -266,7 +270,7 @@ export default function GuardDetailScreen() {
 
       {guard.bio.trim() ? (
         <>
-          <SectionTitle title="About" />
+          <SectionTitle title={t('profile.about')} />
           <AppText variant="body" color={Colors.textSecondary} style={styles.bio}>
             {guard.bio.trim()}
           </AppText>
@@ -275,7 +279,7 @@ export default function GuardDetailScreen() {
 
       {guard.languages.length > 0 ? (
         <>
-          <SectionTitle title="Languages" />
+          <SectionTitle title={t('profile.languages')} />
           <View style={styles.languages}>
             {guard.languages.map((code) => (
               <View key={code} style={styles.language}>
@@ -291,7 +295,7 @@ export default function GuardDetailScreen() {
 
       {guard.certifications.length > 0 ? (
         <>
-          <SectionTitle title="Certifications" />
+          <SectionTitle title={t('profile.certifications')} />
           <ListGroup>
             {guard.certifications.map((cert, idx) => (
               <ListRow key={`${cert}-${idx}`} icon={Award} title={cert} />
@@ -302,22 +306,22 @@ export default function GuardDetailScreen() {
 
       {guard.height > 0 || guard.weight > 0 ? (
         <>
-          <SectionTitle title="Physical" />
+          <SectionTitle title={t('profile.physical')} />
           <Card>
-            {guard.height > 0 ? <InfoRow label="Height" icon={Ruler} value={`${guard.height} cm`} /> : null}
-            {guard.weight > 0 ? <InfoRow label="Weight" icon={Weight} value={`${guard.weight} kg`} /> : null}
+            {guard.height > 0 ? <InfoRow label={t('profile.height')} icon={Ruler} value={`${guard.height} cm`} /> : null}
+            {guard.weight > 0 ? <InfoRow label={t('profile.weight')} icon={Weight} value={`${guard.weight} kg`} /> : null}
           </Card>
         </>
       ) : null}
 
       {breakdown && rated ? (
         <>
-          <SectionTitle title="What clients say" />
+          <SectionTitle title={t('profile.reviews')} />
           <Card>
-            <RatingBar icon={TrendingUp} label="Professionalism" value={breakdown.professionalism} />
-            <RatingBar icon={Clock} label="Punctuality" value={breakdown.punctuality} />
-            <RatingBar icon={MessageCircle} label="Communication" value={breakdown.communication} />
-            <RatingBar icon={Mic} label="Language clarity" value={breakdown.languageClarity} />
+            <RatingBar icon={TrendingUp} label={t('profile.professionalism')} value={breakdown.professionalism} />
+            <RatingBar icon={Clock} label={t('profile.punctuality')} value={breakdown.punctuality} />
+            <RatingBar icon={MessageCircle} label={t('profile.communication')} value={breakdown.communication} />
+            <RatingBar icon={Mic} label={t('profile.languageClarity')} value={breakdown.languageClarity} />
           </Card>
         </>
       ) : null}
@@ -328,10 +332,11 @@ export default function GuardDetailScreen() {
 }
 
 function RatingBar({ icon: Icon, label, value }: { icon: LucideIcon; label: string; value?: number }) {
+  const { t } = useTranslation('funnel');
   if (typeof value !== 'number' || !Number.isFinite(value)) return null;
   const pct = Math.max(0, Math.min(100, (value / 5) * 100));
   return (
-    <View style={styles.ratingRow} accessible accessibilityLabel={`${label}: ${value.toFixed(1)} out of 5`}>
+    <View style={styles.ratingRow} accessible accessibilityLabel={t('profile.ratingA11y', { label, value: value.toFixed(1) })}>
       <View style={styles.ratingLabel}>
         <Icon size={16} color={Colors.textTertiary} strokeWidth={ICON_STROKE} />
         <AppText variant="callout">{label}</AppText>
@@ -448,11 +453,12 @@ const styles = StyleSheet.create({
     gap: Space.md,
     paddingVertical: Space.sm,
   },
+  // Room for the longest Spanish label ("Claridad al hablar"); longer text wraps.
   ratingLabel: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Space.sm,
-    width: 150,
+    width: 164,
   },
   track: {
     flex: 1,

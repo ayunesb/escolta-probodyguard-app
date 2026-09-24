@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Linking, StyleSheet, View } from 'react-native';
 import { Redirect, Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { CalendarX2, Mail, Phone, Receipt } from 'lucide-react-native';
+import { useTranslation } from 'react-i18next';
 import Colors from '@/constants/colors';
 import { Space } from '@/constants/design';
 import {
@@ -19,6 +20,7 @@ import {
   StatusBadge,
 } from '@/components/ui';
 import { Notice, RoleGate, formatDate, fullName, shortId } from '@/components/backoffice';
+import { formatScheduled } from '@/components/funnel/format';
 import { useAuth } from '@/contexts/AuthContext';
 import { bookingService } from '@/services/bookingService';
 import { UserRecord, userService } from '@/services/userService';
@@ -44,6 +46,7 @@ export default function GuardReassignmentRoute() {
 }
 
 function GuardReassignmentScreen() {
+  const { t } = useTranslation('funnel');
   const router = useRouter();
   const { user } = useAuth();
   const { bookingId, currentGuardId } = useLocalSearchParams<{ bookingId?: string; currentGuardId?: string }>();
@@ -87,7 +90,7 @@ function GuardReassignmentScreen() {
 
   return (
     <View style={styles.root}>
-      <NavBar title="Reassign guard" right={booking ? <StatusBadge status={booking.status} /> : undefined} />
+      <NavBar title={t('reassign.title')} right={booking ? <StatusBadge status={booking.status} /> : undefined} />
       <Screen padTop={false} contentStyle={styles.content}>
         {state === 'loading' ? (
           <>
@@ -97,46 +100,55 @@ function GuardReassignmentScreen() {
         ) : state === 'missing' || !booking ? (
           <EmptyState
             icon={CalendarX2}
-            title="Booking not found"
-            message="Open reassignment from a declined booking on the admin dashboard."
-            actionLabel="Back to dashboard"
+            title={t('shared.bookingNotFound')}
+            message={t('reassign.missingMessage')}
+            actionLabel={t('reassign.backToDashboard')}
             onAction={() => router.replace('/(tabs)/admin-home')}
           />
         ) : (
           <>
             <View style={styles.header}>
               <AppText variant="overline" color={Colors.accent}>
-                Booking {shortId(booking.id)}
+                {t('reassign.bookingId', { id: shortId(booking.id) })}
               </AppText>
               <AppText variant="title2">
-                {booking.status === 'rejected' ? 'Declined — needs a new guard' : 'Guard assignment'}
+                {booking.status === 'rejected' ? t('reassign.declinedTitle') : t('reassign.assignmentTitle')}
               </AppText>
             </View>
 
             <Notice
               tone="info"
-              title="The client chooses the new guard"
-              message="When a guard declines a paid booking, the client picks someone else from their booking and the same payment carries over. Admin reassignment isn't available in the app yet — contact the client, or refund the payment if they no longer want the service."
+              title={t('reassign.noticeTitle')}
+              message={t('reassign.noticeMessage')}
             />
 
-            <SectionTitle title="Booking" />
+            <SectionTitle title={t('reassign.booking')} />
             <Card>
-              <InfoRow label="Client" value={client ? fullName(client) : '—'} />
-              <InfoRow label="Scheduled" value={`${formatDate(booking.scheduledDate)}${booking.scheduledTime ? ` · ${booking.scheduledTime}` : ''}`} />
-              <InfoRow label="Duration" value={booking.duration ? `${booking.duration} h` : '—'} />
-              <InfoRow label="Pickup" value={booking.pickupAddress || '—'} />
-              <InfoRow label="Paid" value={booking.transactionId ? formatMXN(booking.totalAmount) : 'Not paid'} emphasis />
+              <InfoRow label={t('reassign.client')} value={client ? fullName(client) : '—'} />
+              {/* formatScheduled parses the LOCAL date; new Date('YYYY-MM-DD') is UTC and showed the day before. */}
+              <InfoRow label={t('reassign.scheduled')} value={formatScheduled(booking)} />
+              <InfoRow label={t('shared.duration')} value={booking.duration ? t('reassign.hours', { count: booking.duration }) : '—'} />
+              <InfoRow label={t('shared.pickup')} value={booking.pickupAddress || '—'} />
+              <InfoRow
+                label={t('shared.paid')}
+                value={booking.transactionId ? formatMXN(booking.totalAmount) : t('reassign.notPaid')}
+                emphasis
+              />
             </Card>
 
             {declinedGuard || booking.rejectionReason ? (
               <>
-                <SectionTitle title="Declined by" />
+                <SectionTitle title={t('reassign.declinedBy')} />
                 <Card style={styles.guardRow}>
-                  <Avatar name={declinedGuard ? fullName(declinedGuard) : 'Guard'} uri={declinedGuard?.photos?.[0]} size={44} />
+                  <Avatar
+                    name={declinedGuard ? fullName(declinedGuard) : t('reassign.guardFallback')}
+                    uri={declinedGuard?.photos?.[0]}
+                    size={44}
+                  />
                   <View style={styles.flex}>
-                    <AppText variant="headline">{declinedGuard ? fullName(declinedGuard) : 'Guard'}</AppText>
+                    <AppText variant="headline">{declinedGuard ? fullName(declinedGuard) : t('reassign.guardFallback')}</AppText>
                     <AppText variant="footnote">
-                      {booking.rejectionReason ? `“${booking.rejectionReason}”` : 'No reason given'}
+                      {booking.rejectionReason ? t('shared.quoted', { text: booking.rejectionReason }) : t('reassign.noReason')}
                       {booking.rejectedAt ? ` · ${formatDate(booking.rejectedAt)}` : ''}
                     </AppText>
                   </View>
@@ -144,20 +156,28 @@ function GuardReassignmentScreen() {
               </>
             ) : null}
 
-            <SectionTitle title="Next steps" />
+            <SectionTitle title={t('reassign.nextSteps')} />
             <ListGroup>
               {client?.phone ? (
-                <ListRow icon={Phone} title="Call the client" subtitle={client.phone} onPress={() => Linking.openURL(`tel:${client.phone}`).catch(() => {})} />
+                <ListRow icon={Phone} title={t('reassign.call')} subtitle={client.phone} onPress={() => Linking.openURL(`tel:${client.phone}`).catch(() => {})} />
               ) : null}
               {client?.email ? (
                 <ListRow
                   icon={Mail}
-                  title="Email the client"
+                  title={t('reassign.email')}
                   subtitle={client.email}
-                  onPress={() => Linking.openURL(`mailto:${client.email}?subject=${encodeURIComponent(`Your booking ${shortId(booking.id)}`)}`).catch(() => {})}
+                  onPress={() =>
+                    Linking.openURL(
+                      `mailto:${client.email}?subject=${encodeURIComponent(t('reassign.emailSubject', { id: shortId(booking.id) }))}`
+                    ).catch(() => {})
+                  }
                 />
               ) : null}
-              <ListRow icon={Receipt} title="Refunds" subtitle="Refund the payment in Stripe and record it" onPress={() => router.push('/admin-refunds')} />
+              <ListRow
+                icon={Receipt}
+                title={t('reassign.refunds')}
+                subtitle={t('reassign.refundsSubtitle')}
+                onPress={() => router.push('/admin-refunds')} />
             </ListGroup>
           </>
         )}

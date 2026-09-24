@@ -14,6 +14,7 @@ import type { LucideIcon } from 'lucide-react-native';
 import Colors from '@/constants/colors';
 import { Fonts, ICON_STROKE, Radius, Space } from '@/constants/design';
 import { AppText } from './AppText';
+import i18n from '@/i18n';
 
 export interface InputProps extends TextInputProps {
   label?: string;
@@ -84,7 +85,7 @@ export const Input = forwardRef<TextInput, InputProps>(function Input(
             onPress={() => setRevealed((v) => !v)}
             hitSlop={10}
             accessibilityRole="button"
-            accessibilityLabel={revealed ? 'Hide password' : 'Show password'}
+            accessibilityLabel={revealed ? i18n.t('common:a11y.hidePassword') : i18n.t('common:a11y.showPassword')}
           >
             {revealed ? (
               <EyeOff size={18} color={Colors.textTertiary} strokeWidth={ICON_STROKE} />

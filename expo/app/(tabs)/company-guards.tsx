@@ -1,10 +1,11 @@
 import { useCallback, useMemo, useState } from 'react';
-import { RefreshControl, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Clipboard from 'expo-clipboard';
 import { createUserWithEmailAndPassword, sendPasswordResetEmail, signOut } from 'firebase/auth';
 import { doc, setDoc } from 'firebase/firestore';
 import { Stack, useFocusEffect, useRouter } from 'expo-router';
+import { useTranslation } from 'react-i18next';
 import { BadgeDollarSign, Copy, FileSpreadsheet, FolderOpen, Search, Shield, ShieldCheck, Upload, UserMinus, UserPlus } from 'lucide-react-native';
 import Colors from '@/constants/colors';
 import { Radius, Space } from '@/constants/design';
@@ -22,12 +23,14 @@ import {
   SectionTitle,
   SkeletonCard,
 } from '@/components/ui';
-import { Notice, RoleGate, Sheet, fullName, kycMeta, plural } from '@/components/backoffice';
+import { Notice, RoleGate, Sheet, fullName, kycMeta } from '@/components/backoffice';
 import { useAuth } from '@/contexts/AuthContext';
 import { secondaryAuth, secondaryDb, secondaryRealtimeDb } from '@/lib/firebase';
 import { ref, set } from 'firebase/database';
+import i18n from '@/i18n';
 import { UserRecord, userService } from '@/services/userService';
 import { confirm } from '@/utils/confirm';
+import { formatNumber } from '@/i18n/format';
 import { formatMXN } from '@/utils/pricing';
 import { logger } from '@/utils/logger';
 
@@ -63,12 +66,12 @@ function parseGuardsCSV(text: string): { rows: NewGuardInput[]; errors: string[]
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter(Boolean);
-  if (lines.length < 2) return { rows: [], errors: ['The file has no data rows.'] };
+  if (lines.length < 2) return { rows: [], errors: [i18n.t('backoffice:companyGuards.csvNoRows')] };
 
   const headers = lines[0].split(',').map((h) => h.trim().toLowerCase());
   const required = ['firstname', 'lastname', 'email', 'phone', 'hourlyrate'];
   const missing = required.filter((r) => !headers.includes(r));
-  if (missing.length > 0) return { rows: [], errors: [`Missing column(s): ${missing.join(', ')}`] };
+  if (missing.length > 0) return { rows: [], errors: [i18n.t('backoffice:companyGuards.csvMissingColumns', { columns: missing.join(', ') })] };
 
   const rows: NewGuardInput[] = [];
   const errors: string[] = [];
@@ -78,7 +81,7 @@ function parseGuardsCSV(text: string): { rows: NewGuardInput[]; errors: string[]
     const hourlyRate = Number(get('hourlyrate'));
     const row = { firstName: get('firstname'), lastName: get('lastname'), email: get('email'), phone: get('phone'), hourlyRate };
     if (!row.firstName || !row.lastName || !EMAIL_RE.test(row.email) || !row.phone || !Number.isFinite(hourlyRate) || hourlyRate <= 0) {
-      errors.push(`Row ${i + 1}: missing or invalid data`);
+      errors.push(i18n.t('backoffice:companyGuards.csvBadRow', { row: i + 1 }));
       continue;
     }
     rows.push(row);
@@ -99,9 +102,10 @@ export default function CompanyGuardsRoute() {
 
 function CompanyGuardsScreen() {
   const router = useRouter();
+  const { t } = useTranslation(['backoffice', 'common']);
   const { user } = useAuth();
   const [guards, setGuards] = useState<UserRecord[] | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [search, setSearch] = useState('');
   const [notice, setNotice] = useState<{ tone: 'success' | 'error' | 'info'; message: string } | null>(null);
@@ -128,14 +132,14 @@ function CompanyGuardsScreen() {
 
   const load = useCallback(async () => {
     if (!user) return;
-    setLoadError(null);
+    setLoadError(false);
     try {
       const list = await userService.fetchGuardsForCompany(user.id);
       list.sort((a, b) => fullName(a).localeCompare(fullName(b)));
       setGuards(list);
     } catch (error) {
       logger.error('[CompanyGuards] Failed to load guards', error);
-      setLoadError('We could not load your guards.');
+      setLoadError(true);
     }
   }, [user]);
 
@@ -164,7 +168,7 @@ function CompanyGuardsScreen() {
   // y escribe SU PROPIO perfil, que es lo que permiten las reglas. Los
   // documentos KYC nunca van en este perfil publico (CONTRACT §5).
   const createGuards = async (inputs: NewGuardInput[]): Promise<CreateGuardResult[]> => {
-    if (!user) return inputs.map((g) => ({ email: g.email, success: false, error: 'Not signed in' }));
+    if (!user) return inputs.map((g) => ({ email: g.email, success: false, error: t('companyGuards.notSignedIn') }));
     const results: CreateGuardResult[] = [];
     for (const g of inputs) {
       try {
@@ -212,10 +216,10 @@ function CompanyGuardsScreen() {
           success: false,
           error:
             code === 'auth/email-already-in-use'
-              ? 'Email already in use'
+              ? t('companyGuards.emailInUse')
               : code === 'auth/invalid-email'
-              ? 'Invalid email'
-              : 'Could not create the account',
+              ? t('companyGuards.invalidEmail')
+              : t('companyGuards.createFailed'),
         });
       } finally {
         await signOut(secondaryAuth()).catch(() => {});
@@ -234,11 +238,11 @@ function CompanyGuardsScreen() {
   const submitAdd = async () => {
     const errors: typeof formErrors = {};
     const rate = Number(form.hourlyRate.replace(',', '.'));
-    if (!form.firstName.trim()) errors.firstName = 'Required';
-    if (!form.lastName.trim()) errors.lastName = 'Required';
-    if (!EMAIL_RE.test(form.email.trim())) errors.email = 'Enter a valid email';
-    if (!form.phone.trim()) errors.phone = 'Required';
-    if (!Number.isFinite(rate) || rate <= 0) errors.hourlyRate = 'Enter a rate in MXN greater than 0';
+    if (!form.firstName.trim()) errors.firstName = t('shared.required');
+    if (!form.lastName.trim()) errors.lastName = t('shared.required');
+    if (!EMAIL_RE.test(form.email.trim())) errors.email = t('companyGuards.emailInvalid');
+    if (!form.phone.trim()) errors.phone = t('shared.required');
+    if (!Number.isFinite(rate) || rate <= 0) errors.hourlyRate = t('shared.rateInvalid');
     setFormErrors(errors);
     if (Object.keys(errors).length) return;
 
@@ -255,11 +259,11 @@ function CompanyGuardsScreen() {
         },
       ]);
       if (!result.success) {
-        setCreateError(result.error ?? 'Could not create the account.');
+        setCreateError(result.error ?? t('companyGuards.createFailedFull'));
         return;
       }
       setAddOpen(false);
-      setNotice({ tone: 'success', message: `${result.email} was added and emailed a link to set their password.` });
+      setNotice({ tone: 'success', message: t('companyGuards.added', { email: result.email }) });
       await load();
     } finally {
       setCreating(false);
@@ -269,10 +273,10 @@ function CompanyGuardsScreen() {
   const removeGuard = async (g: UserRecord) => {
     const name = fullName(g);
     const ok = await confirm(
-      `Remove ${name}?`,
-      'They keep their Escolta Pro account but leave your company. Their documents stay with them.',
-      'Remove',
-      'Cancel',
+      t('companyGuards.removeTitle', { name }),
+      t('companyGuards.removeMessage'),
+      t('companyGuards.remove'),
+      t('common:actions.cancel'),
       true
     );
     if (!ok) return;
@@ -281,10 +285,10 @@ function CompanyGuardsScreen() {
     try {
       await userService.removeGuardFromCompany(g.id);
       setGuards((prev) => (prev ?? []).filter((x) => x.id !== g.id));
-      setNotice({ tone: 'success', message: `${name} was removed from your company.` });
+      setNotice({ tone: 'success', message: t('companyGuards.removed', { name }) });
     } catch (error) {
       logger.error('[CompanyGuards] Failed to remove guard', error);
-      setNotice({ tone: 'error', message: `Could not remove ${name}. Please try again.` });
+      setNotice({ tone: 'error', message: t('companyGuards.removeError', { name }) });
     } finally {
       setRemovingId(null);
     }
@@ -300,7 +304,7 @@ function CompanyGuardsScreen() {
     if (!rateGuard) return;
     const rate = Number(rateInput.replace(',', '.'));
     if (!Number.isFinite(rate) || rate <= 0) {
-      setRateError('Enter a rate in MXN greater than 0');
+      setRateError(t('shared.rateInvalid'));
       return;
     }
     const hourlyRate = Math.round(rate * 100) / 100;
@@ -309,11 +313,11 @@ function CompanyGuardsScreen() {
     try {
       await userService.updateCompanyGuard(rateGuard.id, { hourlyRate });
       setGuards((prev) => (prev ?? []).map((x) => (x.id === rateGuard.id ? { ...x, hourlyRate } : x)));
-      setNotice({ tone: 'success', message: `${fullName(rateGuard)} now charges ${formatMXN(hourlyRate)} per hour.` });
+      setNotice({ tone: 'success', message: t('companyGuards.rateSaved', { name: fullName(rateGuard), amount: formatMXN(hourlyRate) }) });
       setRateGuard(null);
     } catch (error) {
       logger.error('[CompanyGuards] Failed to save rate', error);
-      setRateError('The rate could not be saved. Please try again.');
+      setRateError(t('companyGuards.rateSaveError'));
     } finally {
       setSavingRate(false);
     }
@@ -333,7 +337,7 @@ function CompanyGuardsScreen() {
       }
     } catch (error) {
       logger.error('[CompanyGuards] CSV picker failed', error);
-      setNotice({ tone: 'error', message: 'The file could not be opened.' });
+      setNotice({ tone: 'error', message: t('companyGuards.fileOpenError') });
     }
   };
 
@@ -344,7 +348,7 @@ function CompanyGuardsScreen() {
       const text = await fetch(importFile.uri).then((r) => r.text());
       const { rows, errors } = parseGuardsCSV(text);
       if (rows.length === 0) {
-        setImportResult({ created: 0, total: 0, issues: errors.length ? errors : ['No valid rows found in the file.'] });
+        setImportResult({ created: 0, total: 0, issues: errors.length ? errors : [t('companyGuards.csvNoValidRows')] });
         return;
       }
       const results = await createGuards(rows);
@@ -353,7 +357,7 @@ function CompanyGuardsScreen() {
       await load();
     } catch (error) {
       logger.error('[CompanyGuards] CSV import failed', error);
-      setImportResult({ created: 0, total: 0, issues: ['The file could not be read. Make sure it is a CSV file.'] });
+      setImportResult({ created: 0, total: 0, issues: [t('companyGuards.csvReadError')] });
     } finally {
       setImporting(false);
     }
@@ -367,13 +371,20 @@ function CompanyGuardsScreen() {
   return (
     <Screen glow keyboard refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.accent} />}>
       <ScreenHeader
-        eyebrow="Company · Team"
-        title="Guards"
-        subtitle={guards ? `${plural(guards.length, 'guard')} · ${available} available now` : 'Your security team'}
+        eyebrow={t('companyGuards.eyebrow')}
+        title={t('companyGuards.title')}
+        subtitle={
+          guards
+            ? t('companyGuards.subtitle', {
+                guards: t('counts.guards', { count: guards.length }),
+                available: t('shared.availableNow', { count: available }),
+              })
+            : t('companyGuards.subtitleFallback')
+        }
         right={
           <View style={styles.headerActions}>
-            <IconButton icon={Upload} onPress={pickCSV} accessibilityLabel="Import guards from a CSV file" />
-            <IconButton icon={UserPlus} tone="accent" onPress={openAdd} accessibilityLabel="Add a guard" />
+            <IconButton icon={Upload} onPress={pickCSV} accessibilityLabel={t('companyGuards.importA11y')} />
+            <IconButton icon={UserPlus} tone="accent" onPress={openAdd} accessibilityLabel={t('companyGuards.addGuard')} />
           </View>
         }
       />
@@ -383,19 +394,19 @@ function CompanyGuardsScreen() {
       {guards && guards.length > 4 ? (
         <Input
           icon={Search}
-          placeholder="Search your guards"
+          placeholder={t('companyGuards.search')}
           value={search}
           onChangeText={setSearch}
           autoCapitalize="none"
           autoCorrect={false}
-          accessibilityLabel="Search your guards"
+          accessibilityLabel={t('companyGuards.search')}
         />
       ) : null}
 
-      <SectionTitle title={search.trim() ? plural(visible.length, 'result') : 'Your team'} />
+      <SectionTitle title={search.trim() ? t('counts.results', { count: visible.length }) : t('companyGuards.yourTeam')} />
 
       {loadError ? (
-        <Notice tone="error" message={loadError} actionLabel="Try again" onAction={load} />
+        <Notice tone="error" message={t('companyGuards.loadError')} actionLabel={t('common:actions.tryAgain')} onAction={load} />
       ) : guards === null ? (
         <>
           <SkeletonCard media />
@@ -405,19 +416,20 @@ function CompanyGuardsScreen() {
       ) : guards.length === 0 ? (
         <EmptyState
           icon={Shield}
-          title="No guards yet"
-          message="Add each guard with their email — they receive a link to set their password. You can also import a CSV."
-          actionLabel="Add a guard"
+          title={t('companyGuards.emptyTitle')}
+          message={t('companyGuards.emptyMessage')}
+          actionLabel={t('companyGuards.addGuard')}
           onAction={openAdd}
         />
       ) : visible.length === 0 ? (
-        <EmptyState icon={Search} title="No matches" message="Try another name or email." />
+        <EmptyState icon={Search} title={t('shared.noMatches')} message={t('companyGuards.noMatchesMessage')} />
       ) : (
         <View style={styles.list}>
           {visible.map((g) => {
             const name = fullName(g);
             const kyc = kycMeta(g.kycStatus);
-            const rate = typeof g.hourlyRate === 'number' && g.hourlyRate > 0 ? `${formatMXN(g.hourlyRate)}/h` : 'Rate not set';
+            const hasRate = typeof g.hourlyRate === 'number' && g.hourlyRate > 0;
+            const rate = hasRate ? t('shared.ratePerHour', { amount: formatMXN(g.hourlyRate as number) }) : t('shared.rateNotSet');
             const jobs = typeof g.completedJobs === 'number' ? g.completedJobs : 0;
             const rating = typeof g.rating === 'number' && g.rating > 0 ? g.rating.toFixed(1) : '—';
             return (
@@ -432,24 +444,47 @@ function CompanyGuardsScreen() {
                       {g.email}
                     </AppText>
                   </View>
+                  {/* Quitar va aparte de las acciones: con tres botones en una fila
+                      las etiquetas se cortaban (sobre todo en espanol). */}
+                  {removingId === g.id ? (
+                    <View style={styles.removeSlot}>
+                      <ActivityIndicator color={Colors.error} size="small" />
+                    </View>
+                  ) : (
+                    <IconButton
+                      icon={UserMinus}
+                      tone="danger"
+                      onPress={() => removeGuard(g)}
+                      accessibilityLabel={t('companyGuards.removeA11y', { name })}
+                    />
+                  )}
                 </View>
                 <View style={styles.badges}>
-                  <Badge label={g.availability === true ? 'Available' : 'Offline'} tone={g.availability === true ? 'success' : 'neutral'} />
+                  <Badge
+                    label={g.availability === true ? t('shared.available') : t('shared.offline')}
+                    tone={g.availability === true ? 'success' : 'neutral'}
+                  />
                   <Badge label={kyc.label} tone={kyc.tone} icon={ShieldCheck} />
                 </View>
                 <View style={styles.metaRow}>
-                  <View style={styles.meta}>
-                    <AppText variant="overline">Rate</AppText>
-                    <AppText variant="numeric" color={rate === 'Rate not set' ? Colors.textTertiary : Colors.textPrimary}>
+                  <View style={[styles.meta, styles.metaWide]}>
+                    <AppText variant="overline" numberOfLines={1}>
+                      {t('companyGuards.metaRate')}
+                    </AppText>
+                    <AppText variant="numeric" color={hasRate ? Colors.textPrimary : Colors.textTertiary}>
                       {rate}
                     </AppText>
                   </View>
-                  <View style={styles.meta}>
-                    <AppText variant="overline">Jobs</AppText>
+                  <View style={[styles.meta, styles.metaNarrow]}>
+                    <AppText variant="overline" numberOfLines={1}>
+                      {t('companyGuards.metaJobs')}
+                    </AppText>
                     <AppText variant="numeric">{jobs}</AppText>
                   </View>
                   <View style={styles.meta}>
-                    <AppText variant="overline">Rating</AppText>
+                    <AppText variant="overline" numberOfLines={1}>
+                      {t('companyGuards.metaRating')}
+                    </AppText>
                     <AppText variant="numeric" color={rating === '—' ? Colors.textTertiary : Colors.textPrimary}>
                       {rating}
                     </AppText>
@@ -457,32 +492,22 @@ function CompanyGuardsScreen() {
                 </View>
                 <View style={styles.actions}>
                   <Button
-                    title="Documents"
+                    title={t('companyGuards.documents')}
                     icon={FolderOpen}
                     variant="secondary"
                     size="sm"
                     onPress={() => router.push(`/company-guard-documents/${g.id}`)}
                     style={styles.flex}
-                    accessibilityLabel={`Documents for ${name}`}
+                    accessibilityLabel={t('companyGuards.documentsA11y', { name })}
                   />
                   <Button
-                    title={rate === 'Rate not set' ? 'Set rate' : 'Rate'}
+                    title={hasRate ? t('companyGuards.rate') : t('companyGuards.setRate')}
                     icon={BadgeDollarSign}
-                    variant={rate === 'Rate not set' ? 'outline' : 'secondary'}
+                    variant={hasRate ? 'secondary' : 'outline'}
                     size="sm"
                     onPress={() => openRate(g)}
                     style={styles.flex}
-                    accessibilityLabel={`Set hourly rate for ${name}`}
-                  />
-                  <Button
-                    title="Remove"
-                    icon={UserMinus}
-                    variant="danger"
-                    size="sm"
-                    loading={removingId === g.id}
-                    onPress={() => removeGuard(g)}
-                    style={styles.flex}
-                    accessibilityLabel={`Remove ${name} from your company`}
+                    accessibilityLabel={t('companyGuards.rateA11y', { name })}
                   />
                 </View>
               </Card>
@@ -495,37 +520,58 @@ function CompanyGuardsScreen() {
         visible={addOpen}
         onClose={() => setAddOpen(false)}
         dismissable={!creating}
-        eyebrow="Add a guard"
-        title="New team member"
-        subtitle="We create their account and email them a link to set a password."
+        eyebrow={t('companyGuards.addEyebrow')}
+        title={t('companyGuards.addTitle')}
+        subtitle={t('companyGuards.addSubtitle')}
         footer={
           <>
-            <Button title="Cancel" variant="secondary" onPress={() => setAddOpen(false)} disabled={creating} style={styles.flex} />
-            <Button title="Create account" icon={UserPlus} onPress={submitAdd} loading={creating} style={styles.flex} />
+            <Button title={t('common:actions.cancel')} variant="secondary" onPress={() => setAddOpen(false)} disabled={creating} style={styles.flex} />
+            <Button title={t('companyGuards.createAccount')} icon={UserPlus} onPress={submitAdd} loading={creating} style={styles.flex} />
           </>
         }
       >
-        <Input label="First name" placeholder="Juan" value={form.firstName} onChangeText={(t) => setForm((f) => ({ ...f, firstName: t }))} error={formErrors.firstName} autoCapitalize="words" />
-        <Input label="Last name" placeholder="Pérez" value={form.lastName} onChangeText={(t) => setForm((f) => ({ ...f, lastName: t }))} error={formErrors.lastName} autoCapitalize="words" />
         <Input
-          label="Email"
-          placeholder="guard@example.com"
+          label={t('shared.firstName')}
+          placeholder="Juan"
+          value={form.firstName}
+          onChangeText={(v) => setForm((f) => ({ ...f, firstName: v }))}
+          error={formErrors.firstName}
+          autoCapitalize="words"
+        />
+        <Input
+          label={t('shared.lastName')}
+          placeholder="Pérez"
+          value={form.lastName}
+          onChangeText={(v) => setForm((f) => ({ ...f, lastName: v }))}
+          error={formErrors.lastName}
+          autoCapitalize="words"
+        />
+        <Input
+          label={t('shared.email')}
+          placeholder={t('companyGuards.emailPlaceholder')}
           value={form.email}
-          onChangeText={(t) => setForm((f) => ({ ...f, email: t }))}
+          onChangeText={(v) => setForm((f) => ({ ...f, email: v }))}
           error={formErrors.email}
           keyboardType="email-address"
           autoCapitalize="none"
           autoCorrect={false}
         />
-        <Input label="Phone" placeholder="+52 55 1234 5678" value={form.phone} onChangeText={(t) => setForm((f) => ({ ...f, phone: t }))} error={formErrors.phone} keyboardType="phone-pad" />
         <Input
-          label="Hourly rate (MXN)"
+          label={t('shared.phone')}
+          placeholder="+52 55 1234 5678"
+          value={form.phone}
+          onChangeText={(v) => setForm((f) => ({ ...f, phone: v }))}
+          error={formErrors.phone}
+          keyboardType="phone-pad"
+        />
+        <Input
+          label={t('shared.hourlyRate')}
           placeholder="180"
           value={form.hourlyRate}
-          onChangeText={(t) => setForm((f) => ({ ...f, hourlyRate: t }))}
+          onChangeText={(v) => setForm((f) => ({ ...f, hourlyRate: v }))}
           error={formErrors.hourlyRate}
           keyboardType="decimal-pad"
-          hint="What clients pay per hour for this guard, before fees."
+          hint={t('companyGuards.rateHint')}
         />
         {createError ? <Notice tone="error" message={createError} /> : null}
       </Sheet>
@@ -534,22 +580,22 @@ function CompanyGuardsScreen() {
         visible={!!rateGuard}
         onClose={() => setRateGuard(null)}
         dismissable={!savingRate}
-        eyebrow="Hourly rate"
+        eyebrow={t('companyGuards.rateEyebrow')}
         title={rateGuard ? fullName(rateGuard) : ''}
-        subtitle="What clients pay per hour for this guard, before fees. Bookings already paid keep their price."
+        subtitle={t('companyGuards.rateSubtitle')}
         footer={
           <>
-            <Button title="Cancel" variant="secondary" onPress={() => setRateGuard(null)} disabled={savingRate} style={styles.flex} />
-            <Button title="Save rate" onPress={saveRate} loading={savingRate} style={styles.flex} />
+            <Button title={t('common:actions.cancel')} variant="secondary" onPress={() => setRateGuard(null)} disabled={savingRate} style={styles.flex} />
+            <Button title={t('companyGuards.saveRate')} onPress={saveRate} loading={savingRate} style={styles.flex} />
           </>
         }
       >
         <Input
-          label="Rate (MXN per hour)"
+          label={t('companyGuards.rateLabel')}
           placeholder="180"
           value={rateInput}
-          onChangeText={(t) => {
-            setRateInput(t);
+          onChangeText={(v) => {
+            setRateInput(v);
             if (rateError) setRateError(null);
           }}
           error={rateError}
@@ -559,7 +605,7 @@ function CompanyGuardsScreen() {
           onSubmitEditing={saveRate}
         />
         {!rateGuard || (typeof rateGuard.hourlyRate === 'number' && rateGuard.hourlyRate > 0) ? null : (
-          <Notice tone="info" message="Guards without a rate are not shown to clients." />
+          <Notice tone="info" message={t('companyGuards.noRateNotice')} />
         )}
       </Sheet>
 
@@ -567,15 +613,15 @@ function CompanyGuardsScreen() {
         visible={!!importFile}
         onClose={() => setImportFile(null)}
         dismissable={!importing}
-        eyebrow="Import guards"
-        title={importResult ? 'Import finished' : 'Import from CSV'}
+        eyebrow={t('companyGuards.importEyebrow')}
+        title={importResult ? t('companyGuards.importFinished') : t('companyGuards.importTitle')}
         footer={
           importResult ? (
-            <Button title="Done" variant="secondary" onPress={() => setImportFile(null)} />
+            <Button title={t('common:actions.done')} variant="secondary" onPress={() => setImportFile(null)} style={styles.flex} />
           ) : (
             <>
-              <Button title="Cancel" variant="secondary" onPress={() => setImportFile(null)} disabled={importing} style={styles.flex} />
-              <Button title="Import" icon={Upload} onPress={runImport} loading={importing} style={styles.flex} />
+              <Button title={t('common:actions.cancel')} variant="secondary" onPress={() => setImportFile(null)} disabled={importing} style={styles.flex} />
+              <Button title={t('companyGuards.import')} icon={Upload} onPress={runImport} loading={importing} style={styles.flex} />
             </>
           )
         }
@@ -589,7 +635,7 @@ function CompanyGuardsScreen() {
               </AppText>
               {typeof importFile.size === 'number' ? (
                 <AppText variant="caption" color={Colors.textTertiary}>
-                  {(importFile.size / 1024).toFixed(1)} KB
+                  {t('shared.fileSize', { size: formatNumber(importFile.size / 1024, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) })}
                 </AppText>
               ) : null}
             </View>
@@ -601,13 +647,13 @@ function CompanyGuardsScreen() {
               tone={importResult.created > 0 ? 'success' : 'error'}
               message={
                 importResult.total > 0
-                  ? `${importResult.created} of ${plural(importResult.total, 'guard')} created. Each one was emailed a link to set their password.`
-                  : 'No guards were created.'
+                  ? t('companyGuards.importResult', { created: importResult.created, count: importResult.total })
+                  : t('companyGuards.importNone')
               }
             />
             {importResult.issues.length > 0 ? (
               <View style={styles.issues}>
-                <AppText variant="overline">Issues</AppText>
+                <AppText variant="overline">{t('companyGuards.issues')}</AppText>
                 {importResult.issues.map((issue) => (
                   <AppText key={issue} variant="footnote">
                     {issue}
@@ -618,14 +664,15 @@ function CompanyGuardsScreen() {
           </>
         ) : (
           <>
-            <AppText variant="callout">One guard per row, with this header. Each guard gets an account and an email to set their password.</AppText>
-            <View style={styles.code}>
+            <AppText variant="callout">{t('companyGuards.importHelp')}</AppText>
+            {/* Sin cortes de linea dentro de una fila: se desplaza de lado si no cabe. */}
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.code} contentContainerStyle={styles.codeContent}>
               <AppText variant="footnote" color={Colors.textPrimary} style={styles.codeText}>
                 {CSV_TEMPLATE}
               </AppText>
-            </View>
+            </ScrollView>
             <Button
-              title={formatCopied ? 'Format copied' : 'Copy format'}
+              title={formatCopied ? t('companyGuards.formatCopied') : t('companyGuards.copyFormat')}
               icon={Copy}
               variant="ghost"
               size="sm"
@@ -665,15 +712,30 @@ const styles = StyleSheet.create({
   },
   metaRow: {
     flexDirection: 'row',
-    gap: Space.md,
+    gap: Space.sm,
     paddingVertical: Space.sm,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderColor: Colors.border,
   },
+  // Columnas a la medida de su contenido: "Servicios" y un numero caben en
+  // menos; "Calificación" necesita mas que "Rating".
   meta: {
-    flex: 1,
+    flex: 1.15,
+    minWidth: 0,
     gap: 2,
+  },
+  metaWide: {
+    flex: 1,
+  },
+  metaNarrow: {
+    flex: 0.85,
+  },
+  removeSlot: {
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   actions: {
     flexDirection: 'row',
@@ -688,11 +750,14 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surfaceLight,
   },
   code: {
-    padding: Space.md,
+    flexGrow: 0,
     borderRadius: Radius.sm,
     backgroundColor: Colors.background,
     borderWidth: 1,
     borderColor: Colors.border,
+  },
+  codeContent: {
+    padding: Space.md,
   },
   codeText: {
     fontVariant: ['tabular-nums'],

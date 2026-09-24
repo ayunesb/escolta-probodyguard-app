@@ -1,6 +1,7 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { WebView, WebViewMessageEvent } from 'react-native-webview';
+import { useTranslation } from 'react-i18next';
 import Colors from '@/constants/colors';
 import { Radius, Space } from '@/constants/design';
 import { Skeleton } from '@/components/ui';
@@ -35,6 +36,7 @@ const SUBMIT_TIMEOUT_MS = 45_000;
  */
 const BraintreeHostedFields = forwardRef<BraintreeHostedFieldsHandle, BraintreeHostedFieldsProps>(
   ({ clientToken, onSuccess, onError, onReady }, ref) => {
+    const { t } = useTranslation('funnel');
     const webViewRef = useRef<WebView>(null);
     const [pageLoaded, setPageLoaded] = useState(false);
     const [fieldsReady, setFieldsReady] = useState(false);
@@ -69,7 +71,7 @@ const BraintreeHostedFields = forwardRef<BraintreeHostedFieldsHandle, BraintreeH
         data = JSON.parse(event.nativeEvent.data);
       } catch (error) {
         logger.error('[BraintreeHostedFields] Unparseable message', error);
-        if (pendingSubmit.current) fail('The payment form sent an unexpected response. Please try again.');
+        if (pendingSubmit.current) fail(t('payment.errors.hosted.unexpected'));
         return;
       }
 
@@ -86,11 +88,11 @@ const BraintreeHostedFields = forwardRef<BraintreeHostedFieldsHandle, BraintreeH
           if (typeof data.nonce === 'string' && data.nonce) {
             onSuccess(data.nonce, data.details ?? { cardType: '', lastFour: '', lastTwo: '' });
           } else {
-            onError('The card could not be verified. Please check the details and try again.');
+            onError(t('payment.errors.hosted.cardNotVerified'));
           }
           break;
         case 'error': {
-          const message = typeof data.error === 'string' && data.error ? data.error : 'Please check your card details.';
+          const message = typeof data.error === 'string' && data.error ? data.error : t('payment.errors.hosted.checkCard');
           fail(message);
           break;
         }
@@ -103,23 +105,23 @@ const BraintreeHostedFields = forwardRef<BraintreeHostedFieldsHandle, BraintreeH
     const handleWebViewError = () => {
       logger.error('[BraintreeHostedFields] WebView failed to load', { url: hostedFieldsUrl });
       setFieldsReady(false);
-      fail('The payment form could not load. Please check your connection.');
+      fail(t('payment.errors.hosted.loadFailed'));
     };
 
     useImperativeHandle(ref, () => ({
       submitPayment: () => {
         if (!pageLoaded || !fieldsReady) {
-          onError('The payment form is still loading. Please try again in a moment.');
+          onError(t('payment.errors.hosted.stillLoading'));
           return;
         }
         if (!webViewRef.current) {
-          onError('The payment form is not available. Please close and reopen payment.');
+          onError(t('payment.errors.hosted.unavailable'));
           return;
         }
         clearPending();
         pendingSubmit.current = setTimeout(() => {
           pendingSubmit.current = null;
-          onError('The payment form did not respond. You have not been charged — please try again.');
+          onError(t('payment.errors.hosted.timeout'));
         }, SUBMIT_TIMEOUT_MS);
         webViewRef.current.postMessage(JSON.stringify({ action: 'submit' }));
       },
@@ -128,7 +130,7 @@ const BraintreeHostedFields = forwardRef<BraintreeHostedFieldsHandle, BraintreeH
     return (
       <View style={styles.container}>
         {!fieldsReady ? (
-          <View style={styles.loading} pointerEvents="none" accessibilityLabel="Loading secure card form">
+          <View style={styles.loading} pointerEvents="none" accessibilityLabel={t('payment.loadingForm')}>
             <Skeleton height={52} radius={Radius.md} />
             <View style={styles.loadingRow}>
               <Skeleton height={52} radius={Radius.md} style={styles.flex} />

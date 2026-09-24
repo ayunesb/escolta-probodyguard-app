@@ -5,6 +5,7 @@ import { Radius, Shadow, Space } from '@/constants/design';
 import { registerAlertHost, AlertRequest } from '@/utils/alertWebPolyfill';
 import { AppText } from './AppText';
 import { Button } from './Button';
+import i18n from '@/i18n';
 
 // Dialogo de Alert.alert en web, con el sistema de diseno y todos los
 // botones (window.confirm solo sabe de Aceptar/Cancelar). En iOS/Android no
@@ -29,7 +30,9 @@ export function AlertHost() {
   if (Platform.OS !== 'web' || !current) return null;
 
   const cancel = current.buttons.find((b) => b.style === 'cancel');
-  const stacked = current.buttons.length > 2;
+  // En fila caben dos etiquetas cortas; si alguna es larga (pasa en espanol),
+  // se apilan a todo lo ancho en vez de recortarse.
+  const stacked = current.buttons.length > 2 || current.buttons.some((b) => (b.text ?? '').length > 14);
   // Orden: acciones primero; cancelar al final (o a la izquierda si van en fila)
   const actions = current.buttons.filter((b) => b !== cancel);
   const ordered = stacked ? [...actions, ...(cancel ? [cancel] : [])] : [...(cancel ? [cancel] : []), ...actions];
@@ -38,7 +41,7 @@ export function AlertHost() {
   return (
     <Modal transparent visible animationType="fade" onRequestClose={() => close(cancel?.onPress)}>
       <View style={styles.overlay}>
-        <Pressable style={StyleSheet.absoluteFill} onPress={cancel ? () => close(cancel.onPress) : undefined} accessibilityLabel="Dismiss" />
+        <Pressable style={StyleSheet.absoluteFill} onPress={cancel ? () => close(cancel.onPress) : undefined} accessibilityLabel={i18n.t('common:actions.dismiss')} />
         <View style={styles.card} accessibilityRole="alert" accessibilityViewIsModal>
           <AppText variant="title3">{current.title}</AppText>
           {current.message ? (

@@ -76,11 +76,11 @@ export function ListRow({ title, subtitle, icon: Icon, value, onPress, destructi
         </View>
       ) : null}
       <View style={styles.rowText}>
-        <AppText variant="bodyMedium" color={fg} numberOfLines={1}>
+        <AppText variant="bodyMedium" color={fg} numberOfLines={2}>
           {title}
         </AppText>
         {subtitle ? (
-          <AppText variant="footnote" numberOfLines={2}>
+          <AppText variant="footnote" numberOfLines={3}>
             {subtitle}
           </AppText>
         ) : null}
@@ -138,8 +138,10 @@ export interface StatTileProps {
 // ("$16,438.50") se cortaba con puntos suspensivos. Se ajusta por longitud.
 const valueSize = (value: string | number) => {
   const len = String(value).length;
-  if (len > 11) return { fontSize: 17, lineHeight: 22 };
-  if (len > 8) return { fontSize: 20, lineHeight: 25 };
+  // Solo baja la letra: el alto de linea se queda en 31 para que las pistas
+  // de debajo sigan alineadas entre fichas de la misma fila.
+  if (len > 11) return { fontSize: 17 };
+  if (len > 8) return { fontSize: 20 };
   return null;
 };
 
@@ -224,10 +226,14 @@ const styles = StyleSheet.create({
   },
   rowText: {
     flex: 1,
+    minWidth: 0,
     gap: 2,
   },
+  // El valor cede ante el titulo; en espanol los titulos son mas largos.
   rowValue: {
-    maxWidth: '45%',
+    maxWidth: '50%',
+    flexShrink: 1,
+    textAlign: 'right',
   },
   group: {
     backgroundColor: Colors.glass,
@@ -257,8 +263,11 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     gap: Space.sm,
   },
+  // Siempre dos lineas de alto: si una etiqueta se parte (pasa mucho en
+  // espanol), las cifras de la fila siguen alineadas.
   statLabel: {
     flexShrink: 1,
+    minHeight: 28,
   },
   info: {
     flexDirection: 'row',

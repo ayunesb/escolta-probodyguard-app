@@ -4,6 +4,7 @@ import * as Location from 'expo-location';
 import { Platform } from 'react-native';
 import { db as getDbInstance, realtimeDb as getRealtimeDb } from '@/lib/firebase';
 import { logger } from '@/utils/logger';
+import i18n from '@/i18n';
 
 export type EmergencyType = 'panic' | 'sos' | 'medical' | 'security';
 
@@ -102,7 +103,7 @@ class EmergencyService {
       return {
         success: false,
         locationShared: false,
-        error: 'We could not confirm the alert reached Escolta Pro. Check your connection.',
+        error: i18n.t('booking:errors.emergencyNotConfirmed'),
       };
     }
 

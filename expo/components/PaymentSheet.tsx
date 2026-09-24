@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Check, CreditCard, Lock, Plus, ShieldCheck, X } from 'lucide-react-native';
+import { useTranslation } from 'react-i18next';
+import i18n from '@/i18n';
 import Colors from '@/constants/colors';
 import { ICON_STROKE, MAX_CONTENT_WIDTH, Radius, Shadow, Space } from '@/constants/design';
 import { AppText, Button, Card, EmptyState, IconButton, ListGroup, ListRow, SectionTitle, Skeleton } from '@/components/ui';
@@ -38,15 +40,16 @@ const resolveMode = (): Mode => {
 
 function quoteErrorMessage(error: unknown): string {
   if (error instanceof PaymentApiError) {
-    if (error.status === 409) return 'This booking is no longer awaiting payment. Check its status in your bookings.';
-    if (error.status === 401) return 'Your session expired. Please sign in again to pay.';
-    if (error.status === 503) return 'Payments are temporarily unavailable. Nothing has been charged.';
+    if (error.status === 409) return i18n.t('funnel:payment.errors.noLongerPending');
+    if (error.status === 401) return i18n.t('funnel:payment.errors.sessionExpired');
+    if (error.status === 503) return i18n.t('funnel:payment.errors.unavailable');
     return error.message;
   }
-  return 'We could not reach the payment server. Nothing has been charged.';
+  return i18n.t('funnel:payment.errors.unreachable');
 }
 
 export default function PaymentSheet({ visible, bookingId, userId, onPaid, onCancel }: PaymentSheetProps) {
+  const { t } = useTranslation(['funnel', 'common']);
   const insets = useSafeAreaInsets();
   const mode = resolveMode();
 
@@ -96,11 +99,11 @@ export default function PaymentSheet({ visible, bookingId, userId, onPaid, onCan
           const booking = await bookingService.getBookingById(bookingId);
           if (cancelled) return;
           if (!booking || !Number.isFinite(booking.totalAmount)) {
-            setQuoteError('We could not load this booking. Nothing has been charged.');
+            setQuoteError(i18n.t('funnel:payment.errors.bookingLoad'));
             return;
           }
           if (booking.status !== 'pending') {
-            setQuoteError('This booking is no longer awaiting payment. Check its status in your bookings.');
+            setQuoteError(i18n.t('funnel:payment.errors.noLongerPending'));
             return;
           }
           setBreakdown({
@@ -176,15 +179,15 @@ export default function PaymentSheet({ visible, bookingId, userId, onPaid, onCan
         return;
       }
       if (result.requiresAction) {
-        setPayError('Your bank needs extra verification. Enter the card again to continue.');
+        setPayError(t('payment.errors.extraVerification'));
         setShowNewCard(true);
         if (!clientToken) loadClientToken();
       } else {
-        setPayError(result.error ?? 'The payment was declined. You have not been charged.');
+        setPayError(result.error ?? t('payment.errors.declined'));
       }
     } catch (error) {
       logger.error('[PaymentSheet] Braintree payment threw', error);
-      setPayError('We could not reach the payment server. Please try again.');
+      setPayError(t('payment.errors.unreachableRetry'));
     }
     setPayingState(false);
   };
@@ -200,7 +203,7 @@ export default function PaymentSheet({ visible, bookingId, userId, onPaid, onCan
   const payNewCard = () => {
     if (payingRef.current) return;
     if (!hostedFieldsRef.current) {
-      setPayError('The card form is not ready yet. Please wait a moment.');
+      setPayError(t('payment.errors.formNotReady'));
       return;
     }
     setPayError(null);
@@ -222,7 +225,7 @@ export default function PaymentSheet({ visible, bookingId, userId, onPaid, onCan
   // ---------------------------------------------------------------- render
 
   const total = breakdown?.total;
-  const payLabel = typeof total === 'number' ? `Pay ${formatMXN(total)}` : 'Pay';
+  const payLabel = typeof total === 'number' ? t('payment.payAmount', { amount: formatMXN(total) }) : t('payment.pay');
   const returnUrl =
     Platform.OS === 'web' && typeof window !== 'undefined' ? `${window.location.origin}/booking/${bookingId}` : undefined;
 
@@ -234,7 +237,7 @@ export default function PaymentSheet({ visible, bookingId, userId, onPaid, onCan
   const receipt = (
     <Card tone="raised" style={styles.receipt}>
       <View style={styles.receiptHead}>
-        <AppText variant="overline">Receipt</AppText>
+        <AppText variant="overline">{t('payment.receipt')}</AppText>
         <AppText variant="caption" color={Colors.textTertiary}>
           MXN
         </AppText>
@@ -247,7 +250,7 @@ export default function PaymentSheet({ visible, bookingId, userId, onPaid, onCan
             {quoteError}
           </AppText>
           <Button
-            title="Try again"
+            title={t('common:actions.tryAgain')}
             variant="secondary"
             size="sm"
             fullWidth={false}
@@ -255,7 +258,7 @@ export default function PaymentSheet({ visible, bookingId, userId, onPaid, onCan
           />
         </View>
       ) : (
-        <View style={styles.skeletonRows} accessibilityLabel="Loading amounts">
+        <View style={styles.skeletonRows} accessibilityLabel={t('payment.loadingAmounts')}>
           <Skeleton width="70%" height={14} />
           <Skeleton width="50%" height={14} />
           <Skeleton width="40%" height={20} style={styles.skeletonTotal} />
@@ -268,8 +271,7 @@ export default function PaymentSheet({ visible, bookingId, userId, onPaid, onCan
     <View style={styles.assurance}>
       <ShieldCheck size={15} color={Colors.textTertiary} strokeWidth={ICON_STROKE} />
       <AppText variant="footnote" color={Colors.textTertiary} style={styles.flex}>
-        The amount is verified by our server before you are charged. Card details go directly to the payment
-        processor.
+        {t('payment.assurance')}
       </AppText>
     </View>
   );
@@ -281,9 +283,9 @@ export default function PaymentSheet({ visible, bookingId, userId, onPaid, onCan
     body = (
       <EmptyState
         icon={CreditCard}
-        title="Payments are not configured"
-        message="Card payments aren't enabled in this environment yet. Your booking is saved as pending and nothing has been charged."
-        actionLabel="Close"
+        title={t('payment.unconfiguredTitle')}
+        message={t('payment.unconfiguredMessage')}
+        actionLabel={t('common:actions.close')}
         onAction={onCancel}
       />
     );
@@ -292,7 +294,7 @@ export default function PaymentSheet({ visible, bookingId, userId, onPaid, onCan
       <>
         {receipt}
         {assurance}
-        <SectionTitle title="Payment method" />
+        <SectionTitle title={t('payment.method')} />
         {clientSecret ? (
           <StripePaymentForm
             clientSecret={clientSecret}
@@ -312,7 +314,7 @@ export default function PaymentSheet({ visible, bookingId, userId, onPaid, onCan
       <>
         {receipt}
         {assurance}
-        <SectionTitle title="Payment method" />
+        <SectionTitle title={t('payment.method')} />
         {methodsLoading ? (
           <Skeleton height={64} radius={Radius.lg} />
         ) : !showNewCard && savedCards.length > 0 ? (
@@ -323,7 +325,7 @@ export default function PaymentSheet({ visible, bookingId, userId, onPaid, onCan
                   key={card.token}
                   icon={CreditCard}
                   title={`${card.cardType} •••• ${card.last4}`}
-                  subtitle={`Expires ${card.expirationMonth}/${card.expirationYear}`}
+                  subtitle={t('payment.expires', { month: card.expirationMonth, year: card.expirationYear })}
                   onPress={() => setSelectedCard(card.token)}
                   showChevron={false}
                   trailing={
@@ -336,7 +338,7 @@ export default function PaymentSheet({ visible, bookingId, userId, onPaid, onCan
               <ListRow
                 key="new"
                 icon={Plus}
-                title="Use a new card"
+                title={t('payment.newCard')}
                 onPress={() => {
                   setShowNewCard(true);
                   setPayError(null);
@@ -350,9 +352,9 @@ export default function PaymentSheet({ visible, bookingId, userId, onPaid, onCan
         ) : tokenState === 'error' || !clientToken ? (
           <View style={styles.quoteError}>
             <AppText variant="callout" color={Colors.error}>
-              The secure card form could not load.
+              {t('payment.errors.formLoad')}
             </AppText>
-            <Button title="Try again" variant="secondary" size="sm" fullWidth={false} onPress={loadClientToken} />
+            <Button title={t('common:actions.tryAgain')} variant="secondary" size="sm" fullWidth={false} onPress={loadClientToken} />
           </View>
         ) : (
           <>
@@ -364,7 +366,7 @@ export default function PaymentSheet({ visible, bookingId, userId, onPaid, onCan
             />
             {savedCards.length > 0 ? (
               <Button
-                title="Use a saved card"
+                title={t('payment.savedCard')}
                 variant="ghost"
                 size="sm"
                 fullWidth={false}
@@ -396,7 +398,7 @@ export default function PaymentSheet({ visible, bookingId, userId, onPaid, onCan
           onPress={showNewCard ? payNewCard : paySavedCard}
           loading={paying}
           disabled={!canPay}
-          accessibilityHint="Charges your card and confirms the booking"
+          accessibilityHint={t('payment.payHint')}
         />
       </View>
     );
@@ -409,20 +411,20 @@ export default function PaymentSheet({ visible, bookingId, userId, onPaid, onCan
           style={StyleSheet.absoluteFill}
           onPress={close}
           accessibilityRole="button"
-          accessibilityLabel="Close payment"
+          accessibilityLabel={t('payment.close')}
         />
         <View style={styles.sheet} accessibilityViewIsModal>
           <View style={styles.grabber} />
           <View style={styles.header}>
             <View style={styles.flex}>
               <AppText variant="overline" color={Colors.accent}>
-                Secure checkout
+                {t('payment.secureCheckout')}
               </AppText>
               <AppText variant="title2" accessibilityRole="header" style={styles.title}>
-                Complete payment
+                {t('payment.title')}
               </AppText>
             </View>
-            <IconButton icon={X} onPress={close} disabled={paying} accessibilityLabel="Close payment" />
+            <IconButton icon={X} onPress={close} disabled={paying} accessibilityLabel={t('payment.close')} />
           </View>
 
           <ScrollView

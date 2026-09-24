@@ -13,6 +13,7 @@ import { Platform } from 'react-native';
 import { ref, set, onValue } from 'firebase/database';
 import { realtimeDb } from '@/lib/firebase';
 import { logger } from '@/utils/logger';
+import i18n from '@/i18n';
 
 export interface Coordinates {
   latitude: number;
@@ -90,15 +91,15 @@ export async function watchDevicePosition(
   if (Platform.OS === 'web') {
     const geo = typeof navigator !== 'undefined' ? navigator.geolocation : undefined;
     if (!geo) {
-      onError(new LocationError('Location is not available in this browser.', 'unavailable'));
+      onError(new LocationError(i18n.t('booking:location.browserUnavailable'), 'unavailable'));
       return () => {};
     }
     const watchId = geo.watchPosition(
       (p) => onPosition(toPosition(p.coords, p.timestamp || Date.now())),
       (e) => {
-        if (e.code === 1) onError(new LocationError('Location permission is off for this site.', 'denied'));
-        else if (e.code === 3) onError(new LocationError('Getting your location is taking too long.', 'timeout'));
-        else onError(new LocationError("We can't get your location right now.", 'unavailable'));
+        if (e.code === 1) onError(new LocationError(i18n.t('booking:location.siteDenied'), 'denied'));
+        else if (e.code === 3) onError(new LocationError(i18n.t('booking:location.timeout'), 'timeout'));
+        else onError(new LocationError(i18n.t('booking:location.cantGet'), 'unavailable'));
       },
       { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 }
     );
@@ -108,7 +109,7 @@ export async function watchDevicePosition(
   const subscription = await Location.watchPositionAsync(
     { accuracy: Location.Accuracy.High, timeInterval: 5000, distanceInterval: 10 },
     (loc) => onPosition(toPosition(loc.coords, loc.timestamp || Date.now())),
-    (reason) => onError(new LocationError(reason || "We can't get your location right now.", 'unavailable'))
+    (reason) => onError(new LocationError(reason || i18n.t('booking:location.cantGet'), 'unavailable'))
   );
   return () => subscription.remove();
 }

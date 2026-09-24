@@ -9,20 +9,23 @@ import type { UserRole } from '@/types';
 import Colors from '@/constants/colors';
 import { ICON_STROKE, Radius, Space } from '@/constants/design';
 import { AppText, Button, EmptyState, Input, NavBar, PressableScale, Screen, SectionTitle } from '@/components/ui';
+import { useTranslation } from 'react-i18next';
 
 type SignUpRole = Exclude<UserRole, 'admin'>;
 
 // Las cuentas de administrador no se crean desde la app.
-const ROLES: { value: SignUpRole; title: string; description: string; icon: LucideIcon }[] = [
-  { value: 'client', title: 'I need protection', description: 'Book vetted protectors for yourself, family or guests.', icon: Shield },
-  { value: 'guard', title: "I'm a protector", description: 'Offer close protection and receive jobs.', icon: BriefcaseBusiness },
-  { value: 'company', title: 'I run a security firm', description: 'Manage your roster and their bookings.', icon: Building2 },
+const ROLES: { value: SignUpRole; icon: LucideIcon }[] = [
+  { value: 'client', icon: Shield },
+  { value: 'guard', icon: BriefcaseBusiness },
+  { value: 'company', icon: Building2 },
 ];
 
 type Consents = { terms: boolean; privacy: boolean; dataProcessing: boolean; marketing: boolean };
 
 function RoleOption({ option, selected, onPress }: { option: (typeof ROLES)[number]; selected: boolean; onPress: () => void }) {
+  const { t } = useTranslation('auth');
   const Icon = option.icon;
+  const title = t(`signUp.roles.${option.value}.title`);
   return (
     <PressableScale
       onPress={onPress}
@@ -30,7 +33,7 @@ function RoleOption({ option, selected, onPress }: { option: (typeof ROLES)[numb
       haptic="selection"
       accessibilityRole="radio"
       accessibilityState={{ selected }}
-      accessibilityLabel={option.title}
+      accessibilityLabel={title}
       hoverStyle={selected ? undefined : { borderColor: Colors.borderStrong }}
       style={[styles.roleOption, selected ? styles.roleOptionSelected : null]}
     >
@@ -38,8 +41,8 @@ function RoleOption({ option, selected, onPress }: { option: (typeof ROLES)[numb
         <Icon size={18} color={selected ? Colors.textOnAccent : Colors.accent} strokeWidth={ICON_STROKE} />
       </View>
       <View style={styles.roleText}>
-        <AppText variant="headline">{option.title}</AppText>
-        <AppText variant="footnote">{option.description}</AppText>
+        <AppText variant="headline">{title}</AppText>
+        <AppText variant="footnote">{t(`signUp.roles.${option.value}.description`)}</AppText>
       </View>
       <View style={[styles.radio, selected ? styles.radioOn : null]}>{selected ? <View style={styles.radioDot} /> : null}</View>
     </PressableScale>
@@ -67,6 +70,7 @@ function CheckRow({ checked, onToggle, children, label }: { checked: boolean; on
 
 export default function SignUpScreen() {
   const router = useRouter();
+  const { t } = useTranslation('auth');
   const { signUp } = useAuth();
   const [role, setRole] = useState<SignUpRole>('client');
   const [firstName, setFirstName] = useState('');
@@ -87,15 +91,15 @@ export default function SignUpScreen() {
   const handleSignUp = async () => {
     const data = { firstName: firstName.trim(), lastName: lastName.trim(), email: email.trim(), phone: phone.trim() };
     const next: Record<string, string> = {};
-    if (!data.firstName) next.firstName = 'Required';
-    if (!data.lastName) next.lastName = 'Required';
-    if (!data.email) next.email = 'Enter your email address.';
-    else if (!/^\S+@\S+\.\S+$/.test(data.email)) next.email = "That email address isn't valid.";
-    if (!data.phone) next.phone = 'Enter a phone number we can reach you on.';
-    else if (data.phone.replace(/\D/g, '').length < 10) next.phone = 'Include the full number with area code.';
-    if (!password) next.password = 'Choose a password.';
+    if (!data.firstName) next.firstName = t('validation.required');
+    if (!data.lastName) next.lastName = t('validation.required');
+    if (!data.email) next.email = t('validation.emailRequired');
+    else if (!/^\S+@\S+\.\S+$/.test(data.email)) next.email = t('validation.emailInvalid');
+    if (!data.phone) next.phone = t('validation.phoneRequired');
+    else if (data.phone.replace(/\D/g, '').length < 10) next.phone = t('validation.phoneShort');
+    if (!password) next.password = t('validation.choosePassword');
     else if (strength && !strength.isValid) next.password = strength.feedback.join(' · ');
-    if (!consents.terms || !consents.privacy || !consents.dataProcessing) next.consents = 'Please accept the required items above.';
+    if (!consents.terms || !consents.privacy || !consents.dataProcessing) next.consents = t('validation.consentsRequired');
     setErrors(next);
     setFormError('');
     if (Object.keys(next).length) return;
@@ -106,7 +110,7 @@ export default function SignUpScreen() {
     if (result.success) {
       setSentTo(data.email);
     } else {
-      setFormError(result.error || "We couldn't create your account.");
+      setFormError(result.error || t('errors.signUpFailedShort'));
     }
   };
 
@@ -116,10 +120,10 @@ export default function SignUpScreen() {
         <Stack.Screen options={{ headerShown: false }} />
         <EmptyState
           icon={MailCheck}
-          title="Check your inbox"
-          message={`We sent a verification link to ${sentTo}. Open it to activate your account, then sign in.`}
+          title={t('signUp.checkInbox')}
+          message={t('signUp.sentTo', { email: sentTo })}
         />
-        <Button title="Back to sign in" onPress={() => router.replace('/auth/sign-in')} />
+        <Button title={t('signUp.backToSignIn')} onPress={() => router.replace('/auth/sign-in')} />
       </Screen>
     );
   }
@@ -127,28 +131,28 @@ export default function SignUpScreen() {
   return (
     <View style={styles.root}>
       <Stack.Screen options={{ headerShown: false }} />
-      <NavBar title="Create account" transparent />
+      <NavBar title={t('signUp.navTitle')} transparent />
       <Screen keyboard padTop={false} padBottom contentStyle={styles.content}>
         <AppText variant="title1" accessibilityRole="header">
-          Join Escolta Pro
+          {t('signUp.title')}
         </AppText>
         <AppText variant="callout" style={styles.lead}>
-          Tell us how you’ll use the service. You can complete your profile after verifying your email.
+          {t('signUp.lead')}
         </AppText>
 
-        <SectionTitle title="Account type" />
+        <SectionTitle title={t('signUp.accountType')} />
         <View style={styles.roles} accessibilityRole="radiogroup">
           {ROLES.map((option) => (
             <RoleOption key={option.value} option={option} selected={role === option.value} onPress={() => setRole(option.value)} />
           ))}
         </View>
 
-        <SectionTitle title="Your details" />
+        <SectionTitle title={t('signUp.yourDetails')} />
         <View style={styles.fields}>
           <View style={styles.row}>
             <Input
               containerStyle={styles.half}
-              label="First name"
+              label={t('signUp.firstName')}
               value={firstName}
               onChangeText={(t) => {
                 setFirstName(t);
@@ -161,7 +165,7 @@ export default function SignUpScreen() {
             />
             <Input
               containerStyle={styles.half}
-              label="Last name"
+              label={t('signUp.lastName')}
               value={lastName}
               onChangeText={(t) => {
                 setLastName(t);
@@ -174,14 +178,14 @@ export default function SignUpScreen() {
             />
           </View>
           <Input
-            label="Email"
+            label={t('signUp.email')}
             icon={Mail}
             value={email}
             onChangeText={(t) => {
               setEmail(t.trim());
               clearError('email');
             }}
-            placeholder="you@company.com"
+            placeholder={t('signIn.emailPlaceholder')}
             keyboardType="email-address"
             autoCapitalize="none"
             autoCorrect={false}
@@ -189,7 +193,7 @@ export default function SignUpScreen() {
             error={errors.email}
           />
           <Input
-            label="Mobile phone"
+            label={t('signUp.phone')}
             icon={Phone}
             value={phone}
             onChangeText={(t) => {
@@ -202,48 +206,48 @@ export default function SignUpScreen() {
             error={errors.phone}
           />
           <Input
-            label="Password"
+            label={t('signUp.password')}
             icon={Lock}
             value={password}
             onChangeText={(t) => {
               setPassword(t);
               clearError('password');
             }}
-            placeholder="At least 8 characters"
+            placeholder={t('signUp.passwordPlaceholder')}
             secureTextEntry
             autoCapitalize="none"
             autoComplete="new-password"
             textContentType="newPassword"
             error={errors.password}
-            hint={strength ? (strength.isValid ? 'Strong password' : strength.feedback[0]) : 'Use 8+ characters with a mix of letters, numbers and symbols.'}
+            hint={strength ? (strength.isValid ? t('password.strong') : strength.feedback[0]) : t('password.hint')}
           />
         </View>
 
-        <SectionTitle title="Agreements" />
+        <SectionTitle title={t('signUp.agreements')} />
         <View style={styles.consents}>
-          <CheckRow checked={consents.terms} onToggle={() => toggle('terms')} label="Accept the Terms of Service">
+          <CheckRow checked={consents.terms} onToggle={() => toggle('terms')} label={t('signUp.termsA11y')}>
             <AppText variant="callout" color={Colors.textPrimary}>
-              I accept the Terms of Service <AppText variant="callout" color={Colors.textTertiary}>(required)</AppText>
+              {t('signUp.terms')} <AppText variant="callout" color={Colors.textTertiary}>{t('signUp.required')}</AppText>
             </AppText>
           </CheckRow>
-          <CheckRow checked={consents.privacy} onToggle={() => toggle('privacy')} label="Accept the Privacy Policy">
+          <CheckRow checked={consents.privacy} onToggle={() => toggle('privacy')} label={t('signUp.privacyA11y')}>
             <AppText variant="callout" color={Colors.textPrimary}>
-              I accept the{' '}
+              {t('signUp.privacyPrefix')}{' '}
               <AppText variant="callout" color={Colors.accent} onPress={() => router.push('/privacy-policy' as never)} accessibilityRole="link">
-                Privacy Policy
+                {t('signUp.privacyLink')}
               </AppText>{' '}
-              <AppText variant="callout" color={Colors.textTertiary}>(required)</AppText>
+              <AppText variant="callout" color={Colors.textTertiary}>{t('signUp.required')}</AppText>
             </AppText>
           </CheckRow>
-          <CheckRow checked={consents.dataProcessing} onToggle={() => toggle('dataProcessing')} label="Consent to data processing">
+          <CheckRow checked={consents.dataProcessing} onToggle={() => toggle('dataProcessing')} label={t('signUp.dataProcessingA11y')}>
             <AppText variant="callout" color={Colors.textPrimary}>
-              I consent to my data being processed to deliver the service{' '}
-              <AppText variant="callout" color={Colors.textTertiary}>(required)</AppText>
+              {t('signUp.dataProcessing')}{' '}
+              <AppText variant="callout" color={Colors.textTertiary}>{t('signUp.required')}</AppText>
             </AppText>
           </CheckRow>
-          <CheckRow checked={consents.marketing} onToggle={() => toggle('marketing')} label="Receive occasional updates">
+          <CheckRow checked={consents.marketing} onToggle={() => toggle('marketing')} label={t('signUp.marketingA11y')}>
             <AppText variant="callout" color={Colors.textPrimary}>
-              Send me occasional updates <AppText variant="callout" color={Colors.textTertiary}>(optional)</AppText>
+              {t('signUp.marketing')} <AppText variant="callout" color={Colors.textTertiary}>{t('signUp.optional')}</AppText>
             </AppText>
           </CheckRow>
           {errors.consents ? (
@@ -262,8 +266,8 @@ export default function SignUpScreen() {
           </View>
         ) : null}
 
-        <Button title="Create account" size="lg" onPress={handleSignUp} loading={isLoading} icon={UserRound} style={styles.submit} />
-        <Button title="I already have an account" variant="ghost" onPress={() => router.replace('/auth/sign-in')} />
+        <Button title={t('signUp.submit')} size="lg" onPress={handleSignUp} loading={isLoading} icon={UserRound} style={styles.submit} />
+        <Button title={t('signUp.haveAccount')} variant="ghost" onPress={() => router.replace('/auth/sign-in')} />
       </Screen>
     </View>
   );

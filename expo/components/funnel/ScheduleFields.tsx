@@ -3,6 +3,7 @@ import type { CSSProperties } from 'react';
 import { Platform, StyleSheet, View } from 'react-native';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { Calendar, Clock } from 'lucide-react-native';
+import { useTranslation } from 'react-i18next';
 import type { LucideIcon } from 'lucide-react-native';
 import Colors from '@/constants/colors';
 import { Fonts, ICON_STROKE, Radius, Space } from '@/constants/design';
@@ -19,6 +20,7 @@ export interface ScheduleFieldsProps {
 // Native <input type="date|time"> on web (the community picker has no web
 // implementation), platform pickers on iOS/Android. Everything is LOCAL time.
 export function ScheduleFields({ value, onChange, error }: ScheduleFieldsProps) {
+  const { t } = useTranslation(['funnel', 'common']);
   const [picker, setPicker] = useState<'date' | 'time' | null>(null);
   const borderColor = error ? Colors.error : Colors.border;
 
@@ -49,10 +51,12 @@ export function ScheduleFields({ value, onChange, error }: ScheduleFieldsProps) 
     return (
       <View>
         <View style={styles.row}>
-          <FieldShell label="Date" icon={Calendar} borderColor={borderColor}>
+          {/* Browser inputs draw their own picker icon, so the shell drops its
+              duplicate one and pads tighter: at 375 px both values used to clip. */}
+          <FieldShell label={t('schedule.date')} icon={Calendar} borderColor={borderColor} compact>
             <input
               type="date"
-              aria-label="Booking date"
+              aria-label={t('schedule.dateA11y')}
               value={toDateInputValue(value)}
               min={toDateInputValue(new Date())}
               onChange={(e) => {
@@ -62,10 +66,10 @@ export function ScheduleFields({ value, onChange, error }: ScheduleFieldsProps) 
               style={inputStyle}
             />
           </FieldShell>
-          <FieldShell label="Start time" icon={Clock} borderColor={borderColor}>
+          <FieldShell label={t('schedule.startTime')} icon={Clock} borderColor={borderColor} compact>
             <input
               type="time"
-              aria-label="Start time"
+              aria-label={t('schedule.startTime')}
               value={toTimeInputValue(value)}
               onChange={(e) => {
                 const [h, min] = e.target.value.split(':').map(Number);
@@ -92,22 +96,22 @@ export function ScheduleFields({ value, onChange, error }: ScheduleFieldsProps) 
     <View>
       <View style={styles.row}>
         <FieldShell
-          label="Date"
+          label={t('schedule.date')}
           icon={Calendar}
           borderColor={picker === 'date' ? Colors.accentLine : borderColor}
           onPress={() => setPicker(picker === 'date' ? null : 'date')}
-          accessibilityLabel={`Booking date, ${formatDateLong(value)}`}
+          accessibilityLabel={t('schedule.dateValueA11y', { date: formatDateLong(value) })}
         >
           <AppText variant="body" style={styles.value}>
             {formatDateLong(value)}
           </AppText>
         </FieldShell>
         <FieldShell
-          label="Start time"
+          label={t('schedule.startTime')}
           icon={Clock}
           borderColor={picker === 'time' ? Colors.accentLine : borderColor}
           onPress={() => setPicker(picker === 'time' ? null : 'time')}
-          accessibilityLabel={`Start time, ${formatTime(value)}`}
+          accessibilityLabel={t('schedule.timeValueA11y', { time: formatTime(value) })}
         >
           <AppText variant="body" style={styles.value}>
             {formatTime(value)}
@@ -129,7 +133,7 @@ export function ScheduleFields({ value, onChange, error }: ScheduleFieldsProps) 
             accentColor={Colors.accent}
           />
           {Platform.OS === 'ios' ? (
-            <Button title="Done" variant="ghost" size="sm" fullWidth={false} onPress={() => setPicker(null)} style={styles.done} />
+            <Button title={t('common:actions.done')} variant="ghost" size="sm" fullWidth={false} onPress={() => setPicker(null)} style={styles.done} />
           ) : null}
         </View>
       ) : null}
@@ -143,6 +147,7 @@ function FieldShell({
   borderColor,
   onPress,
   accessibilityLabel,
+  compact,
   children,
 }: {
   label: string;
@@ -150,17 +155,19 @@ function FieldShell({
   borderColor: string;
   onPress?: () => void;
   accessibilityLabel?: string;
+  // Web: the browser input brings its own picker icon, so no leading icon and tighter padding.
+  compact?: boolean;
   children: React.ReactNode;
 }) {
   const field = (
-    <View style={[styles.field, { borderColor }]}>
-      <Icon size={18} color={Colors.textTertiary} strokeWidth={ICON_STROKE} />
+    <View style={[styles.field, compact ? styles.fieldCompact : null, { borderColor }]}>
+      {compact ? null : <Icon size={18} color={Colors.textTertiary} strokeWidth={ICON_STROKE} style={styles.icon} />}
       {children}
     </View>
   );
   return (
     <View style={styles.cell}>
-      <AppText variant="caption" color={Colors.textSecondary} style={styles.label}>
+      <AppText variant="caption" color={Colors.textSecondary} numberOfLines={1} style={styles.label}>
         {label}
       </AppText>
       {onPress ? (
@@ -205,6 +212,13 @@ const styles = StyleSheet.create({
     borderRadius: Radius.md,
     borderWidth: 1,
     backgroundColor: Colors.surface,
+  },
+  fieldCompact: {
+    gap: Space.sm,
+    paddingHorizontal: Space.md,
+  },
+  icon: {
+    flexShrink: 0,
   },
   value: {
     flex: 1,

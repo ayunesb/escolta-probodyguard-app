@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import { useTranslation } from 'react-i18next';
 import { ShieldCheck, UserX } from 'lucide-react-native';
 import Colors from '@/constants/colors';
 import { Space } from '@/constants/design';
@@ -24,6 +25,7 @@ export default function CompanyGuardDocumentsRoute() {
 
 function CompanyGuardDocumentsScreen() {
   const router = useRouter();
+  const { t } = useTranslation(['backoffice', 'common']);
   const { guardId } = useLocalSearchParams<{ guardId: string }>();
   const { user } = useAuth();
   const [guard, setGuard] = useState<UserRecord | null>(null);
@@ -85,11 +87,11 @@ function CompanyGuardDocumentsScreen() {
     setGuard((g) => (g ? { ...g, [field]: urls, ...(needsReview ? { kycStatus: 'pending' as const } : {}) } : g));
   };
 
-  const title = guard ? fullName(guard) : 'Guard documents';
+  const title = guard ? fullName(guard) : t('guardDocs.title');
 
   return (
     <View style={styles.root}>
-      <NavBar title="Guard documents" />
+      <NavBar title={t('guardDocs.navTitle')} />
       <Screen padTop={false} contentStyle={styles.content}>
         {state === 'loading' ? (
           <>
@@ -98,21 +100,21 @@ function CompanyGuardDocumentsScreen() {
             <SkeletonCard lines={2} />
           </>
         ) : state === 'error' ? (
-          <Notice tone="error" message="We could not load this guard's documents." actionLabel="Try again" onAction={load} />
+          <Notice tone="error" message={t('guardDocs.loadError')} actionLabel={t('common:actions.tryAgain')} onAction={load} />
         ) : state === 'missing' || !guard ? (
           <EmptyState
             icon={UserX}
-            title="Guard not found"
-            message="This guard may have been removed from your company."
-            actionLabel="Back to guards"
+            title={t('guardDocs.notFoundTitle')}
+            message={t('guardDocs.notFoundMessage')}
+            actionLabel={t('guardDocs.backToGuards')}
             onAction={() => router.replace('/(tabs)/company-guards')}
           />
         ) : !canManage ? (
           <EmptyState
             icon={UserX}
-            title="No access"
-            message="You can only manage documents for guards on your own team."
-            actionLabel="Back to guards"
+            title={t('guardDocs.noAccessTitle')}
+            message={t('guardDocs.noAccessMessage')}
+            actionLabel={t('guardDocs.backToGuards')}
             onAction={() => router.replace('/(tabs)/company-guards')}
           />
         ) : (
@@ -135,19 +137,19 @@ function CompanyGuardDocumentsScreen() {
               message={
                 guard.kycStatus === 'rejected'
                   ? kyc?.rejectionReason
-                    ? `Last submission rejected. Reviewer note: ${kyc.rejectionReason}`
-                    : 'Last submission rejected. Upload updated files to resubmit.'
-                  : 'Changing a verification file sends this guard back to Escolta Pro for review. Only Escolta Pro can approve.'
+                    ? t('guardDocs.rejectedWithNote', { note: kyc.rejectionReason })
+                    : t('guardDocs.rejected')
+                  : t('guardDocs.info')
               }
             />
 
-            <SectionTitle title="Shown to clients" />
+            <SectionTitle title={t('guardDocs.shownToClients')} />
             <KYCDocumentUpload
               userId={guard.id}
               scopeId={guard.companyId || guard.id}
               documentType="photo"
-              label="Profile photo"
-              description="A clear, recent photo of the guard's face."
+              label={t('docs.photo')}
+              description={t('guardDocs.photoDescription')}
               maxImages={1}
               initialImages={guard.photos ?? []}
               onUpload={savePublic('photos')}
@@ -156,20 +158,20 @@ function CompanyGuardDocumentsScreen() {
               userId={guard.id}
               scopeId={guard.companyId || guard.id}
               documentType="outfit"
-              label="Outfit photos"
-              description="Uniform or work attire."
+              label={t('docs.outfits')}
+              description={t('guardDocs.outfitDescription')}
               maxImages={3}
               initialImages={guard.outfitPhotos ?? []}
               onUpload={savePublic('outfitPhotos')}
             />
 
-            <SectionTitle title="Private — for verification" />
+            <SectionTitle title={t('guardDocs.private')} />
             <KYCDocumentUpload
               userId={guard.id}
               scopeId={guard.companyId || guard.id}
               documentType="id"
-              label="Government ID"
-              description="INE, passport or another valid photo ID."
+              label={t('docs.governmentId')}
+              description={t('guardDocs.idDescription')}
               maxImages={2}
               initialImages={kyc?.governmentIdUrls ?? []}
               onUpload={saveKyc('governmentIdUrls')}
@@ -178,8 +180,8 @@ function CompanyGuardDocumentsScreen() {
               userId={guard.id}
               scopeId={guard.companyId || guard.id}
               documentType="license"
-              label="Security license"
-              description="Private security license or credential."
+              label={t('docs.license')}
+              description={t('guardDocs.licenseDescription')}
               maxImages={2}
               initialImages={kyc?.licenseUrls ?? []}
               onUpload={saveKyc('licenseUrls')}
@@ -188,8 +190,8 @@ function CompanyGuardDocumentsScreen() {
               userId={guard.id}
               scopeId={guard.companyId || guard.id}
               documentType="insurance"
-              label="Insurance"
-              description="Proof of liability insurance, if applicable."
+              label={t('docs.insurance')}
+              description={t('guardDocs.insuranceDescription')}
               maxImages={2}
               initialImages={kyc?.insuranceUrls ?? []}
               onUpload={saveKyc('insuranceUrls')}
@@ -198,8 +200,8 @@ function CompanyGuardDocumentsScreen() {
               userId={guard.id}
               scopeId={guard.companyId || guard.id}
               documentType="vehicle"
-              label="Vehicle documents"
-              description="Registration and insurance, if the guard provides a vehicle."
+              label={t('docs.vehicles')}
+              description={t('guardDocs.vehicleDescription')}
               maxImages={3}
               initialImages={kyc?.vehicleDocUrls ?? []}
               onUpload={saveKyc('vehicleDocUrls')}

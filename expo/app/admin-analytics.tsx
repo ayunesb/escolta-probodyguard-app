@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { RefreshControl, StyleSheet, View } from 'react-native';
 import { Stack } from 'expo-router';
+import { useTranslation } from 'react-i18next';
 import { Ban, CalendarCheck, CircleCheck, Clock, Receipt, Star, Wallet } from 'lucide-react-native';
 import Colors from '@/constants/colors';
 import { Radius, Space } from '@/constants/design';
@@ -18,8 +19,10 @@ import {
   StatTile,
 } from '@/components/ui';
 import type { Tone } from '@/components/ui';
-import { Notice, RoleGate, bookingTime, fetchAllBookings, formatDateTime, fullName, money, percent, plural } from '@/components/backoffice';
+import { Notice, RoleGate, bookingTime, fetchAllBookings, formatDateTime, fullName, money, percent } from '@/components/backoffice';
 import { withErrorBoundary } from '@/components/CriticalScreenErrorBoundary';
+import i18n from '@/i18n';
+import { formatNumber } from '@/i18n/format';
 import { UserRecord, userService } from '@/services/userService';
 import type { Booking, BookingStatus } from '@/types';
 import { formatMXN } from '@/utils/pricing';
@@ -62,11 +65,12 @@ function AdminAnalyticsRoute() {
 }
 
 function AdminAnalyticsScreen() {
+  const { t } = useTranslation(['backoffice', 'common']);
   const [range, setRange] = useState<Range>('30');
   const [bookings, setBookings] = useState<Booking[] | null>(null);
   const [members, setMembers] = useState<MemberCounts | null>(null);
   const [guardNames, setGuardNames] = useState<Record<string, UserRecord>>({});
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState(false);
   const [membersError, setMembersError] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [loadedAt, setLoadedAt] = useState<Date | null>(null);
@@ -74,7 +78,7 @@ function AdminAnalyticsScreen() {
   // Lecturas de una sola vez (sin listeners): reservas de RTDB y conteos de
   // usuarios en el servidor de Firestore.
   const load = useCallback(async () => {
-    setError(null);
+    setError(false);
     setMembersError(false);
     const count = userService.countUsers.bind(userService);
     const [bookingsResult, membersResult] = await Promise.allSettled([
@@ -95,7 +99,7 @@ function AdminAnalyticsScreen() {
       setBookings(bookingsResult.value);
     } else {
       logger.error('[AdminAnalytics] Failed to load bookings', bookingsResult.reason);
-      setError('Bookings could not be loaded.');
+      setError(true);
     }
     if (membersResult.status === 'fulfilled') {
       const [clients, guards, companies, verified, pendingKyc, rejectedKyc, available, suspended] = membersResult.value;
@@ -165,20 +169,21 @@ function AdminAnalyticsScreen() {
     userService.getUsersByIds(topIds.split(',')).then(setGuardNames).catch(() => {});
   }, [topIds]);
 
-  const rangeLabel = range === 'all' ? 'all time' : `last ${range} days`;
+  const rangeLabel = range === 'all' ? t('analytics.rangeAll') : t('analytics.rangeLast', { count: Number(range) });
+  const oneDecimal = (n: number) => formatNumber(n, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 
   return (
     <View style={styles.root}>
-      <NavBar title="Analytics" />
+      <NavBar title={t('analytics.nav')} />
       <Screen
         padTop={false}
         contentStyle={styles.content}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.accent} />}
       >
         <View style={styles.header}>
-          <AppText variant="title2">Platform analytics</AppText>
+          <AppText variant="title2">{t('analytics.title')}</AppText>
           <AppText variant="caption" color={Colors.textTertiary}>
-            {loadedAt ? `Live data as of ${formatDateTime(loadedAt)} · pull to refresh` : 'Loading live data…'}
+            {loadedAt ? t('analytics.liveAsOf', { time: formatDateTime(loadedAt) }) : t('analytics.loadingLive')}
           </AppText>
         </View>
 
@@ -186,46 +191,58 @@ function AdminAnalyticsScreen() {
           value={range}
           onChange={setRange}
           options={[
-            { value: '30', label: '30 days' },
-            { value: '90', label: '90 days' },
-            { value: 'all', label: 'All time' },
+            { value: '30', label: t('shared.days', { count: 30 }) },
+            { value: '90', label: t('shared.days', { count: 90 }) },
+            { value: 'all', label: t('analytics.allTime') },
           ]}
         />
 
-        {error ? <Notice tone="error" message={error} actionLabel="Try again" onAction={load} style={styles.block} /> : null}
+        {error ? (
+          <Notice tone="error" message={t('analytics.loadError')} actionLabel={t('common:actions.tryAgain')} onAction={load} style={styles.block} />
+        ) : null}
 
-        <SectionTitle title={`Bookings · ${rangeLabel}`} />
+        <SectionTitle title={t('analytics.bookingsSection', { range: rangeLabel })} />
         {bookings === null && !error ? (
           <View style={styles.grid}>
             <SkeletonCard lines={1} />
             <SkeletonCard lines={1} />
           </View>
         ) : bookings !== null && data.total === 0 ? (
-          <EmptyState icon={CalendarCheck} title="No bookings in this period" message="Try a longer range." />
+          <EmptyState icon={CalendarCheck} title={t('analytics.emptyTitle')} message={t('analytics.emptyMessage')} />
         ) : bookings !== null ? (
           <>
             <View style={styles.gridWrap}>
               <View style={styles.grid}>
-                <StatTile label="Created" value={data.total} icon={CalendarCheck} />
-                <StatTile label="Completed" value={data.completed} hint={`${percent(data.completed, data.total)} of created`} icon={CircleCheck} />
+                <StatTile label={t('analytics.created')} value={data.total} icon={CalendarCheck} />
+                <StatTile
+                  label={t('analytics.completed')}
+                  value={data.completed}
+                  hint={t('analytics.ofCreated', { percent: percent(data.completed, data.total) })}
+                  icon={CircleCheck}
+                />
               </View>
               <View style={styles.grid}>
-                <StatTile label="Cancelled" value={data.cancelled} hint={`${percent(data.cancelled, data.total)} of created`} icon={Ban} />
                 <StatTile
-                  label="Avg duration"
-                  value={data.avgDuration !== null ? `${data.avgDuration.toFixed(1)} h` : '—'}
+                  label={t('analytics.cancelled')}
+                  value={data.cancelled}
+                  hint={t('analytics.ofCreated', { percent: percent(data.cancelled, data.total) })}
+                  icon={Ban}
+                />
+                <StatTile
+                  label={t('analytics.avgDuration')}
+                  value={data.avgDuration !== null ? t('analytics.hours', { value: oneDecimal(data.avgDuration) }) : '—'}
                   icon={Clock}
                 />
               </View>
             </View>
 
-            <SectionTitle title="Status breakdown" />
+            <SectionTitle title={t('analytics.statusBreakdown')} />
             <Card style={styles.bars}>
               {data.byStatus.map(({ status, count }) => {
                 const meta = bookingStatusMeta(status);
                 return (
-                  <View key={status} style={styles.barRow} accessibilityLabel={`${meta.label}: ${count}`}>
-                    <AppText variant="footnote" style={styles.barLabel}>
+                  <View key={status} style={styles.barRow} accessibilityLabel={t('analytics.barA11y', { label: meta.label, count })}>
+                    <AppText variant="footnote" numberOfLines={1} style={styles.barLabel}>
                       {meta.label}
                     </AppText>
                     <View style={styles.barTrack}>
@@ -244,33 +261,37 @@ function AdminAnalyticsScreen() {
               })}
             </Card>
 
-            <SectionTitle title="Money · completed jobs" />
+            <SectionTitle title={t('analytics.moneySection')} />
             <View style={styles.gridWrap}>
               <View style={styles.grid}>
-                <StatTile label="Client payments" value={formatMXN(data.gross)} icon={Wallet} />
-                <StatTile label="Platform fees" value={formatMXN(data.platform)} icon={Receipt} accent />
+                <StatTile label={t('shared.clientPayments')} value={formatMXN(data.gross)} icon={Wallet} />
+                <StatTile label={t('shared.platformFees')} value={formatMXN(data.platform)} icon={Receipt} accent />
               </View>
             </View>
             <Card style={styles.infoCard}>
-              <InfoRow label="Guard payouts" value={formatMXN(data.payouts)} />
-              <InfoRow label="Card processing fees" value={formatMXN(data.fees)} />
-              <InfoRow label="Average booking value" value={data.avgValue !== null ? formatMXN(data.avgValue) : '—'} />
+              <InfoRow label={t('analytics.guardPayouts')} value={formatMXN(data.payouts)} />
+              <InfoRow label={t('analytics.cardFees')} value={formatMXN(data.fees)} />
+              <InfoRow label={t('analytics.avgValue')} value={data.avgValue !== null ? formatMXN(data.avgValue) : '—'} />
               <InfoRow
-                label="Average rating"
-                value={data.avgRating !== null ? `${data.avgRating.toFixed(1)} · ${plural(data.ratedCount, 'review')}` : 'No reviews yet'}
+                label={t('analytics.avgRating')}
+                value={
+                  data.avgRating !== null
+                    ? t('analytics.ratingValue', { rating: oneDecimal(data.avgRating), reviews: t('counts.reviews', { count: data.ratedCount }) })
+                    : t('shared.noReviewsYet')
+                }
                 icon={Star}
               />
             </Card>
 
             {data.topGuards.length > 0 ? (
               <>
-                <SectionTitle title="Most booked guards" />
+                <SectionTitle title={t('analytics.topGuards')} />
                 <Card style={styles.infoCard}>
                   {data.topGuards.map(([id, row]) => (
                     <InfoRow
                       key={id}
-                      label={guardNames[id] ? fullName(guardNames[id]) : 'Guard'}
-                      value={`${plural(row.jobs, 'job')} · ${formatMXN(row.earnings)}`}
+                      label={guardNames[id] ? fullName(guardNames[id]) : t('people.guard')}
+                      value={t('analytics.topGuardValue', { jobs: t('counts.jobs', { count: row.jobs }), amount: formatMXN(row.earnings) })}
                     />
                   ))}
                 </Card>
@@ -279,25 +300,25 @@ function AdminAnalyticsScreen() {
           </>
         ) : null}
 
-        <SectionTitle title="Members · all time" />
+        <SectionTitle title={t('analytics.membersSection')} />
         {membersError ? (
-          <Notice tone="error" message="Member counts could not be loaded." actionLabel="Try again" onAction={load} />
+          <Notice tone="error" message={t('analytics.membersError')} actionLabel={t('common:actions.tryAgain')} onAction={load} />
         ) : !members ? (
           <SkeletonCard lines={3} />
         ) : (
           <>
             <View style={styles.gridWrap}>
               <View style={styles.grid}>
-                <StatTile label="Clients" value={members.clients} />
-                <StatTile label="Guards" value={members.guards} hint={`${members.available} available now`} />
+                <StatTile label={t('analytics.clients')} value={members.clients} />
+                <StatTile label={t('analytics.guards')} value={members.guards} hint={t('analytics.guardsHint', { count: members.available })} />
               </View>
             </View>
             <Card style={styles.infoCard}>
-              <InfoRow label="Security companies" value={String(members.companies)} />
-              <InfoRow label="Guards verified" value={`${members.verified} · ${percent(members.verified, members.guards)}`} />
-              <InfoRow label="Guards pending verification" value={String(members.pendingKyc)} />
-              <InfoRow label="Guards rejected" value={String(members.rejectedKyc)} />
-              <InfoRow label="Suspended accounts" value={String(members.suspended)} />
+              <InfoRow label={t('analytics.companies')} value={String(members.companies)} />
+              <InfoRow label={t('analytics.guardsVerified')} value={`${members.verified} · ${percent(members.verified, members.guards)}`} />
+              <InfoRow label={t('analytics.guardsPending')} value={String(members.pendingKyc)} />
+              <InfoRow label={t('analytics.guardsRejected')} value={String(members.rejectedKyc)} />
+              <InfoRow label={t('analytics.suspended')} value={String(members.suspended)} />
             </Card>
           </>
         )}
@@ -360,6 +381,9 @@ const styles = StyleSheet.create({
   },
 });
 
+// Getter: el mensaje se lee al dibujar el fallback, en el idioma activo.
 export default withErrorBoundary(AdminAnalyticsRoute, {
-  fallbackMessage: 'Analytics could not be displayed. Please try again.',
+  get fallbackMessage() {
+    return i18n.t('backoffice:analytics.crash');
+  },
 });
