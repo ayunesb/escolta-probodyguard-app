@@ -301,7 +301,7 @@ export const demoSandbox = {
     await ready; const b = state.root.bookings[bookingId];
     if (!b || b.transactionId !== transactionId) return { success: false, error: 'Demo payment not found.' };
     if (state.docs[`users/${getAuth().currentUser?.uid}`]?.role !== 'admin' || !['cancelled', 'rejected'].includes(b.status)) return { success: false, error: 'Only an admin can refund a cancelled or declined booking.' };
-    b.paymentStatus = 'refunded'; b.status = 'cancelled'; b.cancelledAt ||= new Date().toISOString(); const payment = state.docs[`payments/${transactionId}`]; if (payment) payment.status = 'refunded';
+    b.paymentStatus = 'refunded'; const payment = state.docs[`payments/${transactionId}`]; if (payment) payment.status = 'refunded';
     inbox('payment', 'Demo refund completed', 'The simulated charge was refunded. No money moved.', { bookingId });
     await persist(); emit('fs'); emit('db'); return { success: true, transactionId: `refund-${transactionId}` };
   },

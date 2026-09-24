@@ -67,7 +67,14 @@ describe('functional sandbox with network forbidden', () => {
     const b=await paidBooking();await signIn('diego@escolta.test');await bookingService.rejectBooking(b.id,'Schedule conflict');await signIn();await bookingService.reassignGuard(b.id,'tomas');
     expect((await demo.get(demo.ref('guardBookingIndex/guard/'+b.id))).exists()).toBe(false);expect((await demo.get(demo.ref('guardBookingIndex/tomas/'+b.id))).val()).toBe(true);
     await bookingService.cancelBooking(b.id,'client','Plans changed');expect((await readBooking(b.id)).status).toBe('cancelled');
-    const paid=await readBooking(b.id);await signIn('andres@escoltapro.test');await demo.demoSandbox.refund(paid.transactionId,b.id);expect((await readBooking(b.id)).paymentStatus).toBe('refunded');
+    const paid=await readBooking(b.id);await signIn('andres@escoltapro.test');await demo.demoSandbox.refund(paid.transactionId,b.id);expect(await readBooking(b.id)).toEqual({...paid,paymentStatus:'refunded'});
+  });
+  it('preserves the rejection outcome and timestamps when refunding a declined job',async()=>{
+    const b=await paidBooking();await signIn('diego@escolta.test');await bookingService.rejectBooking(b.id,'Schedule conflict');
+    const rejected=await readBooking(b.id);expect(rejected.status).toBe('rejected');expect(rejected.cancelledAt).toBeUndefined();
+    await signIn('andres@escoltapro.test');expect(await demo.demoSandbox.refund(rejected.transactionId,b.id)).toMatchObject({success:true});
+    expect(await readBooking(b.id)).toEqual({...rejected,paymentStatus:'refunded'});
+    expect((await demo.getDoc(demo.doc('payments',rejected.transactionId))).data().status).toBe('refunded');
   });
   it('supports roster queries, timestamp snapshots and suspension',async()=>{
     const q=demo.query(demo.collection('users'),demo.where('role','==','guard'),demo.where('kycStatus','==','approved'),demo.where('availability','==',true));expect((await demo.getDocs(q)).size).toBe(3);

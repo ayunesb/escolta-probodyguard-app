@@ -63,11 +63,12 @@ For a real launch, follow the separate backend deployment requirements in `HANDO
 
 ## Verification - 24 September 2026
 
-- 117 automated tests in 12 suites pass, including real booking-service transitions against the local
+- 118 automated tests in 12 suites pass, including real booking-service transitions against the local
   adapter with network access forbidden. Coverage includes all four roles, wrong credentials,
   verification and reset links, secondary company auth, payment decline/retry/idempotence, canonical
   repricing, wrong/right start codes, completion/rating, reassignment, cancellation/refund, queries,
-  timestamps and reset. Calendar cases cover leap years, month/year boundaries and overnight dates.
+  timestamps and reset. Refunds preserve rejection/cancellation history. Calendar cases cover leap
+  years, month/year boundaries and overnight dates.
 - App TypeScript, changed-file ESLint, Cloud Functions compilation, normal web export and demo web
   export pass. Normal backend credentials and deployments are unchanged.
 - Browser-tested: future-month scheduling, armored booking, payment decline/retry, confirmation,
