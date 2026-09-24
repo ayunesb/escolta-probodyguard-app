@@ -232,12 +232,7 @@ export default function SignInScreen() {
 
   const message = error || authError;
 
-  const form = PUBLIC_DEMO ? (
-    <View style={styles.form}>
-      <TestModePanel busyRole={busyRole} onPick={handleQuickLogin} />
-      {message ? <Notice tone="error" message={message} /> : null}
-    </View>
-  ) : (
+  const form = (
     <View style={styles.form}>
       <Input
         label={t('signIn.email')}
@@ -303,7 +298,7 @@ export default function SignInScreen() {
       </View>
       <Button title={t('signIn.createAccount')} variant="secondary" onPress={() => router.push('/auth/sign-up')} />
 
-      {USING_EMULATORS ? <TestModePanel busyRole={busyRole} onPick={handleQuickLogin} /> : null}
+      {USING_EMULATORS || PUBLIC_DEMO ? <TestModePanel busyRole={busyRole} onPick={handleQuickLogin} /> : null}
 
       {__DEV__ && !!process.env.EXPO_PUBLIC_DEMO_EMAIL && !USING_EMULATORS ? (
         <AppText variant="caption" color={Colors.textTertiary} align="center">
