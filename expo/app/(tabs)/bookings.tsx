@@ -86,7 +86,7 @@ export default function BookingsScreen() {
     const upcomingStatuses = UPCOMING[role];
     const up: Booking[] = [];
     const done: Booking[] = [];
-    bookings.forEach((b) => (upcomingStatuses.includes(b.status) ? up : done).push(b));
+    bookings.forEach((b) => (upcomingStatuses.includes(b.status) && b.paymentStatus !== 'refunded' ? up : done).push(b));
     up.sort((a, b) => {
       const la = LIVE_FIRST[a.status] ?? 9;
       const lb = LIVE_FIRST[b.status] ?? 9;

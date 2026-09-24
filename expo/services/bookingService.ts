@@ -656,6 +656,7 @@ export const bookingService = {
   async reassignGuard(bookingId: string, newGuardId: string): Promise<void> {
     if (!newGuardId) throw new Error(i18n.t('booking:errors.chooseProtector'));
     const current = await readBooking(bookingId);
+    if (current.paymentStatus === 'refunded') throw new Error(i18n.t('booking:errors.refundedBooking'));
     if (current.status !== 'rejected') {
       throw new Error(i18n.t('booking:errors.cantReassign', { status: describeStatus(current.status) }));
     }
@@ -762,6 +763,9 @@ export const bookingService = {
       to: 'cancelled',
       actor: by,
       verb: 'cancel',
+      check: (current) => {
+        if (current.paymentStatus === 'refunded') throw new Error(i18n.t('booking:errors.refundedBooking'));
+      },
       patch: {
         cancelledAt: new Date().toISOString(),
         cancelledBy: by,

@@ -67,7 +67,8 @@ For a real launch, follow the separate backend deployment requirements in `HANDO
   adapter with network access forbidden. Coverage includes all four roles, wrong credentials,
   verification and reset links, secondary company auth, payment decline/retry/idempotence, canonical
   repricing, wrong/right start codes, completion/rating, reassignment, cancellation/refund, queries,
-  timestamps and reset. Refunds preserve rejection/cancellation history. Calendar cases cover leap
+  timestamps and reset. Refunds preserve rejection/cancellation history and prevent reusing a refunded
+  booking; those records appear under Past bookings. Calendar cases cover leap
   years, month/year boundaries and overnight dates.
 - App TypeScript, changed-file ESLint, Cloud Functions compilation, normal web export and demo web
   export pass. Normal backend credentials and deployments are unchanged.

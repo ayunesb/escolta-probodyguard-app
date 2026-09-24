@@ -75,6 +75,9 @@ describe('functional sandbox with network forbidden', () => {
     await signIn('andres@escoltapro.test');expect(await demo.demoSandbox.refund(rejected.transactionId,b.id)).toMatchObject({success:true});
     expect(await readBooking(b.id)).toEqual({...rejected,paymentStatus:'refunded'});
     expect((await demo.getDoc(demo.doc('payments',rejected.transactionId))).data().status).toBe('refunded');
+    await signIn();await expect(bookingService.reassignGuard(b.id,'tomas')).rejects.toThrow();
+    await expect(bookingService.cancelBooking(b.id,'client','Already refunded')).rejects.toThrow();
+    expect(await readBooking(b.id)).toEqual({...rejected,paymentStatus:'refunded'});
   });
   it('supports roster queries, timestamp snapshots and suspension',async()=>{
     const q=demo.query(demo.collection('users'),demo.where('role','==','guard'),demo.where('kycStatus','==','approved'),demo.where('availability','==',true));expect((await demo.getDocs(q)).size).toBe(3);
