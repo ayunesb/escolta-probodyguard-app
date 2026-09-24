@@ -18,6 +18,7 @@ import type { LucideIcon } from 'lucide-react-native';
 import { useAuth } from '@/contexts/AuthContext';
 import { biometricService } from '@/services/biometricService';
 import { USING_EMULATORS } from '@/lib/firebase';
+import { PUBLIC_DEMO } from '@/constants/demo';
 import { DEV_ACCOUNTS, DEV_PASSWORD, DevRole } from '@/constants/devAccounts';
 import Colors from '@/constants/colors';
 import { Fonts, ICON_STROKE, Radius, Space } from '@/constants/design';
@@ -59,11 +60,11 @@ function TestModePanel({ busyRole, onPick }: { busyRole: DevRole | null; onPick:
       <View style={styles.testHeader}>
         <FlaskConical size={15} color={Colors.accent} strokeWidth={ICON_STROKE} />
         <AppText variant="overline" color={Colors.accent}>
-          {t('testMode.title')}
+          {t(PUBLIC_DEMO ? 'publicDemo.title' : 'testMode.title')}
         </AppText>
       </View>
       <AppText variant="footnote" style={styles.testIntro}>
-        {t('testMode.intro')}
+        {t(PUBLIC_DEMO ? 'publicDemo.intro' : 'testMode.intro')}
       </AppText>
       <View style={styles.testGrid}>
         {(Object.keys(DEV_ACCOUNTS) as DevRole[]).map((role) => {
@@ -78,7 +79,7 @@ function TestModePanel({ busyRole, onPick }: { busyRole: DevRole | null; onPick:
               scaleTo={0.96}
               haptic="light"
               accessibilityRole="button"
-              accessibilityLabel={t('testMode.a11y', { role: label })}
+              accessibilityLabel={t(PUBLIC_DEMO ? 'publicDemo.a11y' : 'testMode.a11y', { role: label })}
               hoverStyle={{ borderColor: Colors.accentLine, backgroundColor: Colors.surfaceLight }}
               style={[styles.roleTile, busy ? styles.roleTileBusy : null, busyRole && !busy ? styles.roleTileDim : null]}
             >
@@ -231,7 +232,12 @@ export default function SignInScreen() {
 
   const message = error || authError;
 
-  const form = (
+  const form = PUBLIC_DEMO ? (
+    <View style={styles.form}>
+      <TestModePanel busyRole={busyRole} onPick={handleQuickLogin} />
+      {message ? <Notice tone="error" message={message} /> : null}
+    </View>
+  ) : (
     <View style={styles.form}>
       <Input
         label={t('signIn.email')}

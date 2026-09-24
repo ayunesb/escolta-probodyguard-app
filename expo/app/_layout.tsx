@@ -27,6 +27,9 @@ import { installAlertWebPolyfill } from "@/utils/alertWebPolyfill";
 import { hydrateLanguage } from "@/i18n";
 import Colors from "@/constants/colors";
 
+import { PUBLIC_DEMO } from '@/constants/demo';
+import { DemoBanner } from '@/components/DemoBanner';
+
 installAlertWebPolyfill();
 
 const queryClient = new QueryClient({
@@ -84,6 +87,7 @@ export default function RootLayout() {
     ])
       .finally(() => {
         setFirebaseReady(true);
+        if (PUBLIC_DEMO) return;
         initSentry();
         analyticsService.initialize().catch(() => {});
         if (Platform.OS !== 'web' || !__DEV__) {
@@ -110,6 +114,7 @@ export default function RootLayout() {
               <NotificationProvider>
                 <LocationTrackingProvider>
                   <ActivityBoundary>
+                  {PUBLIC_DEMO ? <DemoBanner /> : null}
                   <Stack
                     screenOptions={{
                       headerShown: false,

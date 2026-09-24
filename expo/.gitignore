@@ -70,3 +70,6 @@ firebase-debug*.log
 
 # Originales 2K generados (≈80 MB); la app usa las versiones comprimidas de assets/brand/img y video
 assets/brand/raw/
+
+# Public demo export
+dist-demo/

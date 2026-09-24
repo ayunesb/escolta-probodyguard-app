@@ -1,5 +1,7 @@
 import { useState } from 'react';
-import { ActivityIndicator, Linking, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Alert, Linking, StyleSheet, View } from 'react-native';
+import { PUBLIC_DEMO } from '@/constants/demo';
+import i18n from '@/i18n';
 import { useTranslation } from 'react-i18next';
 import { CircleCheck, CircleAlert, HeartPulse, LifeBuoy, PhoneCall, ShieldAlert, Siren, TriangleAlert } from 'lucide-react-native';
 import type { LucideIcon } from 'lucide-react-native';
@@ -29,6 +31,7 @@ const OPTIONS: { type: EmergencyType; icon: LucideIcon }[] = [
 type Phase = 'choose' | 'sending' | 'sent' | 'failed';
 
 async function call911() {
+  if (PUBLIC_DEMO) { Alert.alert('Demo', i18n.t('auth:publicDemo.unavailable')); return; }
   try {
     await Linking.openURL('tel:911');
   } catch (error) {
@@ -56,6 +59,7 @@ export default function PanicButton({ userId, bookingId, size = 'medium', onAler
   };
 
   const send = async (type: EmergencyType) => {
+    if (PUBLIC_DEMO) { Alert.alert('Demo', i18n.t('auth:publicDemo.unavailable')); return; }
     setLastType(type);
     setPhase('sending');
     setError(null);

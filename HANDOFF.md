@@ -8,6 +8,12 @@ The overhaul was tested against local emulators; it has not been deployed to the
 > **Deploy in the order below.** The new security rules and the new app depend on each other. Deploying
 > rules without the app (or the reverse) breaks sign-up, booking and payments.
 
+## Public preview
+
+[Open the interactive demo](https://escolta-pro-demo.vercel.app). No account is required.
+It uses fictional data in browser memory, separate from the live Firebase backend.
+See [PUBLIC_DEMO.md](PUBLIC_DEMO.md) for the build commands, scope and verification.
+
 ## Handoff verification - 24 September 2026
 
 The English/Spanish app, brand assets, booking changes, security rules, emulator setup and deployment

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import * as Location from 'expo-location';
 import { logger } from '@/utils/logger';
+import { PUBLIC_DEMO } from '@/constants/demo';
 
 export type Coords = { latitude: number; longitude: number };
 
@@ -13,6 +14,7 @@ const valid = (c: { latitude?: number; longitude?: number } | null | undefined):
  * optional niceties like distances. Returns null when unavailable.
  */
 export async function getDeviceCoords({ prompt }: { prompt: boolean }): Promise<Coords | null> {
+  if (PUBLIC_DEMO) return null;
   try {
     const perm = prompt
       ? await Location.requestForegroundPermissionsAsync()

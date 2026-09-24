@@ -12,7 +12,8 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "dev:emulated": "bash scripts/emulator/dev.sh",
-    "emulators:seed": "node scripts/emulator/seed.mjs"
+    "emulators:seed": "node scripts/emulator/seed.mjs",
+    "build:demo": "node scripts/export-public-demo.mjs"
   },
   "dependencies": {
     "@expo-google-fonts/encode-sans-expanded": "^0.4.2",

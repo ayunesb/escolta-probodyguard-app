@@ -21,6 +21,14 @@ const auth = {
     createAccount: 'Create an account',
     devPrefilled: 'Dev build: account prefilled from .env ({{email}})',
   },
+  publicDemo: {
+    title: 'Explore the demo',
+    intro: 'Choose a role to look around. Fictional profiles and sample bookings. No account needed.',
+    a11y: 'Explore as {{role}}',
+    banner: 'Public demo · Sample data · No real bookings or payments',
+    switchRole: 'Switch role',
+    unavailable: 'This is a demonstration. Emergency calls, alerts and payments are disabled.',
+  },
   testMode: {
     title: 'Test mode · local emulator',
     intro: 'Enter as any role with seeded data. These accounts only exist on this machine.',

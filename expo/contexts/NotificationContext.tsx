@@ -3,6 +3,7 @@ import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 import { registerForPushNotificationsAsync } from '@/services/notificationService';
 import Constants from 'expo-constants';
+import { PUBLIC_DEMO } from '@/constants/demo';
 
 interface NotificationContextProps {
   expoPushToken?: string;
@@ -16,6 +17,7 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
   const [notification, setNotification] = useState<Notifications.Notification | undefined>();
 
   useEffect(() => {
+    if (PUBLIC_DEMO) return;
     // Skip notifications setup in Expo Go on Android with SDK 53+
     const isExpoGo = Constants.appOwnership === 'expo';
     const isAndroid = Platform.OS === 'android';

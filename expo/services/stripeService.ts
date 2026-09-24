@@ -7,6 +7,7 @@
  * the amount from the stored booking — the client never sends an amount.
  */
 import { Platform } from 'react-native';
+import { PUBLIC_DEMO } from '@/constants/demo';
 import type { Stripe } from '@stripe/stripe-js';
 
 let stripePromise: Promise<Stripe | null> | null = null;
@@ -14,7 +15,7 @@ let stripePromise: Promise<Stripe | null> | null = null;
 export const stripeService = {
   /** True when a publishable key is present. The API is same-origin on web. */
   isConfigured(): boolean {
-    return Boolean(process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY);
+    return !PUBLIC_DEMO && Boolean(process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY);
   },
 
   publishableKey(): string {

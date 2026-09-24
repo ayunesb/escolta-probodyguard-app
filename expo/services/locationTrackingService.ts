@@ -14,6 +14,7 @@ import { ref, set, onValue } from 'firebase/database';
 import { realtimeDb } from '@/lib/firebase';
 import { logger } from '@/utils/logger';
 import i18n from '@/i18n';
+import { PUBLIC_DEMO } from '@/constants/demo';
 
 export interface Coordinates {
   latitude: number;
@@ -60,6 +61,7 @@ function toPosition(coords: {
 // Solo primer plano. Se pide cuando de verdad empieza el seguimiento, nunca
 // al abrir la app.
 export async function requestLocationPermissions(): Promise<LocationPermission> {
+  if (PUBLIC_DEMO) return 'unavailable';
   if (Platform.OS === 'web') {
     const nav = typeof navigator !== 'undefined' ? navigator : undefined;
     if (!nav || !('geolocation' in nav)) return 'unavailable';

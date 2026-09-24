@@ -24,6 +24,14 @@ const auth: Translation<typeof en> = {
     createAccount: 'Crear una cuenta',
     devPrefilled: 'Compilación de desarrollo: cuenta precargada desde .env ({{email}})',
   },
+  publicDemo: {
+    title: 'Explore la demostración',
+    intro: 'Elija un rol para explorar. Perfiles ficticios y reservas de ejemplo. No necesita una cuenta.',
+    a11y: 'Explorar como {{role}}',
+    banner: 'Demostración · Datos de ejemplo · Sin reservas ni pagos reales',
+    switchRole: 'Cambiar de rol',
+    unavailable: 'Esta es una demostración. Las llamadas de emergencia, alertas y pagos están desactivados.',
+  },
   testMode: {
     title: 'Modo de prueba · emulador local',
     intro: 'Entre con cualquier rol y datos de ejemplo. Estas cuentas solo existen en este equipo.',
